@@ -1,0 +1,11 @@
+# build artifacts
+build/
+tests/*.exe
+tests/*.o
+bench/*.exe
+python/*.pyd
+python/oracle_vectors.txt
+python/nemo_in.txt
+python/nemo_out.txt
+python/__pycache__/
+python/ref/__pycache__/
