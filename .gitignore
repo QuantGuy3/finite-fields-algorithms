@@ -27,3 +27,6 @@ __pycache__/
 .coverage.*
 htmlcov/
 coverage.xml
+
+# worktrees y datos locales de Claude Code
+.claude/
