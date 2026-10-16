@@ -12,8 +12,12 @@
 // that the field and polynomial layers rely on.
 #pragma once
 
+#include "errors.hpp"
+
 #include <gmpxx.h>
 
+#include <climits>
+#include <cstddef>
 #include <cstdint>
 #include <stdexcept>
 #include <string>
@@ -65,6 +69,8 @@ inline BigInt ipow(const BigInt& base, unsigned long exp) {
 // base^exp mod m  (m > 0, exp >= 0).
 inline BigInt powmod(const BigInt& base, const BigInt& exp, const BigInt& m) {
     if (exp < 0) throw std::invalid_argument("powmod: negative exponent");
+    // mpz_powm con módulo 0 divide por cero dentro de GMP (aborta el proceso).
+    if (sgn(m) <= 0) throw std::invalid_argument("powmod: el módulo debe ser positivo");
     BigInt r;
     mpz_powm(r.get_mpz_t(), base.get_mpz_t(), exp.get_mpz_t(), m.get_mpz_t());
     return r;
@@ -109,33 +115,40 @@ inline bool is_prime(const BigInt& p) {
 // with p prime, or throw if q is not a prime power.  Mirrors the Python
 // `factor_potencia`, but the heavy lifting (root extraction, primality) is
 // done with GMP so it stays correct and fast for large q.
+//
+// Detección de potencia perfecta (sustituye a la antigua división por
+// tentativa, que no terminaba en la práctica para bases primas grandes como
+// (2^61-1)^3): si q = p^n con p >= 2, entonces 2^n <= q < 2^bits, luego
+// n <= bits - 1.  Se recorre n de mayor a menor, se extrae la raíz n-ésima
+// entera con mpz_root y, si es exacta y prima, se devuelve (r, n).  Si q = p^n
+// con p primo, la única raíz exacta con base prima es la de exponente n, así
+// que el primer acierto (el mayor n) es la respuesta.  Coste: O(log q) raíces
+// enteras, y ninguna si mpz_perfect_power_p descarta q de entrada.
 // ---------------------------------------------------------------------------
 inline std::pair<BigInt, BigInt> prime_power_factor(const BigInt& q) {
     if (q < 2) throw std::invalid_argument("prime_power_factor: q must be >= 2");
     if (is_prime(q)) return {q, BigInt(1)};
 
-    // q is a perfect power p^n only if its smallest prime factor p satisfies
-    // p^n == q.  Find the smallest prime factor by trial division (the base of
-    // a field's prime power is always tiny in practice).
-    BigInt p = 2;
-    while (p * p <= q) {
-        if (q % p == 0) {
-            BigInt x = q, n = 0;
-            while (x % p == 0) {
-                x /= p;
-                ++n;
-            }
-            if (x == 1) return {p, n};
-            throw std::invalid_argument(q.get_str() + " is not a prime power");
+    if (mpz_perfect_power_p(q.get_mpz_t()) != 0) {
+        const std::size_t bits = bit_length(q);
+        // mpz_root recibe el exponente como unsigned long (32 bits en Windows);
+        // un q con más de ULONG_MAX bits no cabe en memoria, pero se acota igual.
+        const unsigned long top = (bits - 1 > static_cast<std::size_t>(ULONG_MAX))
+                                      ? ULONG_MAX
+                                      : static_cast<unsigned long>(bits - 1);
+        BigInt r;
+        for (unsigned long n = top; n >= 2; --n) {
+            if (mpz_root(r.get_mpz_t(), q.get_mpz_t(), n) != 0 && is_prime(r))
+                return {r, BigInt(n)};
         }
-        p += (p == 2) ? 1 : 2;  // 2, then odd numbers only
     }
-    // No factor <= sqrt(q): q itself is prime (already handled) — unreachable.
     throw std::invalid_argument(q.get_str() + " is not a prime power");
 }
 
 // Modular inverse: a^{-1} mod m, throws if gcd(a, m) != 1.
 inline BigInt invmod(const BigInt& a, const BigInt& m) {
+    // Con m == 0 el comportamiento de mpz_invert no está definido.
+    if (sgn(m) <= 0) throw std::invalid_argument("invmod: el módulo debe ser positivo");
     BigInt r;
     if (mpz_invert(r.get_mpz_t(), a.get_mpz_t(), m.get_mpz_t()) == 0)
         throw std::domain_error("invmod: value not invertible");
