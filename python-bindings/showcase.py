@@ -14,11 +14,14 @@ COMENTADA, pensada para leerse de arriba a abajo.  Recorre:
              y, comentado, el equivalente en Julia/Nemo.
   Parte 4 .  Un caso donde la implementación Python original fallaba.
 
-Ejecutar:   python python/showcase.py
+Ejecutar:   python python-bindings/showcase.py
+            (antes: python build.py module, que deja el módulo compilado en
+             python-bindings/alcp/alcp_native<EXT_SUFFIX>)
 """
 import os, sys, time, random, shutil, subprocess
 
-sys.path.insert(0, os.path.dirname(__file__))
+# El módulo nativo compilado vive en python-bindings/alcp/ (junto al paquete).
+sys.path.insert(0, os.path.join(os.path.dirname(os.path.abspath(__file__)), "alcp"))
 import alcp_native as al
 
 # Salida UTF-8 en la consola de Windows (para que los acentos salgan bien).
