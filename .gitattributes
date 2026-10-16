@@ -1,0 +1,11 @@
+# Normalización de finales de línea: LF en el repositorio
+* text=auto
+*.sh text eol=lf
+*.py text eol=lf
+*.cpp text eol=lf
+*.hpp text eol=lf
+*.yml text eol=lf
+*.pyd binary
+*.so binary
+# Las prácticas originales se conservan byte a byte (no se tocan)
+python/** -text
