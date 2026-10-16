@@ -2,21 +2,27 @@
 //
 // Port of the Python `cuerpo_fp` kernel.  An element is just a BigInt kept
 // normalized in [0, p).  Fp models the generic Field interface consumed by
-// Poly<Field>, PolyRing<Field> and the FFT engine, so every polynomial
-// algorithm is written once and works over F_p, F_q, ... unchanged.
+// Poly<Field> and the FFT engine, so every polynomial algorithm is written
+// once and works over F_p, F_q, ... unchanged.
 //
-// Field interface (the contract every field type fulfils):
+// Field interface (the contract every field type fulfils; formalizado como el
+// concepto C++20 alcp::FiniteField en field.hpp):
 //   using Elem;
 //   Elem  zero() / one() / from_int(BigInt) / random();
 //   Elem  add/sub/neg/mul/inv/div(...) ;  Elem pow(Elem, BigInt);
 //   bool  eq/is_zero/is_one(...);
 //   BigInt cardinality() / characteristic();
-//   std::string to_string(Elem);
+//   std::string to_string(Elem);   Elem pth_root(Elem);
 //   unsigned long fft_capacity();  Elem fft_base_root();
 //   FFTCache<Elem> fft_cache_;     // mutable, owned by the field
+//
+// Elementos: se asume (precondición, no se comprueba por rendimiento) que los
+// Elem que se pasan a las operaciones están normalizados en [0, p), es decir,
+// que proceden de este mismo cuerpo (from_int, random, zero, one, ...).
 #pragma once
 
 #include "bigint.hpp"
+#include "errors.hpp"
 #include "fft_tables.hpp"
 
 #include <stdexcept>
@@ -36,6 +42,10 @@ public:
     // --- field data ---------------------------------------------------------
     const BigInt& characteristic() const { return p_; }
     BigInt cardinality() const { return p_; }
+
+    // Igualdad de cuerpos: dos F_p son el mismo cuerpo si tienen el mismo p.
+    // (Las cachés FFT y la raíz base no forman parte de la identidad.)
+    bool operator==(const Fp& o) const { return p_ == o.p_; }
 
     // --- constants & coercion ----------------------------------------------
     Elem zero() const { return Elem(0); }
@@ -63,16 +73,18 @@ public:
     Elem neg(const Elem& a) const { return (a == 0) ? Elem(0) : Elem(p_ - a); }
     Elem mul(const Elem& a, const Elem& b) const { return (a * b) % p_; }
 
+    // Invertir 0 lanza alcp::division_by_zero (deriva de std::domain_error).
     Elem inv(const Elem& a) const {
-        if (a == 0) throw std::domain_error("0 is not invertible in F_p");
+        if (a == 0) throw division_by_zero("0 is not invertible in F_p");
         return invmod(a, p_);
     }
     Elem div(const Elem& a, const Elem& b) const { return mul(a, inv(b)); }
 
-    // a^k for any integer k (negative -> inverse first).
+    // a^k for any integer k (negative -> inverse first; 0^k con k < 0 lanza
+    // alcp::division_by_zero).
     Elem pow(const Elem& a, const BigInt& k) const {
         if (k < 0) {
-            if (a == 0) throw std::domain_error("0 is not invertible in F_p");
+            if (a == 0) throw division_by_zero("0 is not invertible in F_p");
             return powmod(inv(a), -k, p_);
         }
         return powmod(a, k, p_);
@@ -127,5 +139,9 @@ private:
     mutable bool base_root_ready_ = false;
     mutable Elem base_root_{};
 };
+
+// ¿Son a y b el mismo cuerpo F_p?  Camino rápido: el mismo objeto; si no,
+// mismos parámetros (mismo p).
+inline bool same_field(const Fp& a, const Fp& b) { return &a == &b || a == b; }
 
 }  // namespace alcp
