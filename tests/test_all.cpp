@@ -9,9 +9,20 @@
 //     over F_p must equal Gauss's necklace formula (1/n) sum_{d|n} mu(d) p^{n/d}.
 //   * Factorization round-trips: re-multiplying the returned factors must
 //     recover the input, and every returned factor must be irreducible.
+//   * Factorización EXHAUSTIVA en cuerpos pequeños (F_2, F_3, F_4, F_8, F_9,
+//     F_16, F_25): para cada polinomio mónico de grado pequeño se comprueba la
+//     reconstrucción, la irreducibilidad de los factores, el orden canónico,
+//     las raíces y sus multiplicidades por FUERZA BRUTA (división sintética en
+//     todos los elementos del cuerpo) y el recuento de Gauss sobre F_q.
+//   * Casos límite (polinomio cero, constantes, grado 0) y propiedades de
+//     evaluate / compose: (f·g)(x) = f(x)·g(x), (f∘g)(x) = f(g(x)) y
+//     asociatividad de la composición.
 #include "alcp/alcp.hpp"
 #include "check.hpp"
 
+#include <algorithm>
+#include <chrono>
+#include <cstdio>
 #include <iostream>
 #include <vector>
 
@@ -344,6 +355,213 @@ static void test_dft(const Field& F, unsigned long k) {
     CHECK(back == a);  // inverse recovers the input
 }
 
+// ----------------------------------------------------------------------------
+// 11. factorización frente a fuerza bruta en cuerpos pequeños
+// ----------------------------------------------------------------------------
+
+// Todos los elementos del cuerpo, en el orden de sus índices.
+static std::vector<Fp::Elem> elementos(const Fp& F) {
+    std::vector<Fp::Elem> v;
+    for (BigInt i = 0; i < F.cardinality(); ++i) v.push_back(F.from_int(i));
+    return v;
+}
+static std::vector<Fq::Elem> elementos(const Fq& F) {
+    std::vector<Fq::Elem> v;
+    for (BigInt i = 0; i < F.cardinality(); ++i) v.push_back(F.from_index(i));
+    return v;
+}
+
+// Multiplicidad de e como raíz de f por división sintética repetida entre
+// (x - e): independiente de divmod / multiplicity de la librería.
+template <class Field>
+static int multiplicidad_raiz(const Field& F, std::vector<typename Field::Elem> c,
+                              const typename Field::Elem& e) {
+    int m = 0;
+    while (c.size() > 1) {  // grado >= 1 (c recortado: c.back() != 0)
+        std::vector<typename Field::Elem> q(c.size() - 1);
+        auto acc = F.zero();
+        for (std::size_t i = c.size(); i-- > 0;) {
+            acc = F.add(F.mul(acc, e), c[i]);  // Horner
+            if (i > 0) q[i - 1] = acc;
+        }
+        if (!F.is_zero(acc)) break;  // resto = f(e) != 0
+        ++m;
+        c = std::move(q);
+    }
+    return m;
+}
+
+// Verificación completa de f.factor(): reconstrucción, factores mónicos,
+// irreducibles, distintos y en orden canónico, y raíces (con su multiplicidad)
+// iguales a las obtenidas por fuerza bruta en todo el cuerpo.
+template <class Field>
+static typename Poly<Field>::Factorization verificar_factorizacion(
+    const Field& F, const std::vector<typename Field::Elem>& E, const Poly<Field>& f) {
+    using P = Poly<Field>;
+    auto fac = f.factor();
+    CHECK(F.eq(fac.leading, f.lead()));
+    P recon = P::constant(F, fac.leading);
+    int grado = 0;
+    for (std::size_t i = 0; i < fac.factors.size(); ++i) {
+        const auto& [u, e] = fac.factors[i];
+        CHECK(e >= 1);
+        CHECK(F.is_one(u.lead()));
+        CHECK(u.is_irreducible());
+        if (i > 0) CHECK(P::canonical_less(fac.factors[i - 1].first, u));  // orden y distintos
+        recon = recon * u.pow(BigInt(e));
+        grado += u.degree() * e;
+    }
+    CHECK(grado == f.degree());
+    CHECK(recon == f);
+    // raíces por fuerza bruta <-> factores lineales x - e
+    std::size_t lineales = 0;
+    for (const auto& pr : fac.factors) lineales += (pr.first.degree() == 1);
+    std::size_t raices = 0;
+    for (const auto& e : E) {
+        const int m = multiplicidad_raiz(F, f.coeffs(), e);
+        CHECK(F.is_zero(f.evaluate(e)) == (m > 0));
+        if (m == 0) continue;
+        ++raices;
+        const P lineal(F, {F.neg(e), F.one()});  // x - e
+        int encontrada = 0;
+        for (const auto& [u, mult] : fac.factors)
+            if (u == lineal) encontrada = mult;
+        CHECK(encontrada == m);
+    }
+    CHECK(raices == lineales);
+    return fac;
+}
+
+// Todos los polinomios mónicos de grado 1..maxdeg (más algún múltiplo no
+// mónico): factorización verificada y recuento de irreducibles de Gauss.
+template <class Field>
+static void test_factor_exhaustivo(const Field& F, int maxdeg) {
+    using P = Poly<Field>;
+    using Elem = typename Field::Elem;
+    const std::vector<Elem> E = elementos(F);
+    const std::size_t q = E.size();
+    for (int d = 1; d <= maxdeg; ++d) {
+        std::size_t total = 1;
+        for (int i = 0; i < d; ++i) total *= q;
+        long irreducibles = 0;
+        for (std::size_t idx = 0; idx < total; ++idx) {
+            std::vector<Elem> c(d + 1);
+            std::size_t t = idx;
+            for (int i = 0; i < d; ++i) { c[i] = E[t % q]; t /= q; }
+            c[d] = F.one();
+            P f(F, std::move(c));
+            const bool irr = f.is_irreducible();
+            irreducibles += irr ? 1 : 0;
+            auto fac = verificar_factorizacion(F, E, f);
+            CHECK(irr == (fac.factors.size() == 1 && fac.factors[0].second == 1));
+            if (idx % 7 == 0) verificar_factorizacion(F, E, f.scalar_mul(E[q - 1]));  // no mónico
+        }
+        CHECK(BigInt(irreducibles) == num_monic_irreducible(BigInt(static_cast<unsigned long>(q)), d));
+    }
+}
+
+// Polinomios aleatorios (productos con multiplicidades) en un cuerpo mediano.
+template <class Field>
+static void test_factor_aleatorio_bruto(const Field& F, int rondas) {
+    using P = Poly<Field>;
+    const auto E = elementos(F);
+    for (int t = 0; t < rondas; ++t) {
+        P f = P::constant(F, E[1 + rand() % (E.size() - 1)]);
+        const int partes = 1 + rand() % 3;
+        for (int i = 0; i < partes; ++i)
+            f = f * P::random(F, 1 + rand() % 2).monic().pow(BigInt(1 + rand() % 3));
+        verificar_factorizacion(F, E, f);
+    }
+}
+
+// ----------------------------------------------------------------------------
+// 12. polinomio cero, constantes y grado 0
+// ----------------------------------------------------------------------------
+template <class Field>
+static void test_cero_y_constantes(const Field& F) {
+    using P = Poly<Field>;
+    const P z = P::zero(F);
+    const P c = P::constant(F, F.add(F.one(), F.one()));  // 2 (o 0 en característica 2)
+    const P u = P::one(F);
+    const P x = P::variable(F);
+    CHECK(z.degree() == -1 && z.is_zero() && !z.is_one());
+    CHECK(P::constant(F, F.zero()).is_zero());              // constante nula = cero
+    CHECK(P(F, {F.zero(), F.zero()}).is_zero());            // se recorta
+    CHECK(u.degree() == 0 && u.is_one());
+    CHECK(!z.is_irreducible() && !u.is_irreducible());
+    CHECK(x.is_irreducible());
+    CHECK(z + z == z && z * x == z && x * z == z);
+    CHECK(z - x == -x);
+    CHECK(z.derivative() == z && u.derivative() == z);
+    CHECK(z.pow(BigInt(0)) == u && x.pow(BigInt(0)) == u && z.pow(BigInt(3)) == z);
+    CHECK(P::gcd(z, z) == z);
+    CHECK(P::gcd(z, x.scalar_mul(F.neg(F.one()))) == x);  // gcd(0, -x) = x mónico
+    CHECK(P::gcd(u, x) == u);
+    auto eg = P::gcd_ext(z, z);
+    CHECK(eg.g.is_zero() && eg.x.is_zero() && eg.y.is_zero());
+    auto [q0, r0] = z.divmod(x);
+    CHECK(q0.is_zero() && r0.is_zero());
+    auto [q1, r1] = u.divmod(x);
+    CHECK(q1.is_zero() && r1 == u);
+    CHECK(z.radical() == z && u.radical() == u);
+    CHECK(z.monic() == z && u.monic() == u);
+    CHECK(z.to_string() == "0");
+    bool lanzo = false;
+    try { (void)z.factor(); } catch (const std::domain_error&) { lanzo = true; }
+    CHECK(lanzo);
+    auto fu = u.factor();
+    CHECK(fu.factors.empty() && F.is_one(fu.leading));
+    if (!c.is_zero()) {
+        auto fc = c.factor();
+        CHECK(fc.factors.empty() && F.eq(fc.leading, c.lead()));
+        CHECK(c.radical() == u);
+        CHECK(c.is_squarefree());
+        CHECK(c.monic() == u);
+        CHECK((x % c).is_zero());           // una unidad divide a todo
+        CHECK(x.multiplicity(x) == 1);
+    }
+    CHECK(z.evaluate(F.one()) == F.zero());
+    CHECK(u.evaluate(F.zero()) == F.one());
+}
+
+// ----------------------------------------------------------------------------
+// 13. evaluate / compose: homomorfismo de evaluación y composición
+// ----------------------------------------------------------------------------
+template <class Field>
+static void test_evaluar_componer(const Field& F, int rondas) {
+    using P = Poly<Field>;
+    for (int t = 0; t < rondas; ++t) {
+        P f = P::random(F, rand() % 6);
+        P g = P::random(F, rand() % 4);
+        P h = P::random(F, rand() % 3);
+        auto x0 = F.random();
+        // evaluar es un homomorfismo de anillos F[x] -> F
+        CHECK(F.eq((f * g).evaluate(x0), F.mul(f.evaluate(x0), g.evaluate(x0))));
+        CHECK(F.eq((f + g).evaluate(x0), F.add(f.evaluate(x0), g.evaluate(x0))));
+        CHECK(F.eq((f - g).evaluate(x0), F.sub(f.evaluate(x0), g.evaluate(x0))));
+        // composición coherente con la evaluación y asociativa
+        P fg = f.compose(g);
+        CHECK(F.eq(fg.evaluate(x0), f.evaluate(g.evaluate(x0))));
+        CHECK(f.compose(g.compose(h)) == fg.compose(h));
+        CHECK(F.eq(fg.compose(h).evaluate(x0), f.evaluate(g.evaluate(h.evaluate(x0)))));
+        if (!f.is_zero() && !g.is_zero() && g.degree() >= 1)
+            CHECK(fg.degree() == f.degree() * g.degree());
+        // (f·g)∘h = (f∘h)·(g∘h)  y  (f+g)∘h = f∘h + g∘h
+        CHECK((f * g).compose(h) == f.compose(h) * g.compose(h));
+        CHECK((f + g).compose(h) == f.compose(h) + g.compose(h));
+        // coeff coherente con coeffs()
+        for (std::size_t i = 0; i < f.coeffs().size() + 2; ++i)
+            CHECK(F.eq(f.coeff(i), i < f.coeffs().size() ? f.coeffs()[i] : F.zero()));
+        // libre de cuadrados <=> todas las multiplicidades son 1
+        if (f.degree() >= 1) {
+            auto fac = f.factor();
+            bool todas_uno = true;
+            for (auto& pr : fac.factors) todas_uno = todas_uno && pr.second == 1;
+            CHECK(f.is_squarefree() == todas_uno);
+        }
+    }
+}
+
 int main() {
     set_seed(20260629);
     srand(12345);
@@ -387,6 +605,42 @@ int main() {
     test_dft(F17, 4);
     test_dft(Fbig, 10);
     test_dft(F9, 3);
+
+    // ---- ampliación (fase 1): extensiones, fuerza bruta, casos límite ----
+    const auto t_amp = std::chrono::steady_clock::now();
+    Fp F2(2), F3(3);
+    Fq F4(BigInt(2), 2), F8(BigInt(2), 3), F16(BigInt(2), 4), F343(BigInt(7), 3);
+    test_factor_exhaustivo(F2, 6);
+    test_factor_exhaustivo(F3, 4);
+    test_factor_exhaustivo(F4, 3);
+    test_factor_exhaustivo(F8, 2);
+    test_factor_exhaustivo(F9, 3);
+    test_factor_exhaustivo(F16, 2);
+    test_factor_exhaustivo(F25, 2);
+    test_factor_aleatorio_bruto(F8, 25);
+    test_factor_aleatorio_bruto(F16, 25);
+    test_factor_aleatorio_bruto(F25, 15);
+    test_factor_aleatorio_bruto(F343, 10);
+    // productos aleatorios con multiplicidades en característica 2 y en F_{7^3}
+    test_factor(F4, 25);
+    test_factor(F8, 25);
+    test_factor(F16, 20);
+    test_factor(F343, 8);
+
+    test_cero_y_constantes(F7);
+    test_cero_y_constantes(F2);
+    test_cero_y_constantes(F4);
+    test_cero_y_constantes(F9);
+    test_cero_y_constantes(F343);
+
+    test_evaluar_componer(F7, 60);
+    test_evaluar_componer(F101, 30);
+    test_evaluar_componer(F4, 40);
+    test_evaluar_componer(F9, 40);
+    test_evaluar_componer(F16, 30);
+    test_evaluar_componer(F343, 20);
+    std::printf("ampliación (fase 1): %.0f ms\n",
+                std::chrono::duration<double, std::milli>(std::chrono::steady_clock::now() - t_amp).count());
 
     return check::summary("alcp");
 }

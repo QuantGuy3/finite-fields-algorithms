@@ -1,13 +1,30 @@
 // crosscheck.cpp — verify the C++ port reproduces the ORIGINAL Python results.
 //
-// Reads the oracle file produced by python/oracle.py (Python = source of truth)
-// and recomputes every record with the C++ library, asserting equality.  For
-// deterministic operations the match is exact; for randomized factorization the
-// canonical factor multiset must coincide (factorization is unique).
+// Reads the oracle file produced by python-bindings/oracle.py (Python = source
+// of truth) and recomputes every record with the C++ library, asserting
+// equality.  For deterministic operations the match is exact; for randomized
+// factorization the canonical factor multiset must coincide (factorization is
+// unique).
+//
+// Uso: xcheck [ruta]   (por defecto build/oracle_vectors.txt)
+//
+// Detalles de robustez:
+//   * se eliminan los '\r' finales (vectores con finales de línea CRLF);
+//   * un registro con menos campos de los esperados, un py_ok distinto de 0/1
+//     o una excepción C++ cuentan como fallo, con el número de línea;
+//   * FPX_FACTOR / FQX_FACTOR: "OP|cuerpo|poli|factores|py_ok".  La
+//     factorización C++ se verifica SIEMPRE por reconstrucción (coeficiente
+//     principal por producto de factores^multiplicidad == entrada) y porque
+//     cada factor es mónico, irreducible y distinto de los demás.  Si
+//     py_ok == 1 además se compara con el multiconjunto canónico de Python; si
+//     py_ok == 0 (la práctica original no es autoconsistente, se cuelga o lanza
+//     una excepción) el campo de factores puede venir vacío y no se compara.
 #include "alcp/alcp.hpp"
 #include "check.hpp"
 
 #include <algorithm>
+#include <cstdio>
+#include <exception>
 #include <fstream>
 #include <iostream>
 #include <sstream>
@@ -66,6 +83,7 @@ static Poly<Fq> mk_fq(const Fq& F, const std::string& s) {
 }
 static Fq build_fq(const std::string& field_tok) {
     auto parts = split(field_tok, ';');
+    if (parts.size() < 2) throw std::invalid_argument("campo de cuerpo F_q mal formado: " + field_tok);
     BigInt p(parts[0]);
     return Fq(Fp(p), parse_ints(parts[1]));
 }
@@ -74,123 +92,206 @@ static Fq build_fq(const std::string& field_tok) {
 static BigInt coeff_repr(const Fp& F, const Fp::Elem& c) { return F.to_bigint(c); }
 static BigInt coeff_repr(const Fq& F, const Fq::Elem& c) { return F.to_index(c); }
 
-// ---- canonical factor multisets + self-reconstruction ----------------------
-// Returns the canonical factor string and sets `reconstructs` to whether
-// re-multiplying the C++ factors recovers the input (the true correctness test).
+// ---- canonical factor multisets + self-verification ------------------------
+// Resultado de factorizar con C++: cadena canónica (mismo formato que el
+// oráculo) y verificación independiente de Python.
+struct FactorCheck {
+    std::string canon;         // "coefs:mult;coefs:mult;..." ordenado
+    bool reconstructs = false; // leading * prod(u^e) == entrada
+    bool all_irreducible = false;
+    bool all_monic = false;
+    bool distinct = false;
+    bool verified() const { return reconstructs && all_irreducible && all_monic && distinct; }
+};
+
 template <class Field>
-static std::string canon_factors(const Poly<Field>& comp, const Field& F, bool& reconstructs) {
+static FactorCheck check_factors(const Poly<Field>& comp, const Field& F) {
+    FactorCheck r;
     auto fac = comp.factor();
     Poly<Field> recon = Poly<Field>::constant(F, fac.leading);
     std::vector<std::pair<std::vector<BigInt>, int>> items;
+    r.all_irreducible = true;
+    r.all_monic = true;
     for (auto& [u, e] : fac.factors) {
         recon = recon * u.pow(BigInt(e));
+        if (!u.is_irreducible()) r.all_irreducible = false;
+        if (u.is_zero() || !F.is_one(u.lead())) r.all_monic = false;
         std::vector<BigInt> cs;
         for (auto& c : u.coeffs()) cs.push_back(coeff_repr(F, c));
         items.emplace_back(std::move(cs), e);
     }
-    reconstructs = (recon == comp);
+    r.reconstructs = (recon == comp);
     std::sort(items.begin(), items.end());
-    std::string s;
+    r.distinct = std::adjacent_find(items.begin(), items.end(),
+                                    [](const auto& a, const auto& b) { return a.first == b.first; }) ==
+                 items.end();
     for (std::size_t i = 0; i < items.size(); ++i) {
-        if (i) s += ";";
-        s += vec_str(items[i].first) + ":" + std::to_string(items[i].second);
+        if (i) r.canon += ";";
+        r.canon += vec_str(items[i].first) + ":" + std::to_string(items[i].second);
     }
-    return s;
+    return r;
+}
+
+// Número mínimo de campos (incluido el código de operación) de cada registro.
+static std::size_t expected_fields(const std::string& op) {
+    if (op == "FPX_MUL" || op == "FPX_KARA" || op == "FQX_MUL" || op == "FQX_GCD") return 5;
+    if (op == "FPX_GCD") return 5;
+    if (op == "FPX_DIVMOD" || op == "FPX_DIVMOD_FAST" || op == "FQX_DIVMOD") return 6;
+    if (op == "FPX_GCDEXT") return 7;
+    if (op == "FPX_IRRED" || op == "FQX_IRRED") return 4;
+    if (op == "FPX_FACTOR" || op == "FQX_FACTOR") return 5;
+    if (op == "FPX_POWMOD") return 6;
+    if (op == "FP_DFT" || op == "FP_IDFT" || op == "FP_TOEP_LOWER") return 6;
+    return 0;  // desconocida
+}
+
+// Contadores de los registros de factorización.
+struct FactorStats {
+    int total = 0;          // registros de factorización
+    int compared = 0;       // py_ok == 1: comparados con Python
+    int py_bad = 0;         // py_ok == 0: Python no autoconsistente / sin resultado
+    int py_bad_empty = 0;   //   ... de ellos, con el campo de factores vacío
+    int py_bad_cpp_ok = 0;  //   ... de ellos, con la factorización C++ verificada
+};
+
+template <class Field>
+static void handle_factor(const std::vector<std::string>& t, const Poly<Field>& comp, const Field& F,
+                          FactorStats& st, int lineno) {
+    ++st.total;
+    const std::string& py_ok = t[4];
+    if (py_ok != "0" && py_ok != "1") {
+        std::printf("  FAIL [línea %d]: py_ok = '%s' (se esperaba 0 o 1)\n", lineno, py_ok.c_str());
+        ++check::g_fail;
+        return;
+    }
+    FactorCheck r = check_factors(comp, F);
+    CHECK_MSG(r.reconstructs, "la factorización C++ reconstruye la entrada");
+    CHECK_MSG(r.all_irreducible, "todos los factores C++ son irreducibles");
+    CHECK_MSG(r.all_monic, "todos los factores C++ son mónicos");
+    CHECK_MSG(r.distinct, "los factores C++ son distintos");
+    if (py_ok == "1") {
+        ++st.compared;
+        CHECK_MSG(r.canon == t[3], "factorización C++ == factorización Python (py_ok = 1)");
+        if (r.canon != t[3]) std::printf("    línea %d: C++ '%s' vs Python '%s'\n", lineno, r.canon.c_str(), t[3].c_str());
+    } else {
+        ++st.py_bad;
+        if (t[3].empty()) ++st.py_bad_empty;
+        if (r.verified()) ++st.py_bad_cpp_ok;
+    }
 }
 
 int main(int argc, char** argv) {
-    std::string path = (argc > 1) ? argv[1] : "python/oracle_vectors.txt";
+    std::string path = (argc > 1) ? argv[1] : "build/oracle_vectors.txt";
     std::ifstream in(path);
     if (!in) { std::cerr << "cannot open " << path << "\n"; return 2; }
 
     std::string line;
     int records = 0;
-    int py_buggy = 0;  // factorization inputs where the Python reference is self-inconsistent
+    int lineno = 0;
+    FactorStats fst;
     while (std::getline(in, line)) {
+        ++lineno;
+        // Quita los '\r' finales (archivos con CRLF): si no, el último campo de
+        // cada registro no coincide nunca (p. ej. py_ok == "1\r").
+        while (!line.empty() && line.back() == '\r') line.pop_back();
         if (line.empty()) continue;
         auto t = split(line, '|');
         const std::string& op = t[0];
         ++records;
 
-        if (op == "FPX_MUL") {
-            Fp F{BigInt(t[1])};
-            CHECK(poly_str_fp(F, mk_fp(F, t[2]) * mk_fp(F, t[3])) == t[4]);
-        } else if (op == "FPX_KARA") {
-            Fp F{BigInt(t[1])};
-            CHECK(poly_str_fp(F, mk_fp(F, t[2]).mul(mk_fp(F, t[3]), MulAlgo::Karatsuba)) == t[4]);
-        } else if (op == "FPX_DIVMOD") {
-            Fp F{BigInt(t[1])};
-            auto [q, r] = mk_fp(F, t[2]).divmod(mk_fp(F, t[3]));
-            CHECK(poly_str_fp(F, q) == t[4] && poly_str_fp(F, r) == t[5]);
-        } else if (op == "FPX_DIVMOD_FAST") {
-            Fp F{BigInt(t[1])};
-            auto [q, r] = fast::toeplitz_divmod(F, mk_fp(F, t[2]), mk_fp(F, t[3]));
-            CHECK(poly_str_fp(F, q) == t[4] && poly_str_fp(F, r) == t[5]);
-        } else if (op == "FPX_GCD") {
-            Fp F{BigInt(t[1])};
-            CHECK(poly_str_fp(F, Poly<Fp>::gcd(mk_fp(F, t[2]), mk_fp(F, t[3]))) == t[4]);
-        } else if (op == "FPX_GCDEXT") {
-            Fp F{BigInt(t[1])};
-            auto e = Poly<Fp>::gcd_ext(mk_fp(F, t[2]), mk_fp(F, t[3]));
-            CHECK(poly_str_fp(F, e.g) == t[4] && poly_str_fp(F, e.x) == t[5] && poly_str_fp(F, e.y) == t[6]);
-        } else if (op == "FPX_IRRED") {
-            Fp F{BigInt(t[1])};
-            CHECK((mk_fp(F, t[2]).is_irreducible() ? "1" : "0") == t[3]);
-        } else if (op == "FPX_FACTOR") {
-            Fp F{BigInt(t[1])};
-            bool recon = false;
-            std::string got = canon_factors(mk_fp(F, t[2]), F, recon);
-            CHECK(recon);  // C++ factorization MUST reconstruct the input
-            if (t[4] == "1") CHECK(got == t[3]);  // compare only when Python self-consistent
-            else { ++py_buggy; }                   // Python reference is buggy here
-        } else if (op == "FPX_POWMOD") {
-            Fp F{BigInt(t[1])};
-            Poly<Fp> a = mk_fp(F, t[2]), m = mk_fp(F, t[3]);
-            CHECK(poly_str_fp(F, Poly<Fp>::pow_mod(a, BigInt(t[4]), m)) == t[5]);
-        } else if (op == "FP_DFT") {
-            Fp F{BigInt(t[1])};
-            auto a = parse_ints(t[4]);
-            auto A = fast::dft(F, F.from_int(BigInt(t[2])), std::stoul(t[3]), a);
-            CHECK(vec_str(A) == t[5]);
-        } else if (op == "FP_IDFT") {
-            Fp F{BigInt(t[1])};
-            auto A = parse_ints(t[4]);
-            auto B = fast::idft(F, F.from_int(BigInt(t[2])), std::stoul(t[3]), A);
-            CHECK(vec_str(B) == t[5]);
-        } else if (op == "FP_TOEP_LOWER") {
-            Fp F{BigInt(t[1])};
-            std::size_t n = std::stoul(t[2]);
-            auto y = fast::toeplitz_lower_vec(F, n, parse_ints(t[3]), parse_ints(t[4]));
-            CHECK(vec_str(y) == t[5]);
-        } else if (op == "FQX_MUL") {
-            Fq F = build_fq(t[1]);
-            CHECK(poly_str_fq(F, mk_fq(F, t[2]) * mk_fq(F, t[3])) == t[4]);
-        } else if (op == "FQX_DIVMOD") {
-            Fq F = build_fq(t[1]);
-            auto [q, r] = mk_fq(F, t[2]).divmod(mk_fq(F, t[3]));
-            CHECK(poly_str_fq(F, q) == t[4] && poly_str_fq(F, r) == t[5]);
-        } else if (op == "FQX_GCD") {
-            Fq F = build_fq(t[1]);
-            CHECK(poly_str_fq(F, Poly<Fq>::gcd(mk_fq(F, t[2]), mk_fq(F, t[3]))) == t[4]);
-        } else if (op == "FQX_IRRED") {
-            Fq F = build_fq(t[1]);
-            CHECK((mk_fq(F, t[2]).is_irreducible() ? "1" : "0") == t[3]);
-        } else if (op == "FQX_FACTOR") {
-            Fq F = build_fq(t[1]);
-            bool recon = false;
-            std::string got = canon_factors(mk_fq(F, t[2]), F, recon);
-            CHECK(recon);
-            if (t[4] == "1") CHECK(got == t[3]);
-            else { ++py_buggy; }
-        } else {
-            std::cerr << "unknown op: " << op << "\n";
+        const std::size_t need = expected_fields(op);
+        if (need == 0) {
+            std::cerr << "unknown op: " << op << " (línea " << lineno << ")\n";
+            ++check::g_fail;
+            continue;
+        }
+        if (t.size() < need) {
+            std::printf("  FAIL [línea %d]: %s con %zu campos (se esperaban %zu)\n", lineno, op.c_str(),
+                        t.size(), need);
+            ++check::g_fail;
+            continue;
+        }
+
+        try {
+            if (op == "FPX_MUL") {
+                Fp F{BigInt(t[1])};
+                CHECK(poly_str_fp(F, mk_fp(F, t[2]) * mk_fp(F, t[3])) == t[4]);
+            } else if (op == "FPX_KARA") {
+                Fp F{BigInt(t[1])};
+                CHECK(poly_str_fp(F, mk_fp(F, t[2]).mul(mk_fp(F, t[3]), MulAlgo::Karatsuba)) == t[4]);
+            } else if (op == "FPX_DIVMOD") {
+                Fp F{BigInt(t[1])};
+                auto [q, r] = mk_fp(F, t[2]).divmod(mk_fp(F, t[3]));
+                CHECK(poly_str_fp(F, q) == t[4] && poly_str_fp(F, r) == t[5]);
+            } else if (op == "FPX_DIVMOD_FAST") {
+                Fp F{BigInt(t[1])};
+                auto [q, r] = fast::toeplitz_divmod(F, mk_fp(F, t[2]), mk_fp(F, t[3]));
+                CHECK(poly_str_fp(F, q) == t[4] && poly_str_fp(F, r) == t[5]);
+            } else if (op == "FPX_GCD") {
+                Fp F{BigInt(t[1])};
+                CHECK(poly_str_fp(F, Poly<Fp>::gcd(mk_fp(F, t[2]), mk_fp(F, t[3]))) == t[4]);
+            } else if (op == "FPX_GCDEXT") {
+                Fp F{BigInt(t[1])};
+                auto e = Poly<Fp>::gcd_ext(mk_fp(F, t[2]), mk_fp(F, t[3]));
+                CHECK(poly_str_fp(F, e.g) == t[4] && poly_str_fp(F, e.x) == t[5] && poly_str_fp(F, e.y) == t[6]);
+            } else if (op == "FPX_IRRED") {
+                Fp F{BigInt(t[1])};
+                CHECK((mk_fp(F, t[2]).is_irreducible() ? "1" : "0") == t[3]);
+            } else if (op == "FPX_FACTOR") {
+                Fp F{BigInt(t[1])};
+                handle_factor(t, mk_fp(F, t[2]), F, fst, lineno);
+            } else if (op == "FPX_POWMOD") {
+                Fp F{BigInt(t[1])};
+                Poly<Fp> a = mk_fp(F, t[2]), m = mk_fp(F, t[3]);
+                CHECK(poly_str_fp(F, Poly<Fp>::pow_mod(a, BigInt(t[4]), m)) == t[5]);
+            } else if (op == "FP_DFT") {
+                Fp F{BigInt(t[1])};
+                auto a = parse_ints(t[4]);
+                auto A = fast::dft(F, F.from_int(BigInt(t[2])), std::stoul(t[3]), a);
+                CHECK(vec_str(A) == t[5]);
+            } else if (op == "FP_IDFT") {
+                Fp F{BigInt(t[1])};
+                auto A = parse_ints(t[4]);
+                auto B = fast::idft(F, F.from_int(BigInt(t[2])), std::stoul(t[3]), A);
+                CHECK(vec_str(B) == t[5]);
+            } else if (op == "FP_TOEP_LOWER") {
+                Fp F{BigInt(t[1])};
+                std::size_t n = std::stoul(t[2]);
+                auto y = fast::toeplitz_lower_vec(F, n, parse_ints(t[3]), parse_ints(t[4]));
+                CHECK(vec_str(y) == t[5]);
+            } else if (op == "FQX_MUL") {
+                Fq F = build_fq(t[1]);
+                CHECK(poly_str_fq(F, mk_fq(F, t[2]) * mk_fq(F, t[3])) == t[4]);
+            } else if (op == "FQX_DIVMOD") {
+                Fq F = build_fq(t[1]);
+                auto [q, r] = mk_fq(F, t[2]).divmod(mk_fq(F, t[3]));
+                CHECK(poly_str_fq(F, q) == t[4] && poly_str_fq(F, r) == t[5]);
+            } else if (op == "FQX_GCD") {
+                Fq F = build_fq(t[1]);
+                CHECK(poly_str_fq(F, Poly<Fq>::gcd(mk_fq(F, t[2]), mk_fq(F, t[3]))) == t[4]);
+            } else if (op == "FQX_IRRED") {
+                Fq F = build_fq(t[1]);
+                CHECK((mk_fq(F, t[2]).is_irreducible() ? "1" : "0") == t[3]);
+            } else if (op == "FQX_FACTOR") {
+                Fq F = build_fq(t[1]);
+                handle_factor(t, mk_fq(F, t[2]), F, fst, lineno);
+            }
+        } catch (const std::exception& ex) {
+            std::printf("  FAIL [línea %d]: %s lanzó una excepción: %s\n", lineno, op.c_str(), ex.what());
             ++check::g_fail;
         }
     }
     std::cout << "processed " << records << " records\n";
-    if (py_buggy)
-        std::cout << "note: " << py_buggy << " factorization input(s) where the ORIGINAL Python "
-                     "is self-inconsistent (does not reconstruct);\n      C++ verified correct by "
-                     "reconstruction on all of them.\n";
+    std::cout << "factorizaciones: " << fst.total << " registros; " << fst.compared
+              << " comparados con Python (py_ok = 1); en todos se verifica la C++ por reconstrucción "
+                 "e irreducibilidad de cada factor\n";
+    if (fst.py_bad) {
+        std::cout << "nota: en " << fst.py_bad << " factorización(es) la práctica Python original no da "
+                     "un resultado autoconsistente (py_ok = 0";
+        if (fst.py_bad_empty) std::cout << "; " << fst.py_bad_empty << " sin resultado: campo de factores vacío";
+        std::cout << ").\n      La factorización C++ se ha verificado (reconstruye la entrada y sus "
+                     "factores son mónicos, irreducibles y distintos) en "
+                  << fst.py_bad_cpp_ok << " de esas " << fst.py_bad << ".\n";
+    }
     return check::summary("crosscheck-vs-python");
 }
