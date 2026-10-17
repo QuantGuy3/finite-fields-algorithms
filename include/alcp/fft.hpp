@@ -14,6 +14,10 @@
 #include "bigint.hpp"
 #include "fft_tables.hpp"
 
+#include <limits>
+#include <stdexcept>
+#include <string>
+#include <utility>
 #include <vector>
 
 namespace alcp::fft {
@@ -29,11 +33,21 @@ inline unsigned long ceil_log2(std::size_t n) {
 // Build (or fetch) the precomputed twiddle tables for a transform of size
 // n = 2^k in field K.  Requires k <= K.fft_capacity().  The result lives in
 // K.fft_cache_ and is reused on every later transform of the same size.
+// Precondición comprobada (std::invalid_argument): k <= K.fft_capacity() y
+// 2^k representable en std::size_t.  Solo se comprueba al construir una tabla
+// nueva: las que ya están en la caché se validaron al insertarlas.
 template <class Field>
 const FFTTables<typename Field::Elem>& tables(const Field& K, unsigned long k) {
     using Elem = typename Field::Elem;
     auto it = K.fft_cache_.find(k);
     if (it != K.fft_cache_.end()) return it->second;
+
+    if (k >= static_cast<unsigned long>(std::numeric_limits<std::size_t>::digits) - 1)
+        throw std::invalid_argument("fft::tables: k = " + std::to_string(k) + " demasiado grande");
+    if (k > K.fft_capacity())
+        throw std::invalid_argument("fft::tables: el cuerpo no tiene raíces de la unidad de orden 2^" +
+                                    std::to_string(k) + " (capacidad FFT " +
+                                    std::to_string(K.fft_capacity()) + ")");
 
     FFTTables<Elem> t;
     t.k = k;
@@ -66,11 +80,22 @@ const FFTTables<typename Field::Elem>& tables(const Field& K, unsigned long k) {
 // In-place iterative radix-2 DIT transform of `a` (size must be 2^k).
 // inverse=false: forward DFT.  inverse=true: inverse DFT (includes the n^{-1}
 // scaling), exactly IDFT_{n,g} = n^{-1} * DFT_{n,g^{-1}}.
+// Precondiciones comprobadas (std::invalid_argument): a.size() potencia de 2 y
+// k <= K.fft_capacity() (en tables).  Se comprueban ANTES de tocar `a`, así que
+// si se lanza la excepción el vector queda intacto.
 template <class Field>
 void transform(const Field& K, std::vector<typename Field::Elem>& a, bool inverse) {
     const std::size_t n = a.size();
     if (n <= 1) return;
+    if ((n & (n - 1)) != 0)
+        throw std::invalid_argument("fft::transform: la longitud " + std::to_string(n) +
+                                    " no es potencia de 2");
     const unsigned long k = ceil_log2(n);
+
+    // Las tablas no dependen de `a`: obtenerlas antes de la permutación no
+    // cambia el resultado (ni el consumo del generador aleatorio).
+    const auto& t = tables(K, k);
+    const auto& tw = inverse ? t.inv : t.fwd;  // length n/2, full-size twiddles
 
     // Bit-reversal permutation.
     for (std::size_t i = 1, j = 0; i < n; ++i) {
@@ -79,9 +104,6 @@ void transform(const Field& K, std::vector<typename Field::Elem>& a, bool invers
         j ^= bit;
         if (i < j) std::swap(a[i], a[j]);
     }
-
-    const auto& t = tables(K, k);
-    const auto& tw = inverse ? t.inv : t.fwd;  // length n/2, full-size twiddles
 
     for (std::size_t len = 2; len <= n; len <<= 1) {
         const std::size_t step = n / len;       // stride into the twiddle table

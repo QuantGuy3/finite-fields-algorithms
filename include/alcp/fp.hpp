@@ -24,6 +24,7 @@
 #include "bigint.hpp"
 #include "errors.hpp"
 #include "fft_tables.hpp"
+#include "field.hpp"
 
 #include <stdexcept>
 #include <string>
@@ -143,5 +144,8 @@ private:
 // ¿Son a y b el mismo cuerpo F_p?  Camino rápido: el mismo objeto; si no,
 // mismos parámetros (mismo p).
 inline bool same_field(const Fp& a, const Fp& b) { return &a == &b || a == b; }
+
+// Fp cumple la interfaz de cuerpo finito (concepto de field.hpp).
+static_assert(FiniteField<Fp>);
 
 }  // namespace alcp
