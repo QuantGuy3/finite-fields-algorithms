@@ -39,6 +39,7 @@ La salida es determinista (semilla fija, orden fijo, finales de línea LF).  Al
 terminar se imprime por stderr un resumen con el número de registros y los
 fallos de la referencia agrupados por motivo.
 """
+import argparse
 import os
 import random
 import sys
@@ -56,7 +57,7 @@ import cuerpos_finitos as cf            # noqa: E402
 import factorizacion                    # noqa: E402,F401  parchea anillo_*.factorizar (Cantor-Zassenhaus)
 import algoritmos_rapidos as ar         # noqa: E402       parchea mult_fast / divmod_fast, FFT, Toeplitz
 
-random.seed(20260629)
+SEMILLA = 20260629                      # semilla fija: salida determinista
 OUT = []
 
 # Estadísticas para el resumen final (stderr).
@@ -288,7 +289,7 @@ def casos_fq():
 def resumen():
     """Resumen legible por stderr (no forma parte del archivo de vectores)."""
     err = sys.stderr
-    print(f"oracle: {len(OUT)} registros", file=err)
+    print(f"oracle: {len(OUT)} registros; por operación:", file=err)
     for op in sorted(CUENTA_OPS):
         print(f"  {op:<16} {CUENTA_OPS[op]:5d}", file=err)
     n_fact = CUENTA_OPS["FPX_FACTOR"] + CUENTA_OPS["FQX_FACTOR"]
@@ -296,20 +297,33 @@ def resumen():
     print(f"oracle: la referencia Python falla en {n_fallo} de {n_fact} factorizaciones "
           "(el C++ se verifica en ellas por reconstrucción + irreducibilidad)", file=err)
     for (op, motivo), veces in sorted(FALLOS_REF.items(), key=lambda kv: (kv[0][0], -kv[1], kv[0][1])):
-        campos = ", ".join(sorted(CAMPOS_FALLO[(op, motivo)], key=lambda s: (len(s), s)))
+        # Los cuerpos F_q se escriben "p;g0,g1,..." (igual que en los registros).
+        campos = " / ".join(sorted(CAMPOS_FALLO[(op, motivo)], key=lambda s: (len(s), s)))
         print(f"  {op:<11} x{veces:<3} {motivo}  [cuerpos: {campos}]", file=err)
 
 
 def main(argv):
-    out_path = argv[1] if len(argv) > 1 else SALIDA_POR_DEFECTO
+    ap = argparse.ArgumentParser(
+        description="Genera los vectores de verificación cruzada con las prácticas originales.")
+    ap.add_argument("salida", nargs="?", default=SALIDA_POR_DEFECTO,
+                    help="archivo de salida (por defecto build/oracle_vectors.txt)")
+    args = ap.parse_args(argv[1:])
+
+    # Estado desde cero en cada llamada (determinista aunque se importe el módulo).
+    random.seed(SEMILLA)
+    OUT.clear()
+    CUENTA_OPS.clear()
+    FALLOS_REF.clear()
+    CAMPOS_FALLO.clear()
     casos_fp()
     casos_fq()
-    carpeta = os.path.dirname(os.path.abspath(out_path))
+
+    carpeta = os.path.dirname(os.path.abspath(args.salida))
     os.makedirs(carpeta, exist_ok=True)
     # newline="\n": finales de línea LF también en Windows (salida reproducible).
-    with open(out_path, "w", encoding="utf-8", newline="\n") as fh:
+    with open(args.salida, "w", encoding="utf-8", newline="\n") as fh:
         fh.write("\n".join(OUT) + "\n")
-    print(f"wrote {len(OUT)} cross-check records to {out_path}", flush=True)
+    print(f"oracle: {len(OUT)} registros escritos en {args.salida}", flush=True)
     resumen()
     return 0
 

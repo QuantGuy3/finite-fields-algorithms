@@ -30,3 +30,6 @@ coverage.xml
 
 # worktrees y datos locales de Claude Code
 .claude/
+
+# vectores del oráculo: ahora se generan en build/ (python build.py oracle)
+python-bindings/oracle_vectors.txt
