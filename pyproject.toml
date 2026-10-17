@@ -1,0 +1,34 @@
+# Configuración de herramientas (pytest y coverage).
+#
+# Todavía NO es un paquete instalable: no hay [build-system] ni [project].  El
+# paquete Python «alcp» vive en python-bindings/alcp/ (con el módulo compilado
+# alcp_native<EXT_SUFFIX> que deja «python build.py module») y su suite de
+# tests en python-bindings/tests/.
+#
+#   python build.py pytest [argumentos de pytest]
+#   python -m pytest --cov            # con cobertura (exige >= 99 %)
+
+[tool.pytest.ini_options]
+minversion = "8.0"
+testpaths = ["python-bindings/tests"]
+# Se añade a sys.path para que «import alcp» encuentre el paquete sin instalarlo.
+pythonpath = ["python-bindings"]
+addopts = ["-q", "--strict-markers"]
+markers = [
+    "slow: pruebas lentas (se excluyen con -m 'not slow')",
+]
+
+[tool.coverage.run]
+source = ["alcp"]
+branch = true
+
+[tool.coverage.report]
+fail_under = 99
+show_missing = true
+skip_covered = false
+exclude_lines = [
+    "pragma: no cover",
+    "if TYPE_CHECKING:",
+    "raise NotImplementedError",
+    "if __name__ == .__main__.:",
+]
