@@ -7,10 +7,22 @@
 //
 // The base field, prime power and a monic irreducible modulus g are fixed at
 // construction; if g is not supplied, one is found by randomized search.
+//
+// Validación (antes de calcular nada): el grado de extensión n debe cumplir
+// 1 <= n <= Fq::kMaxExtensionDegree; en caso contrario se lanza
+// std::invalid_argument (antes, un módulo vacío provocaba un desbordamiento de
+// g.size() - 1 y Fq(p, 0) un bucle infinito en build_random).
+//
+// Elementos: como en Fp, se asume (precondición, no se comprueba por
+// rendimiento) que los Elem que se pasan a las operaciones tienen longitud n y
+// coeficientes en [0, p).  Para convertir un vector arbitrario de enteros en un
+// elemento válido está from_vector().
 #pragma once
 
 #include "bigint.hpp"
+#include "errors.hpp"
 #include "fft_tables.hpp"
+#include "field.hpp"
 #include "fp.hpp"
 #include "polynomial.hpp"
 
@@ -24,6 +36,12 @@ class Fq {
 public:
     using Elem = std::vector<BigInt>;  // length n, each coeff in [0, p)
 
+    // Cota de cordura para el grado de extensión n.  No es un límite de
+    // viabilidad (construir F_{p^n} con n de varios miles ya es lentísimo),
+    // sino un tope que rechaza de inmediato valores absurdos (p. ej. n = 2^32-1)
+    // que agotarían la memoria al reservar el módulo o al calcular q = p^n.
+    static constexpr unsigned long kMaxExtensionDegree = 1UL << 16;
+
     // q = p^n with p prime; a random monic irreducible g of degree n is chosen.
     explicit Fq(const BigInt& q) : Fq(decompose(q)) {}
     // explicit p and n.
@@ -33,10 +51,9 @@ public:
     Fq(Fp base, std::vector<BigInt> g)
         : base_(std::move(base)),
           p_(base_.characteristic()),
-          n_(g.size() - 1),
+          n_(checked_degree(g)),  // valida ANTES de calcular q = p^n
           q_(ipow(p_, n_)),
           g_(std::move(g)) {
-        if (g_.size() < 2) throw std::invalid_argument("F_q: modulus degree must be >= 1");
         normalize_and_check();
     }
 
@@ -46,6 +63,12 @@ public:
     BigInt cardinality() const { return q_; }
     unsigned long extension_degree() const { return n_; }
     const std::vector<BigInt>& modulus() const { return g_; }  // length n+1, monic
+
+    // Igualdad de cuerpos: dos F_q son el mismo cuerpo (la misma presentación
+    // F_p[x]/(g)) si tienen la misma característica y el mismo módulo mónico.
+    // Dos módulos irreducibles distintos dan cuerpos isomorfos pero con
+    // elementos codificados de forma distinta, así que NO se consideran iguales.
+    bool operator==(const Fq& o) const { return p_ == o.p_ && g_ == o.g_; }
 
     // --- constants & coercion ----------------------------------------------
     Elem zero() const { return Elem(n_, BigInt(0)); }
@@ -64,6 +87,34 @@ public:
         Elem e(n_);
         for (auto& x : e) x = rand_below(p_);
         return e;
+    }
+
+    // Conversión generosa de un vector de enteros (coeficientes en a, orden
+    // creciente: v[i] es el coeficiente de a^i) a un elemento válido:
+    //   * cada coeficiente se reduce módulo p (admite negativos y valores >= p);
+    //   * si hay más de n coeficientes, el polinomio se reduce módulo g;
+    //   * si hay menos, se rellena con ceros.
+    // El vector vacío representa el 0.
+    Elem from_vector(std::vector<BigInt> v) const {
+        for (auto& c : v) {
+            c %= p_;
+            if (sgn(c) < 0) c += p_;
+        }
+        // Reducción módulo el g mónico, de mayor a menor grado:
+        // c·a^k = c·a^{k-n}·a^n y a^n = -(g_0 + ... + g_{n-1} a^{n-1}).
+        for (std::size_t k = v.size(); k-- > n_; ) {
+            const BigInt c = v[k];
+            if (c == 0) continue;
+            const std::size_t base = k - n_;
+            for (unsigned long t = 0; t < n_; ++t) {
+                BigInt& d = v[base + t];
+                d -= c * g_[t];
+                d %= p_;
+                if (sgn(d) < 0) d += p_;
+            }
+        }
+        v.resize(n_, BigInt(0));
+        return v;
     }
 
     // base-p digit encoding, used to enumerate the field (tables, tests, pybind).
@@ -132,8 +183,9 @@ public:
         }
         return result;
     }
+    // Invertir 0 (también pow(0, k) con k < 0) lanza alcp::division_by_zero.
     Elem inv(const Elem& a) const {
-        if (is_zero(a)) throw std::domain_error("0 is not invertible in F_q");
+        if (is_zero(a)) throw division_by_zero("0 is not invertible in F_q");
         return pow(a, q_ - 2);  // Fermat: a^{q-2} = a^{-1}
     }
     Elem div(const Elem& a, const Elem& b) const { return mul(a, inv(b)); }
@@ -205,11 +257,37 @@ private:
     // Delegating constructor from a (base field, modulus) pair.
     Fq(std::pair<Fp, std::vector<BigInt>> pr) : Fq(std::move(pr.first), std::move(pr.second)) {}
 
+    // Comprueba el grado de extensión n antes de usarlo (bucles, reservas de
+    // memoria, ipow).  Lanza std::invalid_argument si n == 0 o si n es absurdo.
+    static unsigned long check_extension_degree(unsigned long n) {
+        if (n == 0)
+            throw std::invalid_argument("F_q: el grado de extensión n debe ser >= 1");
+        if (n > kMaxExtensionDegree)
+            throw std::invalid_argument("F_q: grado de extensión n = " + std::to_string(n) +
+                                        " demasiado grande (máximo " +
+                                        std::to_string(kMaxExtensionDegree) + ")");
+        return n;
+    }
+    // Grado del módulo g (g.size() - 1), validado.  Un módulo con menos de dos
+    // coeficientes (vacío o constante) no define una extensión.
+    static unsigned long checked_degree(const std::vector<BigInt>& g) {
+        if (g.size() < 2)
+            throw std::invalid_argument("F_q: modulus degree must be >= 1");
+        if (g.size() - 1 > kMaxExtensionDegree)
+            throw std::invalid_argument("F_q: grado del módulo " + std::to_string(g.size() - 1) +
+                                        " demasiado grande (máximo " +
+                                        std::to_string(kMaxExtensionDegree) + ")");
+        return static_cast<unsigned long>(g.size() - 1);
+    }
+
     void normalize_and_check() {
         // make monic
-        BigInt lead = g_.back();
+        BigInt lead = g_.back() % p_;
+        if (sgn(lead) < 0) lead += p_;
+        // Un coeficiente principal múltiplo de p (no solo el 0 literal) también
+        // anula el grado; antes acababa en un domain_error de invmod.
         if (lead == 0) throw std::invalid_argument("F_q: modulus has zero leading coeff");
-        BigInt inv_lead = invmod(lead % p_, p_);
+        BigInt inv_lead = invmod(lead, p_);
         for (auto& c : g_) { c = (c % p_) * inv_lead % p_; if (sgn(c) < 0) c += p_; }
         // verify irreducibility via F_p[x]
         Poly<Fp> gp = Poly<Fp>::from_ints(base_, g_);
@@ -222,6 +300,9 @@ private:
         return build_random(Fp(p), to_ulong(n));
     }
     static std::pair<Fp, std::vector<BigInt>> build_random(Fp base, unsigned long n) {
+        // Con n == 0 ningún polinomio de grado 0 es irreducible: el bucle de
+        // abajo no terminaría nunca.  Se valida antes de buscar.
+        check_extension_degree(n);
         const BigInt& p = base.characteristic();
         while (true) {
             std::vector<BigInt> coeffs(n + 1);
@@ -233,5 +314,12 @@ private:
         }
     }
 };
+
+// ¿Son a y b el mismo cuerpo F_q?  Camino rápido: el mismo objeto; si no,
+// mismos parámetros (misma p y mismo módulo mónico).
+inline bool same_field(const Fq& a, const Fq& b) { return &a == &b || a == b; }
+
+// Fq cumple la interfaz de cuerpo finito (concepto de field.hpp).
+static_assert(FiniteField<Fq>);
 
 }  // namespace alcp
