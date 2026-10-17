@@ -11,7 +11,8 @@
 // Detalles de robustez:
 //   * se eliminan los '\r' finales (vectores con finales de línea CRLF);
 //   * un registro con menos campos de los esperados, un py_ok distinto de 0/1
-//     o una excepción C++ cuentan como fallo, con el número de línea;
+//     o una excepción C++ cuentan como fallo, con el número de línea; un
+//     archivo sin ningún registro también es un fallo;
 //   * FPX_FACTOR / FQX_FACTOR: "OP|cuerpo|poli|factores|py_ok".  La
 //     factorización C++ se verifica SIEMPRE por reconstrucción (coeficiente
 //     principal por producto de factores^multiplicidad == entrada) y porque
@@ -157,13 +158,13 @@ struct FactorStats {
 template <class Field>
 static void handle_factor(const std::vector<std::string>& t, const Poly<Field>& comp, const Field& F,
                           FactorStats& st, int lineno) {
-    ++st.total;
     const std::string& py_ok = t[4];
     if (py_ok != "0" && py_ok != "1") {
         std::printf("  FAIL [línea %d]: py_ok = '%s' (se esperaba 0 o 1)\n", lineno, py_ok.c_str());
         ++check::g_fail;
         return;
     }
+    ++st.total;
     FactorCheck r = check_factors(comp, F);
     CHECK_MSG(r.reconstructs, "la factorización C++ reconstruye la entrada");
     CHECK_MSG(r.all_irreducible, "todos los factores C++ son irreducibles");
@@ -201,7 +202,7 @@ int main(int argc, char** argv) {
 
         const std::size_t need = expected_fields(op);
         if (need == 0) {
-            std::cerr << "unknown op: " << op << " (línea " << lineno << ")\n";
+            std::printf("  FAIL [línea %d]: unknown op: %s\n", lineno, op.c_str());
             ++check::g_fail;
             continue;
         }
@@ -281,17 +282,24 @@ int main(int argc, char** argv) {
             ++check::g_fail;
         }
     }
-    std::cout << "processed " << records << " records\n";
-    std::cout << "factorizaciones: " << fst.total << " registros; " << fst.compared
-              << " comparados con Python (py_ok = 1); en todos se verifica la C++ por reconstrucción "
-                 "e irreducibilidad de cada factor\n";
+    // Todo por printf (como los FAIL de check.hpp): en MinGW mezclar printf y
+    // std::cout puede desordenar la salida.
+    std::printf("processed %d records\n", records);
+    if (records == 0) {
+        // Un archivo vacío suele indicar que el oráculo falló: no es un éxito.
+        std::printf("  FAIL: %s no contiene ningún registro\n", path.c_str());
+        ++check::g_fail;
+    }
+    std::printf("factorizaciones: %d registros válidos; %d comparados con Python (py_ok = 1); en "
+                "todos se verifica la C++ por reconstrucción e irreducibilidad de cada factor\n",
+                fst.total, fst.compared);
     if (fst.py_bad) {
-        std::cout << "nota: en " << fst.py_bad << " factorización(es) la práctica Python original no da "
-                     "un resultado autoconsistente (py_ok = 0";
-        if (fst.py_bad_empty) std::cout << "; " << fst.py_bad_empty << " sin resultado: campo de factores vacío";
-        std::cout << ").\n      La factorización C++ se ha verificado (reconstruye la entrada y sus "
-                     "factores son mónicos, irreducibles y distintos) en "
-                  << fst.py_bad_cpp_ok << " de esas " << fst.py_bad << ".\n";
+        std::printf("nota: en %d factorización(es) la práctica Python original no da un resultado "
+                    "autoconsistente (py_ok = 0", fst.py_bad);
+        if (fst.py_bad_empty) std::printf("; %d sin resultado: campo de factores vacío", fst.py_bad_empty);
+        std::printf(").\n      La factorización C++ se ha verificado (reconstruye la entrada y sus "
+                    "factores son mónicos, irreducibles y distintos) en %d de esas %d.\n",
+                    fst.py_bad_cpp_ok, fst.py_bad);
     }
     return check::summary("crosscheck-vs-python");
 }
