@@ -100,7 +100,7 @@ Capa de alto nivel, con conversión de tipos generosa y representación cuidada:
 ```python
 import alcp
 F = alcp.GF(7)                      # cuerpo primo
-K = alcp.GF(9, modulus="x^2+1")     # extensión (módulo opcional; si falta, aleatorio)
+K = alcp.GF(9, modulus="x^2+1")     # extensión (sin módulo: el primer irreducible en un orden fijo, determinista; modulus="random" para uno aleatorio)
 a = K.gen                           # clase de x, se imprime 'a'
 R = K["x"]                          # anillo de polinomios (también alcp.PolynomialRing(K, "x"))
 x = R.gen
