@@ -28,7 +28,7 @@ Subcomandos:
     cov-cpp   Cobertura C++ con gcov + gcovr -> build/coverage-cpp/ (ver abajo).
     bench     Delega en bench/run_bench.py (argumentos tal cual); si no existe,
               compila y ejecuta bench/bench.cpp (-O3 -march=native).
-    all       tests + oracle + module + test_module.py + pytest (si hay tests).
+    all       tests + oracle + module + pytest (si hay tests).
     ci        Igual que all, sin colores y con grupos de GitHub Actions.
     clean     Borra build/ y los módulos compilados.
 
@@ -48,13 +48,11 @@ Cobertura C++ (cov-cpp):
     Todo lo instrumentado vive en build/cov/: objetos y .gcno/.gcda en
     build/cov/obj/, tests en build/cov/tests/ y el módulo en build/cov/module/.
     El módulo NORMAL de python-bindings/alcp/ no se pisa de forma permanente:
-      * test_module.py importa «alcp_native» directamente, así que se ejecuta
-        con PYTHONPATH=build/cov/module (va delante en sys.path);
-      * la suite pytest importa el paquete «alcp», que carga su módulo nativo
-        desde su propia carpeta; para ella el módulo instrumentado se coloca
-        TEMPORALMENTE en python-bindings/alcp/ y, al terminar (también si
-        pytest falla o se interrumpe con Ctrl+C), se restaura el original
-        byte a byte desde la copia guardada en build/cov/.
+    la suite pytest importa el paquete «alcp», que carga su módulo nativo
+    desde su propia carpeta; para ella el módulo instrumentado se coloca
+    TEMPORALMENTE en python-bindings/alcp/ y, al terminar (también si pytest
+    falla o se interrumpe con Ctrl+C), se restaura el original byte a byte
+    desde la copia guardada en build/cov/.
     Si el proceso muriera de forma abrupta en medio de pytest, bastaría con
     «python build.py module» para recompilar el módulo normal.
     El informe (HTML detallado + resumen de texto) filtra include/alcp/ y
@@ -699,26 +697,6 @@ def paso_module(op: Opciones, perfil: str = "release") -> Paso:
 
 
 # ---------------------------------------------------------------------------
-# test_module.py (prueba de extremo a extremo del módulo, heredada)
-# ---------------------------------------------------------------------------
-def paso_test_module(carpeta_modulo: Path = PAQUETE, timeout: float = 600) -> Paso:
-    script = BINDINGS / "test_module.py"
-    if not script.exists():
-        return Paso("test_module", "SALTADO", 0, "no existe python-bindings/test_module.py")
-    UI.seccion("Prueba de extremo a extremo: python-bindings/test_module.py")
-    # PYTHONPATH: el módulo compilado y las prácticas originales (referencia).
-    pythonpath = os.pathsep.join([str(carpeta_modulo), str(PRACTICAS)])
-    r = correr([sys.executable, str(script)], timeout=timeout,
-               env=env_ejecucion(PYTHONPATH=pythonpath, PYTHONDONTWRITEBYTECODE="1",
-                                 PYTHONIOENCODING="utf-8"))
-    UI.linea("OK" if r.ok else "FALLO", "test_module.py", r.segundos, ultima_linea(r.salida))
-    if not r.ok or UI.verbose:
-        UI.bloque(r.salida)
-    UI.fin_seccion()
-    return Paso("test_module", "OK" if r.ok else "FALLO", r.segundos)
-
-
-# ---------------------------------------------------------------------------
 # Subcomando: pytest
 # ---------------------------------------------------------------------------
 def hay_tests_python() -> bool:
@@ -879,8 +857,8 @@ def paso_cov_cpp(op: Opciones, timeout: float = 1800) -> Paso:
                              lambda n=nombre: enlazar_test(fuentes[n], exes[n])):
             fallos.append(nombre)
     if hay_modulo and "alcp_native" not in fallos:
-        # Antes de test_module/pytest: el módulo instrumentado debe poder
-        # cargarse (si se bloquea, basta con volver a enlazarlo).
+        # Antes de pytest: el módulo instrumentado debe poder cargarse (si se
+        # bloquea, basta con volver a enlazarlo).
         enlace = cmds_modulo(modulo, "coverage", extra, obj)[-1]
         ri = importar_con_reintento(mod_dir, lambda: compilar(enlace, modulo, [], True))
         UI.linea("OK" if ri.ok else "FALLO", "importar alcp_native", ri.segundos)
@@ -891,13 +869,12 @@ def paso_cov_cpp(op: Opciones, timeout: float = 1800) -> Paso:
             UI.linea("SALTADO", "pytest", detalle="no existe python-bindings/tests")
     UI.fin_seccion()
 
-    # Código Python que ejercita el módulo instrumentado (cada uno con su sección).
-    if hay_modulo and "alcp_native" not in fallos:
-        if paso_test_module(mod_dir, timeout).estado == "FALLO":
-            fallos.append("test_module")
-        if hay_tests_python():
-            if con_modulo_temporal(modulo, lambda: paso_pytest([])).estado == "FALLO":
-                fallos.append("pytest")
+    # Código Python que ejercita el módulo instrumentado: la suite pytest
+    # (incluye python-bindings/tests/test_native.py, que sustituye al antiguo
+    # test_module.py).
+    if hay_modulo and "alcp_native" not in fallos and hay_tests_python():
+        if con_modulo_temporal(modulo, lambda: paso_pytest([])).estado == "FALLO":
+            fallos.append("pytest")
 
     UI.seccion("Cobertura C++: informe gcovr -> build/coverage-cpp/")
     if INFORME_COV.exists():
@@ -1126,10 +1103,8 @@ def main(argv: list[str]) -> int:
             paso("oracle", lambda: paso_oracle(replace(op, force=False)))
             paso("module", lambda: paso_module(op))
             if pasos[-1].estado == "OK":
-                paso("test_module", paso_test_module)
                 paso("pytest", lambda: paso_pytest([], con_cobertura=True))
             else:
-                pasos.append(Paso("test_module", "SALTADO", 0, "el módulo no compila"))
                 pasos.append(Paso("pytest", "SALTADO", 0, "el módulo no compila"))
     except ErrorEntorno as ex:
         UI.error(str(ex))
