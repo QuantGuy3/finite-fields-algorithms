@@ -587,7 +587,13 @@ struct OpsPoli {
         return py::make_tuple(a.mismo(std::move(e.g)), a.mismo(std::move(e.x)), a.mismo(std::move(e.y)));
     }
     static PW inv_mod(const PW& a, const PW& m) { return a.mismo(P::inv_mod(a.p, m.p)); }
-    static PW pow_mod(const PW& a, const BigInt& k, const PW& m) { return a.mismo(P::pow_mod(a.p, k, m.p)); }
+    // El módulo cero se rechaza antes de llamar al núcleo: con k < 0, P::pow_mod
+    // invierte primero módulo m y lanzaría «no invertible» (ValueError) en lugar
+    // del ZeroDivisionError documentado.
+    static PW pow_mod(const PW& a, const BigInt& k, const PW& m) {
+        if (m.p.is_zero()) throw alcp::division_by_zero("pow_mod: el módulo es el polinomio cero");
+        return a.mismo(P::pow_mod(a.p, k, m.p));
+    }
     static int multiplicity(const PW& a, const PW& u) { return a.p.multiplicity(u.p); }
     static PW radical(const PW& a) { return a.mismo(a.p.radical()); }
     static py::list distinct_degree(const PW& a) {

@@ -40,11 +40,8 @@ class IndiceRoto:
         raise RuntimeError("__index__ roto")
 
 
-@pytest.fixture(autouse=True)
-def semilla():
-    alcp.set_seed(20261018)
-    yield
-    alcp.set_print_style("unicode")
+# La semilla fija (20261018) y la restauración del estilo de impresión las pone la
+# fixture automática «estado_global» de conftest.py.
 
 
 # ---------------------------------------------------------------------------

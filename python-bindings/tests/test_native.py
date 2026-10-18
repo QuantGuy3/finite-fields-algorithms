@@ -26,13 +26,11 @@ import gc
 import itertools
 import random
 import sys
-from pathlib import Path
 
 import pytest
 
 from alcp import alcp_native as al
 
-RAIZ = Path(__file__).resolve().parents[2]
 P_NTT = 998244353            # 2^23 divide a p - 1
 M61 = 2**61 - 1              # primo de Mersenne de 61 bits
 M127 = 2**127 - 1
@@ -89,21 +87,13 @@ def rng():
 
 
 @pytest.fixture(scope="module")
-def ref():
+def ref(practicas):
     """Práctica original (python/cuerpos_finitos.py), solo como referencia.
 
-    Se importa sin escribir .pyc para no dejar rastro en python/.
+    La importa la fixture compartida «practicas» de conftest.py, sin escribir .pyc
+    para no dejar rastro en python/.
     """
-    ruta = str(RAIZ / "python")
-    antes = sys.dont_write_bytecode
-    sys.dont_write_bytecode = True
-    sys.path.insert(0, ruta)
-    try:
-        import cuerpos_finitos
-    finally:
-        sys.path.remove(ruta)
-        sys.dont_write_bytecode = antes
-    return cuerpos_finitos
+    return practicas.cf
 
 
 @pytest.fixture(params=["Fp", "Fq"])
