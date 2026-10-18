@@ -83,11 +83,6 @@ def print_style(estilo: str) -> Iterator[str]:
         _estilo = anterior
 
 
-def estilo_de(estilo: Optional[str]) -> str:
-    """El estilo pedido o, si es None, el global."""
-    return _estilo if estilo is None else normalizar_estilo(estilo)
-
-
 # ---------------------------------------------------------------------------
 # Piezas
 # ---------------------------------------------------------------------------
@@ -120,14 +115,24 @@ def parentesis(texto: str, estilo: str) -> str:
     return f"({texto})"
 
 
-def _separador_producto(estilo: str, nombre_var: str) -> str:
+def _letras_seguidas(texto: str) -> int:
+    """Longitud de la racha más larga de letras de ``texto``."""
+    mayor = actual = 0
+    for c in texto:
+        actual = actual + 1 if c.isalpha() else 0
+        mayor = max(mayor, actual)
+    return mayor
+
+
+def _separador_producto(estilo: str, nombre_var: str, coeficiente: str) -> str:
     """Lo que va entre un coeficiente y la potencia de la variable."""
     if estilo == "ascii":
         return "*"
     if estilo == "latex":
         return " "
-    # Unicode: yuxtaposición (2x, (a + 1)x²), salvo variables de varias letras.
-    return "·" if len(nombre_var) > 1 else ""
+    # Unicode: yuxtaposición (2x, ax, (a + 1)x²), salvo si la variable o el
+    # coeficiente usan nombres de varias letras (2·xy, alpha·x).
+    return "·" if len(nombre_var) > 1 or _letras_seguidas(coeficiente) > 1 else ""
 
 
 def polinomio(coefs: Sequence, nombre_var: str, estilo: str,
@@ -138,7 +143,6 @@ def polinomio(coefs: Sequence, nombre_var: str, estilo: str,
     ``None`` si es cero.  El polinomio sin términos se escribe ``0``.
     """
     var = variable(nombre_var, estilo)
-    sep = _separador_producto(estilo, nombre_var)
     partes = []
     for k in range(len(coefs) - 1, -1, -1):
         f = formato(coefs[k])
@@ -152,6 +156,7 @@ def polinomio(coefs: Sequence, nombre_var: str, estilo: str,
         if texto == "1":
             partes.append(pot)
         else:
+            sep = _separador_producto(estilo, nombre_var, texto)
             partes.append((parentesis(texto, estilo) if compuesto else texto) + sep + pot)
     return " + ".join(partes) if partes else "0"
 
@@ -173,14 +178,20 @@ def nombre_cuerpo(q: int, estilo: str) -> str:
 
 def producto(unidad: Coeficiente, factores: Sequence[Tuple[str, bool, int]],
              estilo: str) -> str:
-    """Texto de ``unidad · f1^e1 · f2^e2 ...`` (la unidad 1 se omite si hay factores)."""
+    """Texto de ``unidad · f1^e1 · f2^e2 ...``.
+
+    La unidad 1 se omite si hay factores; los factores con varios términos van
+    entre paréntesis salvo que sean lo único que se escribe (``x + 1``).
+    """
     sep = {"unicode": " · ", "ascii": " * ", "latex": " \\cdot "}[estilo]
+    texto_u, compuesta = unidad
+    con_unidad = texto_u != "1" or not factores
+    solo = not con_unidad and len(factores) == 1 and factores[0][2] == 1
     partes = []
-    texto, compuesto = unidad
-    if texto != "1" or not factores:
-        partes.append(parentesis(texto, estilo) if compuesto and factores else texto)
+    if con_unidad:
+        partes.append(parentesis(texto_u, estilo) if compuesta and factores else texto_u)
     for texto, compuesto, e in factores:
-        base = parentesis(texto, estilo) if compuesto else texto
+        base = parentesis(texto, estilo) if compuesto and not solo else texto
         partes.append(base + exponente(e, estilo))
     return sep.join(partes)
 

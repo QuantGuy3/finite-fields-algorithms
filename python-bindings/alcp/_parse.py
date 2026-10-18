@@ -32,7 +32,7 @@ import operator
 from typing import Callable, Dict, List, Mapping, NamedTuple, Optional, Set
 
 # Profundidad máxima de paréntesis (evita RecursionError con entradas hostiles).
-PROFUNDIDAD_MAXIMA = 200
+PROFUNDIDAD_MAXIMA = 100
 
 _SUPER = {"⁰": "0", "¹": "1", "²": "2", "³": "3", "⁴": "4", "⁵": "5",
           "⁶": "6", "⁷": "7", "⁸": "8", "⁹": "9", "⁻": "-", "⁺": "+"}
@@ -109,6 +109,7 @@ def tokenizar(texto: str, nombres: Mapping[str, object]) -> List[Token]:
                     conocidas = ", ".join(sorted(nombres)) or "ninguna"
                     raise _error(texto, k, f"variable desconocida {texto[k:j]!r} "
                                            f"(variables válidas: {conocidas})")
+            i = j
         elif c == "*" and texto.startswith("**", i):
             toks.append(Token(OP, "^", i))
             i += 2

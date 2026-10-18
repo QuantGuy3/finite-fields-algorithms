@@ -8,46 +8,62 @@
 Conversión en un anillo (``R(x)``, y en las operaciones con un polinomio):
 
 =========================================  ===================================
+polinomio del mismo anillo                  él mismo
+polinomio sobre el subcuerpo primo          se sumerge (misma variable)
 ``int``, ``Fraction``, elemento del cuerpo  polinomio constante
 ``str``                                     se analiza: ``"x^3 + (a+1)x - 2"``
 ``list`` / ``tuple``                        coeficientes en orden creciente
                                             (cada uno convertido en el cuerpo)
 ``dict {exponente: coeficiente}``           polinomio disperso
-polinomio del mismo anillo                  él mismo
-polinomio sobre el subcuerpo primo          se sumerge (misma variable)
-otro iterable (solo en ``R(x)``)            como una lista
+otro iterable (solo en ``R(x)``)            como una lista (no conjuntos)
 ``float``                                   ``TypeError``
 =========================================  ===================================
 
 Un polinomio sobre F_p operado con un polinomio o un elemento de una extensión
 de característica p da un polinomio sobre la extensión.  Anillos con cuerpos o
 variables distintas no se mezclan en las operaciones (``ValueError``); la
-conversión explícita ``R(f)`` sí cambia de variable.
+conversión explícita ``R(f)`` sí cambia de variable y baja al subcuerpo primo
+si los coeficientes están en él.
 """
 from __future__ import annotations
 
 import operator
 
 from . import _parse, _pretty
-from .field import _PROMOVER, FieldElement, FiniteField, _texto_elemento, validar_nombre
 from ._util import entero
+from .field import _PROMOVER, FieldElement, FiniteField, _texto_elemento, validar_nombre
 
 #: Grado máximo de un polinomio construido desde Python (protege la memoria).
 GRADO_MAXIMO = 10**7
 
 _OPERADORES = {"add": operator.add, "sub": operator.sub, "mul": operator.mul,
-               "floordiv": operator.floordiv, "mod": operator.mod,
-               "divmod": divmod, "truediv": operator.truediv}
+               "floordiv": operator.floordiv, "mod": operator.mod, "divmod": divmod}
+
+# Operaciones que dividen por el segundo operando.
+_DIVISIONES = frozenset({"floordiv", "mod", "divmod", "truediv"})
 
 
 def _poli_desde_indices(R: "PolynomialRing", coefs: list) -> "Polynomial":
     """Reconstruye un polinomio a partir de los valores/índices de sus coeficientes (pickle)."""
-    return R._envolver(R._K._nat.poly(coefs))
+    return R._envolver(R._K._nat.poly(list(coefs)))
 
 
 def _comprobar_grado(d: int) -> None:
     if d > GRADO_MAXIMO:
         raise ValueError(f"grado {d} demasiado grande (máximo {GRADO_MAXIMO})")
+
+
+def _clave_canonica(K: FiniteField, coefs: list) -> tuple:
+    """Clave del orden canónico del núcleo (el de ``factor()``).
+
+    Primero el grado y, a igual grado, los coeficientes desde el de mayor grado;
+    en una extensión, cada coeficiente se compara por sus coordenadas
+    ``(c0, c1, ...)`` en orden lexicográfico.
+    """
+    if K._n == 1:
+        return (len(coefs), tuple(reversed(coefs)))
+    coordenadas = K._nat.to_coeffs
+    return (len(coefs), tuple(tuple(coordenadas(c)) for c in reversed(coefs)))
 
 
 # ---------------------------------------------------------------------------
@@ -56,10 +72,13 @@ def _comprobar_grado(d: int) -> None:
 class PolynomialRing(_pretty.Imprimible):
     """Anillo de polinomios K[var] sobre un cuerpo finito (cacheado).
 
-    ``PolynomialRing(GF(7), "x") is GF(7)["x"]``.
+    ``PolynomialRing(GF(7), "x") is GF(7)["x"]``.  ``R(x)`` convierte (ver la
+    tabla del módulo), ``R.gen`` (o ``R.x`` si la variable es x) es la
+    variable, y ``R.random(d)``, ``R.irreducible(d)`` y ``R.monomial(d, c)``
+    construyen polinomios.
     """
 
-    __slots__ = ("_K", "_var")
+    __slots__ = ("_K", "_var", "_cero", "_uno", "_gen")
 
     def __new__(cls, field, var: str = "x"):
         if not isinstance(field, FiniteField):
@@ -73,6 +92,10 @@ class PolynomialRing(_pretty.Imprimible):
             R = object.__new__(cls)
             R._K = field
             R._var = var
+            nat = field._nat
+            R._cero = R._envolver(nat.poly([]))
+            R._uno = R._envolver(nat.poly([1]))
+            R._gen = R._envolver(nat.poly([0, 1]))
             field._anillos[var] = R
         return R
 
@@ -92,21 +115,23 @@ class PolynomialRing(_pretty.Imprimible):
     @property
     def gen(self) -> "Polynomial":
         """La variable como polinomio (también ``R.x`` si la variable es x)."""
-        return self._envolver(self._K._nat.poly([0, 1]))
+        return self._gen
 
     def __getattr__(self, nombre: str):
         # R.x (o R.t...) es el generador si así se llama la variable.
-        if not nombre.startswith("_") and nombre == self._var:
-            return self.gen
+        if nombre == self._var:
+            return self._gen
         raise AttributeError(f"{type(self).__name__!r} no tiene el atributo {nombre!r}")
 
     @property
     def zero(self) -> "Polynomial":
-        return self._envolver(self._K._nat.poly([]))
+        """El polinomio cero."""
+        return self._cero
 
     @property
     def one(self) -> "Polynomial":
-        return self._envolver(self._K._nat.poly([1]))
+        """El polinomio constante 1."""
+        return self._uno
 
     # -- construcción ----------------------------------------------------
     def _envolver(self, nat) -> "Polynomial":
@@ -131,7 +156,7 @@ class PolynomialRing(_pretty.Imprimible):
         return True
 
     def monomial(self, deg, c=1) -> "Polynomial":
-        """``c·var^deg`` (deg >= 0)."""
+        """``c·var^deg`` (deg >= 0; ``c`` convertible al cuerpo)."""
         deg = entero(deg, "el grado")
         if deg < 0:
             raise ValueError(f"el grado de un monomio debe ser >= 0, no {deg}")
@@ -139,7 +164,10 @@ class PolynomialRing(_pretty.Imprimible):
         return self._envolver(self._K._nat.poly([0] * deg + [self._K._valor(c)]))
 
     def random(self, deg) -> "Polynomial":
-        """Polinomio aleatorio de grado exactamente ``deg`` (el cero si deg < 0)."""
+        """Polinomio aleatorio de grado exactamente ``deg`` (el cero si deg < 0).
+
+        Usa el generador global del núcleo (reproducible con ``set_seed``).
+        """
         deg = entero(deg, "el grado")
         _comprobar_grado(deg)
         return self._envolver(self._K._nat.random_poly(deg))
@@ -180,6 +208,9 @@ class PolynomialRing(_pretty.Imprimible):
             return K._nat.poly([v])
         if operando:
             return None
+        if isinstance(x, (set, frozenset)):
+            raise TypeError("un conjunto no tiene orden: usa una lista o un dict "
+                            "{exponente: coeficiente}")
         try:
             coefs = list(x)
         except TypeError:
@@ -197,7 +228,7 @@ class PolynomialRing(_pretty.Imprimible):
             return K._nat.poly([K._valor(c) for c in f])
         if S._var == self._var and L._p == K._p:
             if K._n == 1:
-                return _PROMOVER
+                return _PROMOVER                    # L es una extensión de K = F_p
             if L._n == 1:
                 return K._nat.poly(f._p.coeffs())   # F_p se sumerge con el mismo índice
         raise ValueError(f"{S!r} y {self!r} son anillos distintos")
@@ -217,9 +248,10 @@ class PolynomialRing(_pretty.Imprimible):
         return K._nat.poly(coefs)
 
     def _analizar(self, texto: str, usadas=None) -> "Polynomial":
-        variables = {self._var: self.gen}
-        if self._K._var:
-            variables[self._K._var] = self._envolver(self._K._nat.poly([self._K.gen._v]))
+        K = self._K
+        variables = {self._var: self._gen}
+        if K._var:
+            variables[K._var] = self._envolver(K._nat.poly([K._p]))   # índice de a: p
         return _parse.analizar(texto, self._constante, variables, _dividir_constante, usadas)
 
     def _constante(self, n: int) -> "Polynomial":
@@ -278,12 +310,14 @@ class Polynomial(_pretty.Imprimible):
 
     def __new__(cls, ring, data=0):
         if not isinstance(ring, PolynomialRing):
-            raise TypeError("Polynomial(ring, data): ring debe ser un PolynomialRing")
+            raise TypeError("Polynomial(ring, data): ring debe ser un PolynomialRing "
+                            "(por ejemplo, GF(7)['x'])")
         return ring(data)
 
     # -- datos ------------------------------------------------------------
     @property
     def ring(self) -> PolynomialRing:
+        """Anillo al que pertenece."""
         return self._R
 
     parent = ring
@@ -297,6 +331,7 @@ class Polynomial(_pretty.Imprimible):
 
     @property
     def var(self) -> str:
+        """Nombre de la variable."""
         return self._R._var
 
     @property
@@ -328,9 +363,11 @@ class Polynomial(_pretty.Imprimible):
     lc = leading_coefficient
 
     def is_zero(self) -> bool:
+        """¿Es el polinomio cero?"""
         return self._p.is_zero()
 
     def is_one(self) -> bool:
+        """¿Es el polinomio constante 1?"""
         return self._p.is_one()
 
     def is_monic(self) -> bool:
@@ -355,8 +392,7 @@ class Polynomial(_pretty.Imprimible):
             i += len(self)
             if i < 0:
                 raise IndexError("índice de coeficiente fuera de rango")
-        K = self._R._K
-        return K._crear(self._p.coeff(i) if i <= self._p.degree() else 0)
+        return self._R._K._crear(self._p.coeff(i) if i <= self._p.degree() else 0)
 
     def __iter__(self):
         return iter(self.coeffs)
@@ -381,6 +417,14 @@ class Polynomial(_pretty.Imprimible):
             return S, S._nativo(self), S._nativo(otro)
         return R, self._p, b
 
+    def _otro(self, otro):
+        """Como :meth:`_par`, pero para los métodos: TypeError si no es convertible."""
+        par = self._par(otro)
+        if par is None:
+            raise TypeError(f"no se puede convertir un valor de tipo {type(otro).__name__!r} "
+                            f"en un polinomio de {self._R!r}")
+        return par
+
     def _binaria(self, otro, nombre: str, reflejada: bool):
         par = self._par(otro)
         if par is None:
@@ -388,7 +432,7 @@ class Polynomial(_pretty.Imprimible):
         S, a, b = par
         if reflejada:
             a, b = b, a
-        if nombre in ("floordiv", "mod", "divmod", "truediv") and b.is_zero():
+        if nombre in _DIVISIONES and b.is_zero():
             raise ZeroDivisionError("división por el polinomio cero")
         if nombre == "truediv":
             return S._envolver(_division_exacta(S, a, b))
@@ -466,18 +510,11 @@ class Polynomial(_pretty.Imprimible):
             if d > 0:
                 raise ValueError("un polinomio no constante no tiene inverso: "
                                  "usa pow(f, k, m) para potencias modulares")
-            return R._envolver(R._K._nat.poly([R._K._nat.pow(self._p.coeff(0), k)]))
+            K = R._K
+            return R._envolver(K._nat.poly([K._nat.pow(self._p.coeff(0), k)]))
         if d > 0:
             _comprobar_grado(d * k)
         return R._envolver(self._p ** k)
-
-    def _otro(self, otro):
-        """Como :meth:`_par`, pero para los métodos: TypeError si no es convertible."""
-        par = self._par(otro)
-        if par is None:
-            raise TypeError(f"no se puede convertir un valor de tipo {type(otro).__name__!r} "
-                            f"en un polinomio de {self._R!r}")
-        return par
 
     def pow_mod(self, k, m) -> "Polynomial":
         """``f**k mod m`` (k < 0: potencia del inverso de f módulo m)."""
@@ -488,12 +525,18 @@ class Polynomial(_pretty.Imprimible):
         try:
             return S._envolver(a.pow_mod(k, b))
         except ValueError:
-            raise ValueError(f"{self:ascii} no es invertible módulo {S._envolver(b):ascii}") from None
+            raise ValueError(f"{self:ascii} no es invertible módulo "
+                             f"{S._envolver(b):ascii}") from None
 
     def mul(self, otro, algorithm: str = "auto") -> "Polynomial":
-        """Producto con el algoritmo indicado: "auto", "school", "karatsuba" o "fft"."""
+        """Producto con el algoritmo indicado: "auto", "school", "karatsuba" o "fft".
+
+        "fft" recurre a Karatsuba si el cuerpo no tiene raíces de la unidad del
+        tamaño necesario.  Todos dan el mismo resultado.
+        """
         if not isinstance(algorithm, str):
-            raise TypeError("algorithm debe ser una cadena: 'auto', 'school', 'karatsuba' o 'fft'")
+            raise TypeError("algorithm debe ser una cadena: 'auto', 'school', "
+                            "'karatsuba' o 'fft'")
         S, a, b = self._otro(otro)
         return S._envolver(a.mul(b, algorithm))
 
@@ -505,7 +548,8 @@ class Polynomial(_pretty.Imprimible):
     def xgcd(self, otro):
         """Euclides extendido: ``(g, s, t)`` con ``g = s·self + t·otro`` y g mónico."""
         S, a, b = self._otro(otro)
-        return tuple(S._envolver(x) for x in a.gcd_ext(b))
+        g, s, t = a.gcd_ext(b)
+        return S._envolver(g), S._envolver(s), S._envolver(t)
 
     def inverse_mod(self, m) -> "Polynomial":
         """Inverso de f módulo m.  ``ValueError`` si no es invertible."""
@@ -515,10 +559,11 @@ class Polynomial(_pretty.Imprimible):
         try:
             return S._envolver(a.inv_mod(b))
         except ValueError:
-            raise ValueError(f"{self:ascii} no es invertible módulo {S._envolver(b):ascii}") from None
+            raise ValueError(f"{self:ascii} no es invertible módulo "
+                             f"{S._envolver(b):ascii}") from None
 
     def compose(self, g) -> "Polynomial":
-        """Composición ``f(g(x))``."""
+        """Composición ``f(g(x))`` (g convertible al anillo de f)."""
         S, a, b = self._otro(g)
         return S._envolver(a.compose(b))
 
@@ -528,16 +573,20 @@ class Polynomial(_pretty.Imprimible):
         R, K = self._R, self._R._K
         if isinstance(v, Polynomial):
             S = v._R
-            return S._envolver(S._nativo(self).compose(v._p))
+            if S._K is not K and S._K._n == 1 and S._K._p == K._p:
+                S = K[S._var]       # v sobre F_p y f sobre una extensión: se sube v
+            return S._envolver(S._nativo(self).compose(S._nativo(v)))
         if isinstance(v, str):
             usadas = set()
             g = R._analizar(v, usadas)
             if R._var in usadas:
                 return R._envolver(self._p.compose(g._p))
             v = g
-        elif isinstance(v, FieldElement) and K._n == 1 and v._K._p == K._p and v._K._n > 1:
-            # Polinomio sobre F_p evaluado en un elemento de una extensión.
-            return self.change_ring(v._K)(v)
+        elif isinstance(v, FieldElement) and v._K is not K and K._n == 1 and v._K._p == K._p:
+            # Polinomio sobre F_p evaluado en un elemento de una extensión L
+            # (los valores de F_p son sus índices en L).
+            L = v._K
+            return L._crear(L._nat.poly(self._p.coeffs()).evaluate(v._v))
         return K._crear(self._p.evaluate(K._valor(v)))
 
     evaluate = __call__
@@ -570,31 +619,53 @@ class Polynomial(_pretty.Imprimible):
         return self._R._envolver(self._p.radical())
 
     def multiplicity(self, u) -> int:
-        """Mayor e tal que u^e divide a f (``ValueError`` si grado(u) < 1 o f = 0)."""
-        S, a, b = self._otro(u)
-        return a.multiplicity(b)
+        """Mayor e tal que u^e divide a f.
 
-    def _exigir_libre_de_cuadrados(self) -> None:
-        if self._p.degree() >= 1 and not self._p.is_squarefree():
-            raise ValueError(f"{self:ascii} no es libre de cuadrados")
+        ``ValueError`` si grado(u) < 1 o si f es el polinomio cero.
+        """
+        S, a, b = self._otro(u)
+        if b.degree() < 1:
+            raise ValueError("la multiplicidad solo está definida para divisores de grado >= 1")
+        if a.is_zero():
+            raise ValueError("la multiplicidad en el polinomio cero es infinita")
+        return a.multiplicity(b)
 
     def distinct_degree_factorization(self) -> list:
         """Factorización en grados distintos de un polinomio libre de cuadrados.
 
-        Lista de ``(d, producto de los factores irreducibles mónicos de grado d)``.
+        Lista de ``(d, producto mónico de los factores irreducibles de grado d)``
+        por d creciente.  ``ValueError`` si el grado es < 1 o f no es libre de
+        cuadrados.
         """
-        self._exigir_libre_de_cuadrados()
+        if self._p.degree() < 1:
+            raise ValueError("la factorización en grados distintos requiere un polinomio "
+                             "de grado >= 1")
+        if not self._p.is_squarefree():
+            raise ValueError(f"{self:ascii} no es libre de cuadrados")
         return [(d, self._R._envolver(u)) for d, u in self._p.distinct_degree()]
 
     def equal_degree_factorization(self, r) -> list:
-        """Factores irreducibles mónicos de un producto libre de cuadrados de
-        irreducibles de grado r (Cantor-Zassenhaus)."""
+        """Factores irreducibles mónicos (orden canónico) de un producto de
+        irreducibles distintos de grado r (Cantor-Zassenhaus).
+
+        ``ValueError`` si f no es de esa forma.
+        """
         r = entero(r, "r")
-        self._exigir_libre_de_cuadrados()
-        return [self._R._envolver(u) for u in self._p.equal_degree(r)]
+        if r < 1:
+            raise ValueError(f"r debe ser >= 1, no {r}")
+        dd = self.distinct_degree_factorization()
+        if len(dd) != 1 or dd[0][0] != r:
+            raise ValueError(f"{self:ascii} no es producto de irreducibles distintos "
+                             f"de grado {r}")
+        K = self._R._K
+        partes = sorted(self._p.equal_degree(r), key=lambda u: _clave_canonica(K, u.coeffs()))
+        return [self._R._envolver(u) for u in partes]
 
     def factor(self) -> "Factorization":
-        """Factorización en irreducibles mónicos (orden canónico) y unidad."""
+        """Factorización en irreducibles mónicos (orden canónico) y unidad.
+
+        ``ValueError`` para el polinomio cero.
+        """
         if self._p.is_zero():
             raise ValueError("el polinomio cero no se puede factorizar")
         factores, unidad = self._p.factor()
@@ -605,15 +676,25 @@ class Polynomial(_pretty.Imprimible):
         """Raíces en el cuerpo, ordenadas por índice.
 
         Lista de ``(raíz, multiplicidad)`` o, con ``multiplicities=False``, de
-        raíces.  ``ValueError`` para el polinomio cero.
+        raíces.  Calcula ``gcd(f, x^q - x)`` y lo separa en factores lineales
+        (Cantor-Zassenhaus).  ``ValueError`` para el polinomio cero.
         """
-        if self._p.is_zero():
+        f = self._p
+        if f.is_zero():
             raise ValueError("el polinomio cero tiene todas las raíces")
+        if f.degree() < 1:
+            return []
         K = self._R._K
-        raices = sorted((K._nat.neg(u._p.coeff(0)), e) for u, e in self.factor() if u.degree == 1)
-        if multiplicities:
-            return [(K._crear(r), e) for r, e in raices]
-        return [K._crear(r) for r, _ in raices]
+        nat = K._nat
+        x = nat.poly([0, 1])
+        g = f.gcd(x.pow_mod(K._q, f) - x)       # producto de los (x - r) distintos
+        if g.degree() < 1:
+            return []
+        lineales = g.equal_degree(1) if g.degree() > 1 else [g]
+        raices = sorted(nat.neg(u.coeff(0)) for u in lineales)
+        if not multiplicities:
+            return [K._crear(r) for r in raices]
+        return [(K._crear(r), f.multiplicity(nat.poly([nat.neg(r), 1]))) for r in raices]
 
     # -- comparación, hash, pickle -----------------------------------------
     def __eq__(self, otro):
@@ -630,8 +711,12 @@ class Polynomial(_pretty.Imprimible):
     def __hash__(self) -> int:
         if self._h is None:
             cs = self._p.coeffs()
-            # Las constantes, como su coeficiente (y este como un entero).
-            self._h = hash(cs[0] if cs else 0) if len(cs) <= 1 else hash((self._R._var, tuple(cs)))
+            # Las constantes, como su coeficiente (y este como un entero): así
+            # el hash es coherente con f == c para c entero o elemento.
+            if len(cs) > 1:
+                self._h = hash((self._R._var, tuple(cs)))
+            else:
+                self._h = hash(cs[0] if cs else 0)
         return self._h
 
     def __reduce__(self):
@@ -679,24 +764,38 @@ class Factorization(_pretty.Imprimible):
 
     Es una secuencia de pares ``(factor irreducible mónico, multiplicidad)`` en
     orden canónico (por grado y coeficientes), con la unidad en ``.unit``.
-    ``expand()`` reconstruye el polinomio.
+    ``expand()`` (o ``value()``) reconstruye el polinomio.
     """
 
     __slots__ = ("_factores", "_unidad", "_anillo")
 
     def __init__(self, factors, unit, ring=None):
-        """``factors``: pares (polinomio, multiplicidad); ``unit``: elemento del
-        cuerpo; ``ring``: anillo (por defecto, el de los factores o K["x"])."""
-        self._factores = tuple((f, entero(e, "la multiplicidad")) for f, e in factors)
+        """``factors``: pares (polinomio, multiplicidad); ``unit``: valor convertible
+        al cuerpo; ``ring``: anillo (por defecto, el de los factores o K["x"])."""
+        pares = [(f, entero(e, "la multiplicidad")) for f, e in factors]
         if ring is None:
-            ring = self._factores[0][0].ring if self._factores else unit.field["x"]
+            if pares and isinstance(pares[0][0], Polynomial):
+                ring = pares[0][0].ring
+            elif not pares and isinstance(unit, FieldElement):
+                ring = unit.field["x"]
+            else:
+                raise TypeError("no se puede deducir el anillo de la factorización: "
+                                "pásalo con ring=...")
+        elif not isinstance(ring, PolynomialRing):
+            raise TypeError(f"ring debe ser un PolynomialRing, no {type(ring).__name__!r}")
         self._anillo = ring
+        self._factores = tuple((ring(f), e) for f, e in pares)
         self._unidad = ring.field(unit)
 
     @property
     def unit(self) -> FieldElement:
         """Unidad (coeficiente principal del polinomio factorizado)."""
         return self._unidad
+
+    @property
+    def ring(self) -> PolynomialRing:
+        """Anillo del polinomio factorizado."""
+        return self._anillo
 
     def __len__(self) -> int:
         return len(self._factores)
@@ -707,17 +806,14 @@ class Factorization(_pretty.Imprimible):
     def __getitem__(self, i):
         return self._factores[i]
 
-    @property
-    def ring(self) -> PolynomialRing:
-        """Anillo del polinomio factorizado."""
-        return self._anillo
-
     def expand(self) -> Polynomial:
         """Producto de la unidad por los factores con sus multiplicidades."""
         f = self._anillo(self._unidad)
         for u, e in self._factores:
             f = f * u ** e
         return f
+
+    value = expand
 
     def __eq__(self, otro):
         if not isinstance(otro, Factorization):
@@ -727,10 +823,13 @@ class Factorization(_pretty.Imprimible):
     def __hash__(self) -> int:
         return hash((self._unidad, self._factores))
 
+    def __reduce__(self):
+        return (Factorization, (list(self._factores), self._unidad, self._anillo))
+
     def __repr__(self) -> str:
         R = self._anillo
-        # El anillo solo hace falta si no se deduce de los factores ni es K["x"].
-        anillo = f", ring={R.field!r}[{R.var!r}]" if not self._factores and R.var != "x" else ""
+        # El anillo solo hace falta si no se deduce de los factores.
+        anillo = "" if self._factores else f", ring={R.field!r}[{R.var!r}]"
         return f"Factorization({list(self._factores)!r}, unit={self._unidad!r}{anillo})"
 
     def _texto(self, estilo: str) -> str:
