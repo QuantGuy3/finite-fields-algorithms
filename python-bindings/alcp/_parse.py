@@ -61,6 +61,31 @@ def _error(texto: str, pos: int, motivo: str) -> ValueError:
     return ValueError(mensaje(texto, pos, motivo))
 
 
+#: Longitud de los bloques de cifras que se convierten con int(): por debajo del
+#: mínimo configurable del límite de CPython (sys.set_int_max_str_digits, >= 640).
+BLOQUE_CIFRAS = 600
+
+
+def _cifras_a_entero(cifras: str) -> int:
+    """Entero de una cadena de cifras ASCII de cualquier longitud (divide y vencerás)."""
+    if len(cifras) <= BLOQUE_CIFRAS:
+        return int(cifras)
+    mitad = len(cifras) // 2
+    return (_cifras_a_entero(cifras[:mitad]) * 10 ** (len(cifras) - mitad)
+            + _cifras_a_entero(cifras[mitad:]))
+
+
+def entero_decimal(texto: str) -> int:
+    """``int(texto)`` para un entero decimal ASCII con signo opcional, sin el límite
+    de cifras de CPython (4300 por defecto): el resto de la librería admite enteros
+    de cualquier tamaño.  ``ValueError`` si ``texto`` no es un entero."""
+    signo = -1 if texto[:1] == "-" else 1
+    cifras = texto[1:] if texto[:1] in ("+", "-") else texto
+    if not (cifras.isascii() and cifras.isdigit()):
+        raise ValueError(f"no es un entero decimal: {texto!r}")
+    return signo * _cifras_a_entero(cifras)
+
+
 def letras(texto: str) -> Set[str]:
     """Conjunto de letras (caracteres alfabéticos) que aparecen en ``texto``."""
     return {c for c in texto if c.isalpha()}
@@ -80,7 +105,7 @@ def tokenizar(texto: str, nombres: Mapping[str, object]) -> List[Token]:
             j = i
             while j < n and texto[j] in _DIGITOS:
                 j += 1
-            toks.append(Token(NUM, int(texto[i:j]), i))
+            toks.append(Token(NUM, entero_decimal(texto[i:j]), i))
             i = j
         elif c in _SUPER:
             j = i
@@ -88,7 +113,7 @@ def tokenizar(texto: str, nombres: Mapping[str, object]) -> List[Token]:
                 j += 1
             cifras = "".join(_SUPER[ch] for ch in texto[i:j])
             try:
-                valor = int(cifras)
+                valor = entero_decimal(cifras)
             except ValueError:
                 raise _error(texto, i, f"superíndice no válido: {texto[i:j]!r}") from None
             toks.append(Token(SUP, valor, i))

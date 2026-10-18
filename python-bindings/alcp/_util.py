@@ -8,6 +8,18 @@ from ._nativo import nativo
 #: Las divisiones de prueba de :func:`factorizar` no pasan de este divisor.
 LIMITE_DIVISION = 1 << 20
 
+#: En los mensajes de error, los enteros de más bits se resumen: str() de un
+#: entero de más de 4300 cifras lanza ValueError en CPython (el mensaje saldría
+#: en inglés y, en algún caso, con otro tipo de excepción) y sería ilegible.
+BITS_EN_MENSAJES = 10_000
+
+
+def texto_entero(n: int) -> str:
+    """``str(n)`` para un mensaje de error; si n es enorme, solo su tamaño en bits."""
+    if n.bit_length() <= BITS_EN_MENSAJES:
+        return str(n)
+    return f"{'-' if n < 0 else ''}<entero de {n.bit_length()} bits>"
+
 
 def entero(x, que: str = "el argumento") -> int:
     """Convierte ``x`` en ``int`` con ``operator.index``.
@@ -39,7 +51,7 @@ def prime_power_factor(q) -> tuple[int, int]:
     try:
         p, n = nativo.prime_power_factor(q)
     except ValueError:
-        raise ValueError(f"{q} no es potencia de un número primo") from None
+        raise ValueError(f"{texto_entero(q)} no es potencia de un número primo") from None
     return p, n
 
 

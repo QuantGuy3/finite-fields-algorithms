@@ -30,7 +30,7 @@ from __future__ import annotations
 import operator
 
 from . import _parse, _pretty
-from ._util import entero
+from ._util import entero, texto_entero
 from .field import _PROMOVER, FieldElement, FiniteField, _texto_elemento, validar_nombre
 
 #: Grado máximo de un polinomio construido desde Python (protege la memoria).
@@ -50,7 +50,7 @@ def _poli_desde_indices(R: "PolynomialRing", coefs: list) -> "Polynomial":
 
 def _comprobar_grado(d: int) -> None:
     if d > GRADO_MAXIMO:
-        raise ValueError(f"grado {d} demasiado grande (máximo {GRADO_MAXIMO})")
+        raise ValueError(f"grado {texto_entero(d)} demasiado grande (máximo {GRADO_MAXIMO})")
 
 
 def _clave_canonica(K: FiniteField, coefs: list) -> tuple:
@@ -79,6 +79,8 @@ class PolynomialRing(_pretty.Imprimible):
     """
 
     __slots__ = ("_K", "_var", "_cero", "_uno", "_gen")
+    # numpy: que sus operadores y comparaciones cedan el paso a los nuestros.
+    __array_ufunc__ = None
 
     def __new__(cls, field, var: str = "x"):
         if not isinstance(field, FiniteField):
@@ -159,7 +161,7 @@ class PolynomialRing(_pretty.Imprimible):
         """``c·var^deg`` (deg >= 0; ``c`` convertible al cuerpo)."""
         deg = entero(deg, "el grado")
         if deg < 0:
-            raise ValueError(f"el grado de un monomio debe ser >= 0, no {deg}")
+            raise ValueError(f"el grado de un monomio debe ser >= 0, no {texto_entero(deg)}")
         _comprobar_grado(deg)
         return self._envolver(self._K._nat.poly([0] * deg + [self._K._valor(c)]))
 
@@ -176,7 +178,7 @@ class PolynomialRing(_pretty.Imprimible):
         """Polinomio mónico irreducible aleatorio de grado ``deg`` >= 1 (ver set_seed)."""
         deg = entero(deg, "el grado")
         if deg < 1:
-            raise ValueError(f"un polinomio irreducible tiene grado >= 1, no {deg}")
+            raise ValueError(f"un polinomio irreducible tiene grado >= 1, no {texto_entero(deg)}")
         _comprobar_grado(deg)
         while True:
             f = self._K._nat.random_poly(deg).monic()
@@ -239,7 +241,7 @@ class PolynomialRing(_pretty.Imprimible):
         for k, c in d.items():
             k = entero(k, "el exponente")
             if k < 0:
-                raise ValueError(f"exponente negativo en un polinomio: {k}")
+                raise ValueError(f"exponente negativo en un polinomio: {texto_entero(k)}")
             _comprobar_grado(k)
             terminos[k] = K._valor(c)
         coefs = [0] * (max(terminos, default=-1) + 1)
@@ -652,7 +654,7 @@ class Polynomial(_pretty.Imprimible):
         """
         r = entero(r, "r")
         if r < 1:
-            raise ValueError(f"r debe ser >= 1, no {r}")
+            raise ValueError(f"r debe ser >= 1, no {texto_entero(r)}")
         dd = self.distinct_degree_factorization()
         if len(dd) != 1 or dd[0][0] != r:
             raise ValueError(f"{self:ascii} no es producto de irreducibles distintos "
@@ -768,6 +770,9 @@ class Factorization(_pretty.Imprimible):
     """
 
     __slots__ = ("_factores", "_unidad", "_anillo")
+    # numpy: sin esto, comparar con un escalar de numpy lanzaba ValueError (numpy
+    # intentaba convertir la factorización, una secuencia, en un array).
+    __array_ufunc__ = None
 
     def __init__(self, factors, unit, ring=None):
         """``factors``: pares (polinomio, multiplicidad); ``unit``: valor convertible

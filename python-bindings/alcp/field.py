@@ -45,6 +45,7 @@ sean iguales: la igualdad módulo p no es compatible con el hash de ``int``.)
 from __future__ import annotations
 
 import itertools
+import math
 import numbers
 import operator
 import sys
@@ -52,7 +53,7 @@ from typing import TYPE_CHECKING
 
 from . import _parse, _pretty
 from ._nativo import nativo
-from ._util import entero, factorizar, prime_power_factor
+from ._util import entero, factorizar, prime_power_factor, texto_entero
 
 if TYPE_CHECKING:
     from .poly import Polynomial, PolynomialRing
@@ -203,6 +204,9 @@ class FiniteField(_pretty.Imprimible):
 
     __slots__ = ("_nat", "_p", "_n", "_q", "_var", "_clase", "_anillos",
                  "_fact_q1", "_nocuadrado", "_primitivo")
+    # numpy: que no trate el cuerpo (iterable) como un array al compararlo con
+    # sus escalares (GF(9) == numpy.int64(1) daba un array de 9 booleanos).
+    __array_ufunc__ = None
 
     def __new__(cls, *args, **kwargs):
         raise TypeError("los cuerpos finitos se construyen con alcp.GF(q, ...)")
@@ -294,7 +298,7 @@ class FiniteField(_pretty.Imprimible):
         """
         i = entero(i, "el índice")
         if not 0 <= i < self._q:
-            raise ValueError(f"el índice debe estar en [0, {self._q}), no {i}")
+            raise ValueError(f"el índice debe estar en [0, {self._q}), no {texto_entero(i)}")
         return self._crear(i)
 
     def to_index(self, x) -> int:
@@ -325,6 +329,11 @@ class FiniteField(_pretty.Imprimible):
                                 "usa K.order")
         return self._q
 
+    def __bool__(self) -> bool:
+        """Un cuerpo nunca es vacío (sin esto, ``bool(K)`` usaría ``len`` y fallaría
+        en los cuerpos de más de sys.maxsize elementos)."""
+        return True
+
     # -- anillos de polinomios ------------------------------------------------
     def poly_ring(self, var: str = "x") -> "PolynomialRing":
         """Anillo de polinomios K[var] (cacheado; también ``K["x"]``)."""
@@ -348,13 +357,20 @@ class FiniteField(_pretty.Imprimible):
         """
         n = entero(n, "n")
         if n < 1 or (self._q - 1) % n:
+            tn = texto_entero(n)
             raise ValueError(f"{self!r} no tiene raíces primitivas de la unidad de orden "
-                             f"{n}: {n} no divide a q - 1 = {self._q - 1}")
+                             f"{tn}: {tn} no divide a q - 1 = {self._q - 1}")
         primos = list(factorizar(n))
         e = (self._q - 1) // n
         pot = self._nat.pow
+        # Los índices 1..p-1 son los elementos de F_p^*: sus potencias e-ésimas
+        # forman el subgrupo de orden m = (p-1)/mcd(p-1, e), y solo hay alguna de
+        # orden n si m == n (en un cuerpo primo, siempre).  Si no, se saltan: en
+        # una extensión con p grande, recorrerlos uno a uno no terminaría.  El
+        # resultado sigue siendo el de menor índice.
+        inicio = 1 if (self._p - 1) // math.gcd(self._p - 1, e) == n else self._p
         # Existe un generador del grupo multiplicativo, así que la búsqueda termina.
-        candidatas = (pot(i, e) for i in range(1, self._q))
+        candidatas = (pot(i, e) for i in range(inicio, self._q))
         return self._crear(next(w for w in candidatas
                                 if all(pot(w, n // r) != 1 for r in primos)))
 
@@ -368,7 +384,11 @@ class FiniteField(_pretty.Imprimible):
         """Índice del primer no cuadrado (q impar), para Tonelli-Shanks."""
         if self._nocuadrado is None:
             e = (self._q - 1) // 2
-            self._nocuadrado = next(i for i in range(2, self._q)
+            # En una extensión de grado par todo elemento de F_p (índices < p) es
+            # un cuadrado: se empieza por el índice p (el generador a).  En grado
+            # impar, un no residuo de F_p tampoco es un cuadrado en F_q.
+            inicio = self._p if self._n % 2 == 0 else 2
+            self._nocuadrado = next(i for i in range(inicio, self._q)
                                     if self._nat.pow(i, e) != 1)
         return self._nocuadrado
 
@@ -411,7 +431,8 @@ class FiniteField(_pretty.Imprimible):
         if isinstance(x, numbers.Rational):
             num, den = x.numerator % self._p, x.denominator % self._p
             if den == 0:
-                raise ZeroDivisionError(f"el denominador de {x} es múltiplo de p = {self._p}")
+                raise ZeroDivisionError(f"el denominador de {texto_entero(x.numerator)}/"
+                                        f"{texto_entero(x.denominator)} es múltiplo de p = {self._p}")
             return num * pow(den, -1, self._p) % self._p
         if isinstance(x, numbers.Number):
             raise TypeError(f"no se puede convertir un valor de tipo {type(x).__name__!r} en "
