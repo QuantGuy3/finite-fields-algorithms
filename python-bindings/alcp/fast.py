@@ -99,21 +99,28 @@ def toeplitz_vec(K: FiniteField, a, b, n=None) -> list:
     return _elementos(K, vs)
 
 
+def _inversa(funcion, K, a, n) -> list:
+    K = _cuerpo(K)
+    va = _valores(K, a, "a")
+    if va and va[0] == 0:
+        raise ZeroDivisionError("la matriz de Toeplitz es singular: a[0] = 0")
+    return _elementos(K, funcion(K._nat, _n(n, len(va)), va))
+
+
 def toeplitz_lower_inverse(K: FiniteField, a, n=None) -> list:
-    """Primera columna de T⁻¹ (T triangular inferior de primera columna ``a``).
+    """Primera columna de T⁻¹ (T triangular inferior n×n de primera columna ``a``).
 
     Por defecto n = len(a).  ``ZeroDivisionError`` si a[0] = 0.
     """
-    K = _cuerpo(K)
-    va = _valores(K, a, "a")
-    return _elementos(K, nativo.toeplitz_lower_inverse(K._nat, _n(n, len(va)), va))
+    return _inversa(nativo.toeplitz_lower_inverse, K, a, n)
 
 
 def toeplitz_upper_inverse(K: FiniteField, a, n=None) -> list:
-    """Primera fila de T⁻¹ (T triangular superior de primera fila ``a``)."""
-    K = _cuerpo(K)
-    va = _valores(K, a, "a")
-    return _elementos(K, nativo.toeplitz_upper_inverse(K._nat, _n(n, len(va)), va))
+    """Primera fila de T⁻¹ (T triangular superior n×n de primera fila ``a``).
+
+    Por defecto n = len(a).  ``ZeroDivisionError`` si a[0] = 0.
+    """
+    return _inversa(nativo.toeplitz_upper_inverse, K, a, n)
 
 
 def divmod_toeplitz(f: Polynomial, g):
