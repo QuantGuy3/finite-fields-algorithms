@@ -635,27 +635,42 @@ class FieldElement(_pretty.Imprimible):
         K = self._K
         if otro.__class__ is self.__class__ and otro._K is K:
             return K._crear(K._add(self._v, otro._v))
+        if otro.__class__ is int:           # camino rápido: entero (n·1)
+            return K._crear(K._add(self._v, otro % K._p))
         return self._binaria(otro, "add", False)
 
     def __radd__(self, otro):
+        if otro.__class__ is int:
+            K = self._K
+            return K._crear(K._add(otro % K._p, self._v))
         return self._binaria(otro, "add", True)
 
     def __sub__(self, otro):
         K = self._K
         if otro.__class__ is self.__class__ and otro._K is K:
             return K._crear(K._sub(self._v, otro._v))
+        if otro.__class__ is int:           # camino rápido: entero (n·1)
+            return K._crear(K._sub(self._v, otro % K._p))
         return self._binaria(otro, "sub", False)
 
     def __rsub__(self, otro):
+        if otro.__class__ is int:
+            K = self._K
+            return K._crear(K._sub(otro % K._p, self._v))
         return self._binaria(otro, "sub", True)
 
     def __mul__(self, otro):
         K = self._K
         if otro.__class__ is self.__class__ and otro._K is K:
             return K._crear(K._mul(self._v, otro._v))
+        if otro.__class__ is int:           # camino rápido: entero (n·1)
+            return K._crear(K._mul(self._v, otro % K._p))
         return self._binaria(otro, "mul", False)
 
     def __rmul__(self, otro):
+        if otro.__class__ is int:
+            K = self._K
+            return K._crear(K._mul(otro % K._p, self._v))
         return self._binaria(otro, "mul", True)
 
     def __truediv__(self, otro):
