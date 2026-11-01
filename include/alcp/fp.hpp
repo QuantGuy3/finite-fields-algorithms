@@ -91,6 +91,22 @@ public:
         return r;
     }
 
+    // --- acumulación perezosa (ganchos opcionales, ver field.hpp) -----------
+    // El acumulador es un mpz que suma productos a·b de elementos en [0, p) con
+    // mpz_addmul (en sitio, sin temporales); nunca es negativo, así que
+    // mpz_tdiv_r da directamente el representante en [0, p).
+    using Acc = BigInt;
+    void acc_clear(Acc& s) const { mpz_set_ui(s.get_mpz_t(), 0); }
+    void acc_set(Acc& s, const Elem& a) const { mpz_set(s.get_mpz_t(), a.get_mpz_t()); }
+    void acc_fma(Acc& s, const Elem& a, const Elem& b) const {
+        mpz_addmul(s.get_mpz_t(), a.get_mpz_t(), b.get_mpz_t());
+    }
+    Elem acc_reduce(Acc& s) const {
+        Elem r;
+        mpz_tdiv_r(r.get_mpz_t(), s.get_mpz_t(), p_.get_mpz_t());
+        return r;
+    }
+
     // Invertir 0 lanza alcp::division_by_zero (deriva de std::domain_error).
     Elem inv(const Elem& a) const {
         if (a == 0) throw division_by_zero("0 is not invertible in F_p");
@@ -164,5 +180,6 @@ inline bool same_field(const Fp& a, const Fp& b) { return &a == &b || a == b; }
 
 // Fp cumple la interfaz de cuerpo finito (concepto de field.hpp).
 static_assert(FiniteField<Fp>);
+static_assert(LazyAccumulation<Fp>);
 
 }  // namespace alcp
