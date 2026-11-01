@@ -135,6 +135,22 @@ $PY bench/run_bench.py build --include <DIR> --label <NOMBRE> [--cxxflags "-O3 .
   `-fprofile-use -fprofile-partial-training`. Puede requerir `-fprofile-dir=<dir>`
   para que GCC encuentre los `.gcda`.
 
+### Backend de 64 bits (`--backend`)
+
+Si las cabeceras tienen `alcp/fp64.hpp` (detectado con `__has_include`), la suite
+acepta `--backend auto|gmp`:
+
+- `auto` (por defecto): el backend que usaría el usuario, el de 64 bits
+  (`Fp64`, `Fq64`) cuando p < 2^62 (familias p7, p101, ntt, m61, q3e30, q2e8,
+  q7e4, m61e2 y `fq.build`) y GMP en el resto.
+- `gmp`: GMP en todos los cuerpos (mide el núcleo GMP optimizado).
+
+Los nombres de escenario y los checksums no dependen del backend, así que ambos
+se comparan directamente con la línea base. Contra las cabeceras originales la
+opción se acepta pero siempre se usa GMP. Se pasa directamente al ejecutable
+(`bench_suite.exe --backend gmp ...`); el JSON registra `backend` y
+`fp64_available`.
+
 ### `run`: ejecutar una variante
 
 ```bash
