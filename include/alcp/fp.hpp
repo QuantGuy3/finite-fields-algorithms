@@ -61,18 +61,35 @@ public:
     Elem random() const { return rand_below(p_); }
 
     // --- arithmetic ---------------------------------------------------------
+    // Implementación con la API C de GMP directamente sobre el resultado: cada
+    // operación escribe en un único mpz (el que se devuelve, sin copias por la
+    // NRVO) y no crea temporales de gmpxx (antes, mul calculaba a*b en un
+    // temporal y después su resto en otro mpz).  Las entradas están en [0, p),
+    // así que basta una corrección condicional y mpz_tdiv_r da ya el resto
+    // no negativo.
     Elem add(const Elem& a, const Elem& b) const {
-        Elem r = a + b;
-        if (r >= p_) r -= p_;
+        Elem r;
+        mpz_add(r.get_mpz_t(), a.get_mpz_t(), b.get_mpz_t());
+        if (mpz_cmp(r.get_mpz_t(), p_.get_mpz_t()) >= 0) mpz_sub(r.get_mpz_t(), r.get_mpz_t(), p_.get_mpz_t());
         return r;
     }
     Elem sub(const Elem& a, const Elem& b) const {
-        Elem r = a - b;
-        if (sgn(r) < 0) r += p_;
+        Elem r;
+        mpz_sub(r.get_mpz_t(), a.get_mpz_t(), b.get_mpz_t());
+        if (mpz_sgn(r.get_mpz_t()) < 0) mpz_add(r.get_mpz_t(), r.get_mpz_t(), p_.get_mpz_t());
         return r;
     }
-    Elem neg(const Elem& a) const { return (a == 0) ? Elem(0) : Elem(p_ - a); }
-    Elem mul(const Elem& a, const Elem& b) const { return (a * b) % p_; }
+    Elem neg(const Elem& a) const {
+        Elem r;
+        if (mpz_sgn(a.get_mpz_t()) != 0) mpz_sub(r.get_mpz_t(), p_.get_mpz_t(), a.get_mpz_t());
+        return r;
+    }
+    Elem mul(const Elem& a, const Elem& b) const {
+        Elem r;
+        mpz_mul(r.get_mpz_t(), a.get_mpz_t(), b.get_mpz_t());
+        mpz_tdiv_r(r.get_mpz_t(), r.get_mpz_t(), p_.get_mpz_t());
+        return r;
+    }
 
     // Invertir 0 lanza alcp::division_by_zero (deriva de std::domain_error).
     Elem inv(const Elem& a) const {
