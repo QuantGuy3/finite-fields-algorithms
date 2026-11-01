@@ -202,21 +202,18 @@ public:
     }
 
     // Recursive Karatsuba (port of fp_x_mult_karatsuba / fq_x_mult_karatsuba).
+    // Implementación sobre vistas (puntero + longitud) en karatsuba_rec: la
+    // recursión y los subproductos son exactamente los del original
+    // (aL·bL, aH·bH, (aL+aH)·(bL+bH), con las mismas mitades recortadas), pero
+    // sin copiar las mitades a polinomios nuevos (slice) ni desplazar copiando
+    // (shift): z1 se corrige en sitio y la recombinación acumula en el vector
+    // resultado.
     Poly mul_karatsuba(const Poly& o) const {
         require_same_field(o);
         if (is_zero() || o.is_zero()) return zero(*K_);
         if (c_.size() <= kKaratsubaCutoff || o.c_.size() <= kKaratsubaCutoff)
             return mul_school(o);
-
-        std::size_t m = std::max(c_.size(), o.c_.size()) / 2;
-        Poly aL = slice(0, m), aH = slice(m, c_.size());
-        Poly bL = o.slice(0, m), bH = o.slice(m, o.c_.size());
-
-        Poly z0 = aL.mul_karatsuba(bL);
-        Poly z2 = aH.mul_karatsuba(bH);
-        Poly z1 = (aL + aH).mul_karatsuba(bL + bH) - z0 - z2;
-
-        return z0 + z1.shift(m) + z2.shift(2 * m);
+        return Poly(*K_, karatsuba_rec(*K_, c_.data(), c_.size(), o.c_.data(), o.c_.size()));
     }
 
     // ---- Euclidean division ------------------------------------------------
@@ -610,17 +607,82 @@ private:
     }
 
     // coefficients [lo, hi) as a polynomial (drops the x^lo..x^{hi-1} window down to x^0).
-    Poly slice(std::size_t lo, std::size_t hi) const {
-        if (lo >= c_.size()) return zero(*K_);
-        hi = std::min(hi, c_.size());
-        return Poly(*K_, std::vector<Elem>(c_.begin() + lo, c_.begin() + hi));
+    // ---- Karatsuba sobre vistas -------------------------------------------
+    // Longitud de la vista a[0..n) sin ceros finales (lo que haría trim()).
+    static std::size_t trimmed_len(const Field& K, const Elem* a, std::size_t n) {
+        while (n > 0 && K.is_zero(a[n - 1])) --n;
+        return n;
     }
-    // multiply by x^s
-    Poly shift(std::size_t s) const {
-        if (is_zero()) return *this;
-        std::vector<Elem> r(c_.size() + s, K_->zero());
-        for (std::size_t i = 0; i < c_.size(); ++i) r[i + s] = c_[i];
-        return Poly(*K_, std::move(r));
+
+    // x[0..nx) + y[0..ny), recortado (como operator+ sobre las mitades).
+    static std::vector<Elem> add_views(const Field& K, const Elem* x, std::size_t nx,
+                                       const Elem* y, std::size_t ny) {
+        std::vector<Elem> r;
+        r.reserve(std::max(nx, ny));
+        const std::size_t nmin = std::min(nx, ny);
+        for (std::size_t i = 0; i < nmin; ++i) r.push_back(K.add(x[i], y[i]));
+        for (std::size_t i = nmin; i < nx; ++i) r.push_back(x[i]);
+        for (std::size_t i = nmin; i < ny; ++i) r.push_back(y[i]);
+        r.resize(trimmed_len(K, r.data(), r.size()));
+        return r;
+    }
+
+    // Producto Karatsuba de las vistas a[0..na) y b[0..nb), ambas no vacías y
+    // recortadas (último coeficiente no nulo).  Reproduce la recursión de la
+    // versión con Poly: m = max(na, nb)/2; aL = a[0..m) y aH = a[m..na)
+    // recortadas (vacías si m >= na), ídem para b; z0 = aL·bL, z2 = aH·bH,
+    // z1 = (aL+aH)·(bL+bH) - z0 - z2; resultado z0 + z1·x^m + z2·x^{2m}.  El
+    // resultado tiene longitud exacta na + nb - 1 (coeficiente principal
+    // lead(a)·lead(b) != 0).
+    // Si a y b son la misma vista (cuadrado), aL+aH y bL+bH coinciden: la suma
+    // se calcula una vez (trabajo redundante idéntico).
+    static std::vector<Elem> karatsuba_rec(const Field& K, const Elem* a, std::size_t na,
+                                           const Elem* b, std::size_t nb) {
+        const bool same = (a == b && na == nb);
+        if (na <= kKaratsubaCutoff || nb <= kKaratsubaCutoff) {
+            // Caso base: exactamente mul_school (se reutiliza para heredar
+            // cualquier mejora de su bucle).  La copia de las vistas cuesta
+            // O(na + nb), despreciable frente a los na·nb productos.
+            Poly pa(K, std::vector<Elem>(a, a + na));
+            if (same) return std::move(pa.mul_school(pa).c_);
+            Poly pb(K, std::vector<Elem>(b, b + nb));
+            return std::move(pa.mul_school(pb).c_);
+        }
+
+        const std::size_t m = std::max(na, nb) / 2;
+        const std::size_t naL = trimmed_len(K, a, std::min(m, na));
+        const std::size_t naH = (m < na) ? na - m : 0;  // ya recortada (a lo está)
+        const std::size_t nbL = same ? naL : trimmed_len(K, b, std::min(m, nb));
+        const std::size_t nbH = (m < nb) ? nb - m : 0;
+
+        std::vector<Elem> z0, z2, z1;
+        if (naL > 0 && nbL > 0) z0 = karatsuba_rec(K, a, naL, b, nbL);
+        if (naH > 0 && nbH > 0) z2 = karatsuba_rec(K, a + m, naH, b + m, nbH);
+        {
+            std::vector<Elem> sa = (naH > 0) ? add_views(K, a, naL, a + m, naH)
+                                             : std::vector<Elem>(a, a + naL);
+            if (same) {
+                if (!sa.empty()) z1 = karatsuba_rec(K, sa.data(), sa.size(), sa.data(), sa.size());
+            } else {
+                std::vector<Elem> sb = (nbH > 0) ? add_views(K, b, nbL, b + m, nbH)
+                                                 : std::vector<Elem>(b, b + nbL);
+                if (!sa.empty() && !sb.empty())
+                    z1 = karatsuba_rec(K, sa.data(), sa.size(), sb.data(), sb.size());
+            }
+        }
+        // z1 -= z0; z1 -= z2 (en sitio) y recorte.
+        const std::size_t n1 = std::max({z1.size(), z0.size(), z2.size()});
+        z1.resize(n1, K.zero());
+        for (std::size_t i = 0; i < z0.size(); ++i) z1[i] = K.sub(z1[i], z0[i]);
+        for (std::size_t i = 0; i < z2.size(); ++i) z1[i] = K.sub(z1[i], z2[i]);
+        z1.resize(trimmed_len(K, z1.data(), z1.size()));
+
+        // Recombinación en el vector resultado (se reutiliza el de z0).
+        std::vector<Elem> r = std::move(z0);
+        r.resize(na + nb - 1, K.zero());
+        for (std::size_t i = 0; i < z1.size(); ++i) r[m + i] = K.add(r[m + i], z1[i]);
+        for (std::size_t i = 0; i < z2.size(); ++i) r[2 * m + i] = K.add(r[2 * m + i], z2[i]);
+        return r;
     }
 
     // One Cantor-Zassenhaus splitting step: given g (product of distinct
