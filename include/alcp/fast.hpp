@@ -36,9 +36,11 @@
 #include "polynomial.hpp"
 
 #include <algorithm>
+#include <cstdint>
 #include <limits>
 #include <stdexcept>
 #include <string>
+#include <type_traits>
 #include <vector>
 
 namespace alcp::fast {
@@ -98,6 +100,59 @@ std::vector<typename Field::Elem> dft_rec(const Field& K, const typename Field::
     return A;
 }
 
+// La misma recursión que dft_rec, en palabras de máquina (F_p con p < 2^62,
+// ver fft.hpp): mismas particiones par/impar, mismo g^2 en cada nivel y las
+// mismas operaciones (t = w·I[j], A[j] = P[j] + t, A[j+n/2] = P[j] - t,
+// w = w·g), todas con el representante canónico en [0, p).  El producto por
+// g (fijo en cada nivel) usa su cociente de Shoup.
+inline std::vector<std::uint64_t> dft_rec_word(std::uint64_t g, unsigned long k,
+                                               const std::vector<std::uint64_t>& a,
+                                               std::uint64_t p) {
+    namespace w = alcp::fft::word;
+    const std::size_t n = std::size_t(1) << k;
+    if (n == 1) return {a[0]};
+
+    std::vector<std::uint64_t> even(n / 2), odd(n / 2);
+    for (std::size_t i = 0; i < n / 2; ++i) { even[i] = a[2 * i]; odd[i] = a[2 * i + 1]; }
+
+    const std::uint64_t g2 = w::mul_mod(g, g, p);
+    std::vector<std::uint64_t> P = dft_rec_word(g2, k - 1, even, p);
+    std::vector<std::uint64_t> I = dft_rec_word(g2, k - 1, odd, p);
+
+    std::vector<std::uint64_t> A(n);
+    const std::uint64_t gs = w::shoup(g, p);
+    std::uint64_t wj = 1;
+    for (std::size_t j = 0; j < n / 2; ++j) {
+        const std::uint64_t t = w::mul_mod(wj, I[j], p);
+        const std::uint64_t s = P[j] + t;
+        A[j] = (s >= p) ? s - p : s;
+        A[j + n / 2] = (P[j] >= t) ? P[j] - t : P[j] + p - t;
+        wj = w::mul_shoup(g, gs, wj, p);
+    }
+    return A;
+}
+
+// dft_rec por el camino en palabras si el cuerpo lo admite (devuelve true y
+// deja el resultado en out); si no, devuelve false sin tocar nada.
+template <class Field>
+bool dft_word(const Field& K, const typename Field::Elem& g, unsigned long k,
+              const std::vector<typename Field::Elem>& a, std::vector<typename Field::Elem>& out) {
+    if constexpr (std::is_same_v<Field, Fp>) {
+        if (!alcp::fft::word_ntt_eligible(K)) return false;
+        namespace w = alcp::fft::word;
+        const std::uint64_t p = w::to_word(K.characteristic());
+        std::vector<std::uint64_t> wa(a.size());
+        for (std::size_t i = 0; i < a.size(); ++i) wa[i] = w::to_word(a[i]);
+        std::vector<std::uint64_t> r = dft_rec_word(w::to_word(g), k, wa, p);
+        out.resize(r.size());
+        for (std::size_t i = 0; i < r.size(); ++i) w::set_word(out[i], r[i]);
+        return true;
+    } else {
+        (void)K; (void)g; (void)k; (void)a; (void)out;
+        return false;
+    }
+}
+
 // Validaciones comunes de las rutinas de Toeplitz.
 inline void check_toeplitz_n(std::size_t n, const char* who) {
     if (n == 0) throw std::invalid_argument(std::string(who) + ": n debe ser >= 1");
@@ -122,6 +177,8 @@ template <class Field>
 std::vector<typename Field::Elem> dft(const Field& K, const typename Field::Elem& g,
                                       unsigned long k, const std::vector<typename Field::Elem>& a) {
     detail::check_dft_args(K, g, k, a.size(), "dft");
+    std::vector<typename Field::Elem> out;
+    if (detail::dft_word(K, g, k, a, out)) return out;
     return detail::dft_rec(K, g, k, a);
 }
 
@@ -134,7 +191,8 @@ std::vector<typename Field::Elem> idft(const Field& K, const typename Field::Ele
     const std::size_t n = std::size_t(1) << k;
     Elem g_inv = K.inv(g);
     // g^{-1} tiene el mismo orden que g: no hace falta volver a validarlo.
-    std::vector<Elem> A = detail::dft_rec(K, g_inv, k, a);
+    std::vector<Elem> A;
+    if (!detail::dft_word(K, g_inv, k, a, A)) A = detail::dft_rec(K, g_inv, k, a);
     Elem n_inv = K.inv(K.from_int(BigInt(static_cast<unsigned long>(n))));
     for (auto& x : A) x = K.mul(n_inv, x);
     return A;
