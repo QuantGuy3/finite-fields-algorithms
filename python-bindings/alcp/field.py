@@ -203,7 +203,10 @@ class FiniteField(_pretty.Imprimible):
     """
 
     __slots__ = ("_nat", "_p", "_n", "_q", "_var", "_clase", "_anillos",
-                 "_fact_q1", "_nocuadrado", "_primitivo")
+                 "_fact_q1", "_nocuadrado", "_primitivo",
+                 # Métodos del cuerpo nativo ya enlazados: evita buscarlos (y crear
+                 # el método ligado) en cada operación, algo caro en pybind11.
+                 "_add", "_sub", "_mul", "_div", "_neg", "_pow")
     # numpy: que no trate el cuerpo (iterable) como un array al compararlo con
     # sus escalares (GF(9) == numpy.int64(1) daba un array de 9 booleanos).
     __array_ufunc__ = None
@@ -222,6 +225,8 @@ class FiniteField(_pretty.Imprimible):
         self._fact_q1 = None
         self._nocuadrado = None
         self._primitivo = None
+        self._add, self._sub, self._mul = nat.add, nat.sub, nat.mul
+        self._div, self._neg, self._pow = nat.div, nat.neg, nat.pow
 
     # -- datos -------------------------------------------------------------
     @property
@@ -629,7 +634,7 @@ class FieldElement(_pretty.Imprimible):
     def __add__(self, otro):
         K = self._K
         if otro.__class__ is self.__class__ and otro._K is K:
-            return K._crear(K._nat.add(self._v, otro._v))
+            return K._crear(K._add(self._v, otro._v))
         return self._binaria(otro, "add", False)
 
     def __radd__(self, otro):
@@ -638,7 +643,7 @@ class FieldElement(_pretty.Imprimible):
     def __sub__(self, otro):
         K = self._K
         if otro.__class__ is self.__class__ and otro._K is K:
-            return K._crear(K._nat.sub(self._v, otro._v))
+            return K._crear(K._sub(self._v, otro._v))
         return self._binaria(otro, "sub", False)
 
     def __rsub__(self, otro):
@@ -647,7 +652,7 @@ class FieldElement(_pretty.Imprimible):
     def __mul__(self, otro):
         K = self._K
         if otro.__class__ is self.__class__ and otro._K is K:
-            return K._crear(K._nat.mul(self._v, otro._v))
+            return K._crear(K._mul(self._v, otro._v))
         return self._binaria(otro, "mul", False)
 
     def __rmul__(self, otro):
@@ -658,14 +663,14 @@ class FieldElement(_pretty.Imprimible):
         if otro.__class__ is self.__class__ and otro._K is K:
             if not otro._v:
                 raise ZeroDivisionError(f"división por cero en {K!r}")
-            return K._crear(K._nat.div(self._v, otro._v))
+            return K._crear(K._div(self._v, otro._v))
         return self._binaria(otro, "div", False)
 
     def __rtruediv__(self, otro):
         return self._binaria(otro, "div", True)
 
     def __neg__(self):
-        return self._K._crear(self._K._nat.neg(self._v))
+        return self._K._crear(self._K._neg(self._v))
 
     def __pos__(self):
         return self
@@ -679,7 +684,7 @@ class FieldElement(_pretty.Imprimible):
         k = entero(k, "el exponente")
         if k < 0 and not self._v:
             raise ZeroDivisionError(f"el 0 de {self._K!r} no tiene inverso")
-        return self._K._crear(self._K._nat.pow(self._v, k))
+        return self._K._crear(self._K._pow(self._v, k))
 
     def inverse(self) -> "FieldElement":
         """Inverso multiplicativo.  ``ZeroDivisionError`` para el 0."""
