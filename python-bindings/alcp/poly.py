@@ -36,6 +36,9 @@ from .field import _PROMOVER, FieldElement, FiniteField, _texto_elemento, valida
 #: Grado máximo de un polinomio construido desde Python (protege la memoria).
 GRADO_MAXIMO = 10**7
 
+# Caché de cadenas ya analizadas (ver _parse.Cache).
+_CACHE_ANALIZADOR = _parse.Cache()
+
 _OPERADORES = {"add": operator.add, "sub": operator.sub, "mul": operator.mul,
                "floordiv": operator.floordiv, "mod": operator.mod, "divmod": divmod}
 
@@ -197,7 +200,7 @@ class PolynomialRing(_pretty.Imprimible):
         if isinstance(x, Polynomial):
             return self._desde_polinomio(x, operando)
         if isinstance(x, str):
-            return self._analizar(x)._p
+            return self._analizar_cacheado(x)[0]
         if isinstance(x, dict):
             return self._desde_dict(x)
         if isinstance(x, (list, tuple)):
@@ -248,6 +251,21 @@ class PolynomialRing(_pretty.Imprimible):
         for k, v in terminos.items():
             coefs[k] = v
         return K._nat.poly(coefs)
+
+    def _analizar_cacheado(self, texto: str) -> tuple:
+        """``(polinomio nativo, variables usadas)`` de ``texto``.
+
+        Las cadenas cortas que ya se analizaron se toman de la caché (los
+        polinomios nativos son inmutables, así que se pueden compartir).
+        """
+        r = _CACHE_ANALIZADOR.get(self, texto)
+        if r is None:
+            usadas: set = set()
+            f = self._analizar(texto, usadas)._p
+            r = (f, frozenset(usadas))
+            if f.degree() <= _parse.CACHE_LONGITUD_MAXIMA:      # no retener monstruos
+                _CACHE_ANALIZADOR.put(self, texto, r)
+        return r
 
     def _analizar(self, texto: str, usadas=None) -> "Polynomial":
         K = self._K
@@ -589,11 +607,10 @@ class Polynomial(_pretty.Imprimible):
                 S = K[S._var]       # v sobre F_p y f sobre una extensión: se sube v
             return S._envolver(S._nativo(self).compose(S._nativo(v)))
         if isinstance(v, str):
-            usadas = set()
-            g = R._analizar(v, usadas)
+            g, usadas = R._analizar_cacheado(v)
             if R._var in usadas:
-                return R._envolver(self._p.compose(g._p))
-            v = g
+                return R._envolver(self._p.compose(g))
+            v = R._envolver(g)
         elif isinstance(v, FieldElement) and v._K is not K and K._n == 1 and v._K._p == K._p:
             # Polinomio sobre F_p evaluado en un elemento de una extensión L
             # (los valores de F_p son sus índices en L).

@@ -68,6 +68,9 @@ _PROMOVER = object()
 _OPERADORES = {"add": operator.add, "sub": operator.sub,
                "mul": operator.mul, "div": operator.truediv}
 
+# Caché de cadenas ya analizadas como elementos (ver _parse.Cache).
+_CACHE_ANALIZADOR = _parse.Cache()
+
 # Cachés: cuerpos por parámetros y módulos deterministas por (p, n).
 _cuerpos: dict = {}
 _modulos: dict = {}
@@ -415,7 +418,11 @@ class FiniteField(_pretty.Imprimible):
                 return _PROMOVER
             return self._desde_elemento(x, operando)
         if isinstance(x, str):
-            return self._analizar(x)._v
+            v = _CACHE_ANALIZADOR.get(self, x)
+            if v is None:
+                v = self._analizar(x)._v
+                _CACHE_ANALIZADOR.put(self, x, v)
+            return v
         if isinstance(x, _poly.Polynomial):
             if operando:
                 return None
