@@ -194,6 +194,14 @@ def _modulo_dado(modulus, p: int, n: int) -> tuple:
 
 def _elemento(K: "FiniteField", v: int) -> "FieldElement":
     """Reconstruye un elemento a partir de su valor/índice (pickle)."""
+    # Camino rápido para el caso normal (un cuerpo y un índice int válido): sin
+    # pasar por from_index/entero.  Cualquier otro caso se valida como siempre.
+    if (type(v) is int and (K.__class__ is PrimeField or K.__class__ is ExtensionField)
+            and 0 <= v < K._q):
+        e = object.__new__(K._clase)
+        e._K = K
+        e._v = v
+        return e
     return K.from_index(v)
 
 
@@ -740,6 +748,11 @@ class FieldElement(_pretty.Imprimible):
         return self._v != 0
 
     def __reduce__(self):
+        return (_elemento, (self._K, self._v))
+
+    def __reduce_ex__(self, protocol):
+        # Lo mismo que __reduce__, sin el paso intermedio de object.__reduce_ex__
+        # (pickle de listas grandes de elementos).
         return (_elemento, (self._K, self._v))
 
     def __copy__(self):
