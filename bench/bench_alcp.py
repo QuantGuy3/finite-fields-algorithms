@@ -572,7 +572,10 @@ def intercalar(a) -> int:
             if a.filter:
                 cmd += ["--filter", a.filter]
             print(f"# ronda {ronda + 1}/{a.rounds}: {lb}", flush=True)
+            js.unlink(missing_ok=True)      # nunca reutilizar el JSON de una ejecución anterior
             subprocess.run(cmd, check=False, env={**os.environ, "PYTHONDONTWRITEBYTECODE": "1"})
+            if not js.is_file():
+                sys.exit(f"la variante {lb} ({d}) no produjo resultados")
             datos = json.loads(js.read_text(encoding="utf-8"))
             dest = agregados.setdefault(lb, {})
             for r in datos["scenarios"]:
