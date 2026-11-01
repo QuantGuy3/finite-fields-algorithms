@@ -61,6 +61,10 @@ if TYPE_CHECKING:
 #: ``K.elements()`` (y ``iter(K)``) solo enumera cuerpos de hasta este cardinal.
 ENUMERACION_MAXIMA = 10**6
 
+#: Textos de elementos de una extensión que recuerda cada cuerpo (a partir de
+#: aquí se dejan de guardar: la caché no crece sin límite).
+TEXTOS_MAXIMOS = 4096
+
 # Marca interna: «el otro operando vive en una extensión de este cuerpo primo;
 # hay que llevar este operando a ella y repetir la operación allí».
 _PROMOVER = object()
@@ -209,7 +213,9 @@ class FiniteField(_pretty.Imprimible):
                  "_fact_q1", "_nocuadrado", "_primitivo",
                  # Métodos del cuerpo nativo ya enlazados: evita buscarlos (y crear
                  # el método ligado) en cada operación, algo caro en pybind11.
-                 "_add", "_sub", "_mul", "_div", "_neg", "_pow")
+                 "_add", "_sub", "_mul", "_div", "_neg", "_pow",
+                 # Textos ya calculados de elementos de una extensión: (v, estilo) -> texto.
+                 "_textos")
     # numpy: que no trate el cuerpo (iterable) como un array al compararlo con
     # sus escalares (GF(9) == numpy.int64(1) daba un array de 9 booleanos).
     __array_ufunc__ = None
@@ -230,6 +236,7 @@ class FiniteField(_pretty.Imprimible):
         self._primitivo = None
         self._add, self._sub, self._mul = nat.add, nat.sub, nat.mul
         self._div, self._neg, self._pow = nat.div, nat.neg, nat.pow
+        self._textos = {}
 
     # -- datos -------------------------------------------------------------
     @property
@@ -849,9 +856,13 @@ def _texto_elemento(K: FiniteField, v: int, estilo: str):
     """(texto, compuesto) del elemento de valor/índice ``v`` de K."""
     if K._n == 1:
         return str(v), False
-    coefs = K._nat.to_coeffs(v)
-    texto = _pretty.polinomio_entero(coefs, K._var, estilo)
-    return texto, sum(1 for c in coefs if c) > 1
+    r = K._textos.get((v, estilo))
+    if r is None:
+        coefs = K._nat.to_coeffs(v)
+        r = (_pretty.polinomio_entero(coefs, K._var, estilo), sum(1 for c in coefs if c) > 1)
+        if len(K._textos) < TEXTOS_MAXIMOS:
+            K._textos[(v, estilo)] = r
+    return r
 
 
 class PrimeFieldElement(FieldElement):
