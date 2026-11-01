@@ -299,6 +299,42 @@ class _Analizador:
         raise self.error("se esperaba un número, una variable o '('")
 
 
+#: Las cadenas de hasta esta longitud se recuerdan ya analizadas (por destino).
+CACHE_LONGITUD_MAXIMA = 1000
+#: Número máximo de cadenas recordadas en cada caché (se descarta la más antigua).
+CACHE_ENTRADAS = 512
+
+
+class Cache:
+    """Caché pequeña de resultados del analizador: (destino, texto) -> valor.
+
+    Solo guarda cadenas ``str`` exactas (no subclases) de hasta
+    :data:`CACHE_LONGITUD_MAXIMA` caracteres y los análisis que terminaron
+    bien (los errores se recalculan, con el mismo mensaje).  El destino (un
+    cuerpo o un anillo, que viven tanto como el proceso porque están
+    cacheados) se identifica por su ``id`` y se comprueba al leer.
+    """
+
+    __slots__ = ("_d",)
+
+    def __init__(self) -> None:
+        self._d: dict = {}
+
+    def get(self, destino, texto):
+        if type(texto) is not str:
+            return None
+        r = self._d.get((id(destino), texto))
+        return r[1] if r is not None and r[0] is destino else None
+
+    def put(self, destino, texto, valor) -> None:
+        if type(texto) is not str or len(texto) > CACHE_LONGITUD_MAXIMA:
+            return
+        d = self._d
+        if len(d) >= CACHE_ENTRADAS:
+            del d[next(iter(d))]
+        d[(id(destino), texto)] = (destino, valor)
+
+
 def analizar(texto: str, constante: Callable[[int], object],
              variables: Optional[Mapping[str, object]] = None,
              dividir: Callable[[object, object], object] = operator.truediv,
