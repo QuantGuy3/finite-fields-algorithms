@@ -37,6 +37,7 @@
 #include "field.hpp"
 
 #include <algorithm>
+#include <cstddef>
 #include <stdexcept>
 #include <string>
 #include <utility>
@@ -138,12 +139,18 @@ public:
     bool operator!=(const Poly& o) const { return !(*this == o); }
 
     // ---- additive structure ------------------------------------------------
+    // Suma y resta: el resultado se construye una sola vez, coeficiente a
+    // coeficiente (sin rellenar primero con ceros y copiar), con las mismas
+    // operaciones del cuerpo: add/sub en la parte común; en la parte que solo
+    // tiene un operando, su copia (o -o_i = 0 - o_i en la resta).
     Poly operator+(const Poly& o) const {
         require_same_field(o);
-        std::size_t n = std::max(c_.size(), o.c_.size());
-        std::vector<Elem> r(n, K_->zero());
-        for (std::size_t i = 0; i < c_.size(); ++i) r[i] = c_[i];
-        for (std::size_t i = 0; i < o.c_.size(); ++i) r[i] = K_->add(r[i], o.c_[i]);
+        const std::size_t m = std::min(c_.size(), o.c_.size());
+        const std::vector<Elem>& larga = c_.size() >= o.c_.size() ? c_ : o.c_;
+        std::vector<Elem> r;
+        r.reserve(larga.size());
+        for (std::size_t i = 0; i < m; ++i) r.push_back(K_->add(c_[i], o.c_[i]));
+        r.insert(r.end(), larga.begin() + static_cast<std::ptrdiff_t>(m), larga.end());
         return Poly(*K_, std::move(r));
     }
     Poly operator-() const {
@@ -153,10 +160,12 @@ public:
     }
     Poly operator-(const Poly& o) const {
         require_same_field(o);
-        std::size_t n = std::max(c_.size(), o.c_.size());
-        std::vector<Elem> r(n, K_->zero());
-        for (std::size_t i = 0; i < c_.size(); ++i) r[i] = c_[i];
-        for (std::size_t i = 0; i < o.c_.size(); ++i) r[i] = K_->sub(r[i], o.c_[i]);
+        const std::size_t m = std::min(c_.size(), o.c_.size());
+        std::vector<Elem> r;
+        r.reserve(std::max(c_.size(), o.c_.size()));
+        for (std::size_t i = 0; i < m; ++i) r.push_back(K_->sub(c_[i], o.c_[i]));
+        for (std::size_t i = m; i < c_.size(); ++i) r.push_back(c_[i]);
+        for (std::size_t i = m; i < o.c_.size(); ++i) r.push_back(K_->neg(o.c_[i]));
         return Poly(*K_, std::move(r));
     }
 
