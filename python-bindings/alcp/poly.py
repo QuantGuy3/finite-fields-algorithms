@@ -254,7 +254,17 @@ class PolynomialRing(_pretty.Imprimible):
         variables = {self._var: self._gen}
         if K._var:
             variables[K._var] = self._envolver(K._nat.poly([K._p]))   # índice de a: p
-        return _parse.analizar(texto, self._constante, variables, _dividir_constante, usadas)
+        return _parse.analizar(texto, self._constante, variables, _dividir_constante, usadas,
+                               {self._var: self._potencia_variable})
+
+    def _potencia_variable(self, x: "Polynomial", k: int) -> "Polynomial":
+        """``x ** k`` para el generador x en el analizador: con k >= 2 construye el
+        monomio directamente (mismo resultado y mismos errores que ``x ** k``, sin
+        las multiplicaciones de la potenciación)."""
+        if k < 2:
+            return x ** k
+        _comprobar_grado(k)
+        return self._envolver(self._K._nat.poly([0] * k + [1]))
 
     def _constante(self, n: int) -> "Polynomial":
         return self._envolver(self._K._nat.poly([n % self._K._p]))
