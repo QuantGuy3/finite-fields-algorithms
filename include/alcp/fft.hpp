@@ -128,11 +128,153 @@ void transform(const FFTTables<Elem>& t, u64* a, std::size_t n, bool inverse) {
 
 }  // namespace word
 
+// ---------------------------------------------------------------------------
+// NTT multi-limb (F_p con p >= 2^62)
+// ---------------------------------------------------------------------------
+// El mismo cambio de representación para primos grandes: cada coeficiente
+// ocupa N limbs contiguos de un único bloque y se opera con las funciones mpn
+// de GMP sobre memoria propia (sin reservas por operación).  El producto por
+// un twiddle se reduce con Montgomery: el twiddle se guarda como w·R mod p y
+// REDC(y · w·R) = y·w mod p, ya en [0, p).  El producto punto a punto se
+// reduce con una división mpn_tdiv_qr.  Todos los valores son canónicos: el
+// resultado es idéntico bit a bit al del camino BigInt.
+namespace limb {
+
+using u64 = std::uint64_t;
+
+// Copia el valor de x (0 <= x < p) en d[0..N).
+inline void to_limbs(const BigInt& x, u64* d, std::size_t N) {
+    const std::size_t s = mpz_size(x.get_mpz_t());
+    for (std::size_t i = 0; i < N; ++i) d[i] = (i < s) ? mpz_getlimbn(x.get_mpz_t(), i) : 0;
+}
+// r = valor de d[0..N), reutilizando la memoria de r.
+inline void from_limbs(BigInt& r, const u64* d, std::size_t N) {
+    mp_limb_t* w = mpz_limbs_write(r.get_mpz_t(), static_cast<mp_size_t>(N));
+    for (std::size_t i = 0; i < N; ++i) w[i] = d[i];
+    mpz_limbs_finish(r.get_mpz_t(), static_cast<mp_size_t>(N));  // normaliza
+}
+
+// Contexto de operación: primo, constante de Montgomery y espacio de trabajo.
+struct Ctx {
+    std::size_t N;
+    const u64* p;
+    u64 pinv;
+    std::vector<u64> t;   // 2N + 1 limbs
+    std::vector<u64> q;   // N + 1 limbs (cociente de tdiv_qr)
+    std::vector<u64> v;   // N limbs
+    explicit Ctx(const LimbNTTTables& L) : N(L.N), p(L.p.data()), pinv(L.pinv), t(2 * L.N + 1), q(L.N + 1), v(L.N) {}
+
+    const mp_limb_t* mp(const u64* x) const { return reinterpret_cast<const mp_limb_t*>(x); }
+    mp_limb_t* mp(u64* x) const { return reinterpret_cast<mp_limb_t*>(x); }
+    mp_size_t sz() const { return static_cast<mp_size_t>(N); }
+
+    // out = REDC(t[0..2N)) = t·R^{-1} mod p, con t < p·R; out en [0, p).
+    void redc(u64* out) {
+        u64 hi = 0;
+        for (std::size_t i = 0; i < N; ++i) {
+            const u64 m = t[i] * pinv;
+            const u64 c = mpn_addmul_1(mp(t.data() + i), mp(p), sz(), m);
+            hi += mpn_add_1(mp(t.data() + i + N), mp(t.data() + i + N),
+                            static_cast<mp_size_t>(N - i), c);
+        }
+        if (hi || mpn_cmp(mp(t.data() + N), mp(p), sz()) >= 0)
+            mpn_sub_n(mp(out), mp(t.data() + N), mp(p), sz());
+        else
+            for (std::size_t i = 0; i < N; ++i) out[i] = t[N + i];
+    }
+    // out = y·w mod p, con wm = w·R mod p (twiddle en forma de Montgomery).
+    void mul_mont(u64* out, const u64* y, const u64* wm) {
+        mpn_mul_n(mp(t.data()), mp(y), mp(wm), sz());
+        redc(out);
+    }
+    // out = a·b mod p (división).
+    void mul_mod(u64* out, const u64* a, const u64* b) {
+        mpn_mul_n(mp(t.data()), mp(a), mp(b), sz());
+        mpn_tdiv_qr(mp(q.data()), mp(out), 0, mp(t.data()), 2 * sz(), mp(p), sz());
+    }
+};
+
+// Rellena las tablas multi-limb a partir de las tablas BigInt.
+template <class Elem>
+void build_tables(FFTTables<Elem>& t, const BigInt& P) {
+    LimbNTTTables& L = t.limb;
+    const std::size_t N = mpz_size(P.get_mpz_t());
+    L.p.resize(N);
+    to_limbs(P, L.p.data(), N);
+    // -p^{-1} mod 2^64 por Newton (p impar): cada paso duplica los bits.
+    u64 x = L.p[0];  // p·p ≡ 1 mod 8
+    for (int i = 0; i < 6; ++i) x *= 2 - L.p[0] * x;
+    L.pinv = ~x + 1;
+    const unsigned long rbits = 64UL * N;
+    auto mont = [&](const BigInt& w, std::vector<u64>& dst) {
+        BigInt m = (w << rbits) % P;  // w·R mod p
+        const std::size_t off = dst.size();
+        dst.resize(off + N);
+        to_limbs(m, dst.data() + off, N);
+    };
+    for (const auto& w : t.fwd_st) mont(w, L.fwd);
+    for (const auto& w : t.fwd) mont(w, L.fwd);
+    for (const auto& w : t.inv_st) mont(w, L.inv);
+    for (const auto& w : t.inv) mont(w, L.inv);
+    mont(t.inv_n, L.inv_n);
+    L.N = N;
+}
+
+// Transformada en sitio sobre a[0..n·N) (valores en [0, p)).
+template <class Elem>
+void transform(const FFTTables<Elem>& t, Ctx& C, u64* a, std::size_t n, bool inverse) {
+    const std::size_t N = C.N;
+    const u64* tw_all = inverse ? t.limb.inv.data() : t.limb.fwd.data();
+    const mp_size_t sz = C.sz();
+
+    for (const auto& [i, j] : t.swaps)
+        std::swap_ranges(a + i * N, a + (i + 1) * N, a + j * N);
+
+    u64* v = C.v.data();
+    for (std::size_t len = 2; len <= n; len <<= 1) {
+        const std::size_t half = len >> 1;
+        const u64* tw = tw_all + (half - 1) * N;
+        for (std::size_t i = 0; i < n; i += len) {
+            for (std::size_t j = 0; j < half; ++j) {
+                u64* x = a + (i + j) * N;
+                u64* y = a + (i + j + half) * N;
+                C.mul_mont(v, y, tw + j * N);                     // v = w·y
+                if (mpn_sub_n(C.mp(y), C.mp(x), C.mp(v), sz))     // y = x - v
+                    mpn_add_n(C.mp(y), C.mp(y), C.mp(C.p), sz);
+                if (mpn_add_n(C.mp(x), C.mp(x), C.mp(v), sz) ||   // x = x + v
+                    mpn_cmp(C.mp(x), C.mp(C.p), sz) >= 0)
+                    mpn_sub_n(C.mp(x), C.mp(x), C.mp(C.p), sz);
+            }
+        }
+    }
+
+    if (inverse)
+        for (std::size_t i = 0; i < n; ++i) {
+            C.mul_mont(v, a + i * N, t.limb.inv_n.data());
+            for (std::size_t l = 0; l < N; ++l) a[i * N + l] = v[l];
+        }
+}
+
+}  // namespace limb
+
 // ¿Admite el cuerpo la NTT en palabras?  F_p con limbs de 64 bits y p < 2^62.
 template <class Field>
 bool word_ntt_eligible(const Field& K) {
     if constexpr (std::is_same_v<Field, Fp> && word::kLimbs64) {
         return mpz_sizeinbase(K.characteristic().get_mpz_t(), 2) <= word::kMaxBits;
+    } else {
+        (void)K;
+        return false;
+    }
+}
+
+// ¿Admite el cuerpo la NTT multi-limb?  F_p con limbs de 64 bits y p >= 2^62
+// (impar, así que existe p^{-1} mod 2^64).
+template <class Field>
+bool limb_ntt_eligible(const Field& K) {
+    if constexpr (std::is_same_v<Field, Fp> && word::kLimbs64) {
+        return mpz_sizeinbase(K.characteristic().get_mpz_t(), 2) > word::kMaxBits &&
+               mpz_odd_p(K.characteristic().get_mpz_t());
     } else {
         (void)K;
         return false;
@@ -212,8 +354,13 @@ const FFTTables<typename Field::Elem>& tables(const Field& K, unsigned long k) {
     }
 
     // Copia en palabras de máquina de las mismas tablas (solo F_p, p < 2^62).
-    if constexpr (std::is_same_v<Field, Fp>)
-        if (word_ntt_eligible(K)) word::build_tables(*t, word::to_word(K.characteristic()));
+    // Copia multi-limb para el resto de F_p (p >= 2^62, impar).
+    if constexpr (std::is_same_v<Field, Fp>) {
+        if (word_ntt_eligible(K))
+            word::build_tables(*t, word::to_word(K.characteristic()));
+        else if (limb_ntt_eligible(K))
+            limb::build_tables(*t, K.characteristic());
+    }
 
     if (K.fft_cache_.size() <= k) K.fft_cache_.resize(k + 1);
     K.fft_cache_[k] = t;
@@ -276,6 +423,15 @@ void transform(const Field& K, std::vector<typename Field::Elem>& a, bool invers
             for (std::size_t i = 0; i < n; ++i) word::set_word(a[i], w[i]);
             return;
         }
+        if (t.limb.N != 0) {  // misma transformada, multi-limb
+            const std::size_t N = t.limb.N;
+            limb::Ctx C(t.limb);
+            std::vector<limb::u64> w(n * N);
+            for (std::size_t i = 0; i < n; ++i) limb::to_limbs(a[i], w.data() + i * N, N);
+            limb::transform(t, C, w.data(), n, inverse);
+            for (std::size_t i = 0; i < n; ++i) limb::from_limbs(a[i], w.data() + i * N, N);
+            return;
+        }
     }
 
     // Bit-reversal permutation (precalculada en las tablas).
@@ -335,6 +491,28 @@ std::vector<typename Field::Elem> convolve(const Field& K,
             word::transform(t, wa.data(), n, true);
             std::vector<Elem> out(L);
             for (std::size_t i = 0; i < L; ++i) word::set_word(out[i], wa[i]);
+            return out;
+        }
+        if (t.limb.N != 0) {  // ídem, multi-limb
+            using limb::u64;
+            const std::size_t N = t.limb.N;
+            limb::Ctx C(t.limb);
+            std::vector<u64> wa(n * N, 0);
+            for (std::size_t i = 0; i < A.size(); ++i) limb::to_limbs(A[i], wa.data() + i * N, N);
+            limb::transform(t, C, wa.data(), n, false);
+            if (&A == &B) {  // cuadrado: una sola transformada directa
+                for (std::size_t i = 0; i < n; ++i)
+                    C.mul_mod(wa.data() + i * N, wa.data() + i * N, wa.data() + i * N);
+            } else {
+                std::vector<u64> wb(n * N, 0);
+                for (std::size_t i = 0; i < B.size(); ++i) limb::to_limbs(B[i], wb.data() + i * N, N);
+                limb::transform(t, C, wb.data(), n, false);
+                for (std::size_t i = 0; i < n; ++i)
+                    C.mul_mod(wa.data() + i * N, wa.data() + i * N, wb.data() + i * N);
+            }
+            limb::transform(t, C, wa.data(), n, true);
+            std::vector<Elem> out(L);
+            for (std::size_t i = 0; i < L; ++i) limb::from_limbs(out[i], wa.data() + i * N, N);
             return out;
         }
     }

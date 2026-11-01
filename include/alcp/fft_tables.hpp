@@ -42,6 +42,18 @@ struct WordNTTTables {
     std::uint64_t inv_n = 0, inv_n_sh = 0;
 };
 
+// Versión multi-limb (F_p con p >= 2^62): cada valor ocupa N limbs de 64 bits
+// contiguos.  Los twiddles se guardan en forma de Montgomery w·R mod p
+// (R = 2^(64N)), de modo que REDC(y · w·R) = y·w mod p ya canónico.  N == 0
+// significa «no disponible».
+struct LimbNTTTables {
+    std::size_t N = 0;                          // limbs por valor
+    std::vector<std::uint64_t> p;               // el primo, N limbs
+    std::uint64_t pinv = 0;                     // -p^{-1} mod 2^64
+    std::vector<std::uint64_t> fwd, inv;        // (n - 1)·N limbs, por etapas
+    std::vector<std::uint64_t> inv_n;           // n^{-1}·R mod p, N limbs
+};
+
 template <class Elem>
 struct FFTTables {
     unsigned long k = 0;       // transform size is n = 2^k
@@ -52,6 +64,7 @@ struct FFTTables {
     std::vector<Elem> inv_st;  // twiddles inversos por etapa (contiguos), n/2 - 1
     std::vector<std::pair<std::size_t, std::size_t>> swaps;  // inversión de bits
     WordNTTTables word;        // solo F_p con p < 2^62 (si no, word.p == 0)
+    LimbNTTTables limb;        // solo F_p con p >= 2^62 (si no, limb.N == 0)
 };
 
 // Caché de tablas de un cuerpo: posición k -> tablas de tamaño 2^k (nullptr si
