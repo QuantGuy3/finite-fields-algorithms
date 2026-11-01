@@ -170,6 +170,8 @@ long fft_exponent(const Field& K, std::size_t result_len) {
 
 // Linear convolution of coefficient vectors A and B via FFT.  Caller must have
 // checked fft_exponent(K, A.size()+B.size()-1) >= 0.
+// Si A y B son el MISMO vector (mismo objeto), el producto es un cuadrado y
+// se transforma una sola vez.
 template <class Field>
 std::vector<typename Field::Elem> convolve(const Field& K,
                                            const std::vector<typename Field::Elem>& A,
@@ -182,17 +184,25 @@ std::vector<typename Field::Elem> convolve(const Field& K,
 
     // Copia directa de los coeficientes y relleno con ceros (sin construir
     // primero n ceros para sobrescribirlos después).
-    std::vector<Elem> fa, fb;
+    std::vector<Elem> fa;
     fa.reserve(n);
     fa.assign(A.begin(), A.end());
     fa.resize(n, K.zero());
-    fb.reserve(n);
-    fb.assign(B.begin(), B.end());
-    fb.resize(n, K.zero());
-
     transform(K, fa, false);
-    transform(K, fb, false);
-    for (std::size_t i = 0; i < n; ++i) fa[i] = K.mul(fa[i], fb[i]);
+
+    if (&A == &B) {
+        // Cuadrado (a*a, frecuente en pow_mod y Ben-Or): la transformada
+        // directa de B sería idéntica a la de A, así que se reutiliza.  Es
+        // evitar trabajo redundante idéntico: mismo algoritmo, mismo resultado.
+        for (std::size_t i = 0; i < n; ++i) fa[i] = K.mul(fa[i], fa[i]);
+    } else {
+        std::vector<Elem> fb;
+        fb.reserve(n);
+        fb.assign(B.begin(), B.end());
+        fb.resize(n, K.zero());
+        transform(K, fb, false);
+        for (std::size_t i = 0; i < n; ++i) fa[i] = K.mul(fa[i], fb[i]);
+    }
     transform(K, fa, true);
 
     fa.resize(L);
