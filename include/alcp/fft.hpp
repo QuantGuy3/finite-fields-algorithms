@@ -13,15 +13,131 @@
 
 #include "bigint.hpp"
 #include "fft_tables.hpp"
+#include "fp.hpp"
 
+#include <cstdint>
 #include <limits>
 #include <memory>
 #include <stdexcept>
 #include <string>
+#include <type_traits>
 #include <utility>
 #include <vector>
 
 namespace alcp::fft {
+
+// ---------------------------------------------------------------------------
+// NTT en palabras de máquina (F_p con p < 2^62)
+// ---------------------------------------------------------------------------
+// Cambio de REPRESENTACIÓN, no de algoritmo: la transformada es la misma NTT
+// radix-2 DIT, con la misma permutación, los mismos twiddles (copiados de las
+// tablas BigInt) y las mismas operaciones del cuerpo (v = w·y; y = x - v;
+// x = x + v; escalado final por n^{-1}).  Solo cambia cómo se hace cada
+// operación: sobre uint64_t en lugar de mpz (sin reservas de memoria), con el
+// producto por un twiddle fijo reducido mediante el cociente precalculado de
+// Shoup.  Todas las operaciones devuelven el representante canónico en
+// [0, p), así que el resultado es idéntico bit a bit.
+namespace word {
+
+// Disponible si los limbs de GMP son de 64 bits sin «nails».
+inline constexpr bool kLimbs64 = (GMP_NUMB_BITS == 64 && GMP_NAIL_BITS == 0);
+// Cota para p: con p < 2^62 la reducción de Shoup y las sumas caben de sobra.
+inline constexpr unsigned kMaxBits = 62;
+
+using u64 = std::uint64_t;
+using u128 = unsigned __int128;
+
+// Valor de un BigInt en [0, 2^64) (precondición: 0 <= x < p < 2^62).
+inline u64 to_word(const BigInt& x) {
+    return mpz_size(x.get_mpz_t()) ? static_cast<u64>(mpz_getlimbn(x.get_mpz_t(), 0)) : 0;
+}
+// r = v, reutilizando la memoria de r si ya tiene un limb.
+inline void set_word(BigInt& r, u64 v) {
+    if (v == 0) { mpz_set_ui(r.get_mpz_t(), 0); return; }
+    mp_limb_t* d = mpz_limbs_write(r.get_mpz_t(), 1);
+    d[0] = static_cast<mp_limb_t>(v);
+    mpz_limbs_finish(r.get_mpz_t(), 1);
+}
+
+// Cociente de Shoup de w: floor(w·2^64 / p), con 0 <= w < p.
+inline u64 shoup(u64 w, u64 p) { return static_cast<u64>((static_cast<u128>(w) << 64) / p); }
+// w·x mod p con el cociente de Shoup ws de w (x < 2^64, p < 2^63): el resto
+// aproximado está en [0, 2p) y una resta condicional lo deja en [0, p).
+inline u64 mul_shoup(u64 w, u64 ws, u64 x, u64 p) {
+    const u64 q = static_cast<u64>((static_cast<u128>(ws) * x) >> 64);
+    u64 r = w * x - q * p;
+    return (r >= p) ? r - p : r;
+}
+// a·b mod p para a, b en [0, p).
+inline u64 mul_mod(u64 a, u64 b, u64 p) {
+    if (p <= 0xFFFFFFFFu) return (a * b) % p;  // el producto cabe en 64 bits
+    return static_cast<u64>((static_cast<u128>(a) * b) % p);
+}
+
+// Rellena las tablas en palabras a partir de las tablas BigInt ya calculadas.
+template <class Elem>
+void build_tables(FFTTables<Elem>& t, u64 p) {
+    const std::size_t half = t.fwd.size();
+    WordNTTTables& w = t.word;
+    w.fwd.reserve(2 * half);
+    w.inv.reserve(2 * half);
+    // Etapas len = 2..n/2 (de fwd_st/inv_st) y la última, len = n (fwd/inv).
+    for (const auto& x : t.fwd_st) w.fwd.push_back(to_word(x));
+    for (const auto& x : t.fwd) w.fwd.push_back(to_word(x));
+    for (const auto& x : t.inv_st) w.inv.push_back(to_word(x));
+    for (const auto& x : t.inv) w.inv.push_back(to_word(x));
+    w.fwd_sh.resize(w.fwd.size());
+    w.inv_sh.resize(w.inv.size());
+    for (std::size_t i = 0; i < w.fwd.size(); ++i) w.fwd_sh[i] = shoup(w.fwd[i], p);
+    for (std::size_t i = 0; i < w.inv.size(); ++i) w.inv_sh[i] = shoup(w.inv[i], p);
+    w.inv_n = to_word(t.inv_n);
+    w.inv_n_sh = shoup(w.inv_n, p);
+    w.p = p;
+}
+
+// Transformada en sitio sobre a[0..n) (n = 2^k, valores en [0, p)).
+template <class Elem>
+void transform(const FFTTables<Elem>& t, u64* a, std::size_t n, bool inverse) {
+    const WordNTTTables& W = t.word;
+    const u64 p = W.p;
+    const u64* tw_all = inverse ? W.inv.data() : W.fwd.data();
+    const u64* ts_all = inverse ? W.inv_sh.data() : W.fwd_sh.data();
+
+    for (const auto& [i, j] : t.swaps) std::swap(a[i], a[j]);
+
+    for (std::size_t len = 2; len <= n; len <<= 1) {
+        const std::size_t half = len >> 1;
+        const u64* tw = tw_all + (half - 1);
+        const u64* ts = ts_all + (half - 1);
+        for (std::size_t i = 0; i < n; i += len) {
+            u64* x = a + i;
+            u64* y = a + i + half;
+            for (std::size_t j = 0; j < half; ++j) {
+                const u64 v = mul_shoup(tw[j], ts[j], y[j], p);
+                const u64 u = x[j];
+                const u64 s = u + v;
+                x[j] = (s >= p) ? s - p : s;
+                y[j] = (u >= v) ? u - v : u + p - v;
+            }
+        }
+    }
+
+    if (inverse)
+        for (std::size_t i = 0; i < n; ++i) a[i] = mul_shoup(W.inv_n, W.inv_n_sh, a[i], p);
+}
+
+}  // namespace word
+
+// ¿Admite el cuerpo la NTT en palabras?  F_p con limbs de 64 bits y p < 2^62.
+template <class Field>
+bool word_ntt_eligible(const Field& K) {
+    if constexpr (std::is_same_v<Field, Fp> && word::kLimbs64) {
+        return mpz_sizeinbase(K.characteristic().get_mpz_t(), 2) <= word::kMaxBits;
+    } else {
+        (void)K;
+        return false;
+    }
+}
 
 // Smallest k with 2^k >= n   (ceil log2).  ceil_log2(0)=ceil_log2(1)=0.
 inline unsigned long ceil_log2(std::size_t n) {
@@ -95,6 +211,10 @@ const FFTTables<typename Field::Elem>& tables(const Field& K, unsigned long k) {
         if (i < j) t->swaps.emplace_back(i, j);
     }
 
+    // Copia en palabras de máquina de las mismas tablas (solo F_p, p < 2^62).
+    if constexpr (std::is_same_v<Field, Fp>)
+        if (word_ntt_eligible(K)) word::build_tables(*t, word::to_word(K.characteristic()));
+
     if (K.fft_cache_.size() <= k) K.fft_cache_.resize(k + 1);
     K.fft_cache_[k] = t;
     return *t;
@@ -148,6 +268,16 @@ void transform(const Field& K, std::vector<typename Field::Elem>& a, bool invers
     // cambia el resultado (ni el consumo del generador aleatorio).
     const auto& t = tables(K, k);
 
+    if constexpr (std::is_same_v<Field, Fp>) {
+        if (t.word.p != 0) {  // misma transformada, en palabras de máquina
+            std::vector<word::u64> w(n);
+            for (std::size_t i = 0; i < n; ++i) w[i] = word::to_word(a[i]);
+            word::transform(t, w.data(), n, inverse);
+            for (std::size_t i = 0; i < n; ++i) word::set_word(a[i], w[i]);
+            return;
+        }
+    }
+
     // Bit-reversal permutation (precalculada en las tablas).
     for (const auto& [i, j] : t.swaps) std::swap(a[i], a[j]);
 
@@ -181,6 +311,33 @@ std::vector<typename Field::Elem> convolve(const Field& K,
     const std::size_t L = A.size() + B.size() - 1;
     const unsigned long k = ceil_log2(L);
     const std::size_t n = std::size_t(1) << k;
+
+    if constexpr (std::is_same_v<Field, Fp>) {
+        // Mismo esquema (transformar A y B, producto punto a punto,
+        // transformada inversa) en palabras de máquina: se convierte una vez
+        // a la entrada y una vez a la salida.  tables() se llama en el mismo
+        // punto que en el camino genérico (mismo consumo del RNG).
+        const auto& t = tables(K, k);
+        if (t.word.p != 0) {
+            using word::u64;
+            const u64 p = t.word.p;
+            std::vector<u64> wa(n, 0);
+            for (std::size_t i = 0; i < A.size(); ++i) wa[i] = word::to_word(A[i]);
+            word::transform(t, wa.data(), n, false);
+            if (&A == &B) {  // cuadrado: una sola transformada directa
+                for (std::size_t i = 0; i < n; ++i) wa[i] = word::mul_mod(wa[i], wa[i], p);
+            } else {
+                std::vector<u64> wb(n, 0);
+                for (std::size_t i = 0; i < B.size(); ++i) wb[i] = word::to_word(B[i]);
+                word::transform(t, wb.data(), n, false);
+                for (std::size_t i = 0; i < n; ++i) wa[i] = word::mul_mod(wa[i], wb[i], p);
+            }
+            word::transform(t, wa.data(), n, true);
+            std::vector<Elem> out(L);
+            for (std::size_t i = 0; i < L; ++i) word::set_word(out[i], wa[i]);
+            return out;
+        }
+    }
 
     // Copia directa de los coeficientes y relleno con ceros (sin construir
     // primero n ceros para sobrescribirlos después).

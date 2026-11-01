@@ -31,6 +31,17 @@
 
 namespace alcp {
 
+// Copia en palabras de máquina de los MISMOS twiddles, para F_p con p < 2^62
+// (ver fft.hpp, «NTT en palabras de máquina»).  p == 0 significa «no
+// disponible».  Los twiddles de todas las etapas (incluida la última) van
+// contiguos: la etapa len empieza en len/2 - 1.  *_sh son los cocientes de
+// Shoup floor(w·2^64 / p) que permiten multiplicar por w módulo p sin dividir.
+struct WordNTTTables {
+    std::uint64_t p = 0;
+    std::vector<std::uint64_t> fwd, fwd_sh, inv, inv_sh;  // n - 1 entradas
+    std::uint64_t inv_n = 0, inv_n_sh = 0;
+};
+
 template <class Elem>
 struct FFTTables {
     unsigned long k = 0;       // transform size is n = 2^k
@@ -40,6 +51,7 @@ struct FFTTables {
     std::vector<Elem> fwd_st;  // twiddles directos por etapa (contiguos), n/2 - 1
     std::vector<Elem> inv_st;  // twiddles inversos por etapa (contiguos), n/2 - 1
     std::vector<std::pair<std::size_t, std::size_t>> swaps;  // inversión de bits
+    WordNTTTables word;        // solo F_p con p < 2^62 (si no, word.p == 0)
 };
 
 // Caché de tablas de un cuerpo: posición k -> tablas de tamaño 2^k (nullptr si
