@@ -183,3 +183,14 @@ def test_especificadores_de_formato_genericos():
     assert f"{a + 1:>7}" == "  a + 1"
     with pytest.raises(ValueError):
         format(a, "d")                                   # no es un número
+
+
+def test_textos_de_elementos_cacheados_con_limite(monkeypatch):
+    from alcp import field
+    K = GF(3**7, var="w")
+    e = K("w^3 + 2w + 1")
+    assert str(e) == str(e) == "w³ + 2w + 1"            # la segunda, desde la caché
+    assert (e._v, "unicode") in K._textos
+    monkeypatch.setattr(field, "TEXTOS_MAXIMOS", len(K._textos))
+    f = K("w^5 + w")
+    assert format(f, "latex") == "w^{5} + w" and (f._v, "latex") not in K._textos
