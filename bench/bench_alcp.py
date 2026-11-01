@@ -501,18 +501,18 @@ def filtrar(escenarios: list, filtro: Optional[str]) -> list:
     return [e for e in escenarios if rx.search(e.nombre)]
 
 
-def _medianas(resultados: list) -> dict:
-    return {r["name"]: r.get("median_s") for r in resultados if r.get("median_s")}
+def _medianas(resultados: list, stat: str = "median_s") -> dict:
+    return {r["name"]: r.get(stat) for r in resultados if r.get(stat)}
 
 
-def imprimir_sobrecoste(por_label: dict) -> None:
+def imprimir_sobrecoste(por_label: dict, stat: str = "median_s") -> None:
     """Tabla del sobrecoste alcp/nat (y, con dos variantes, del cociente B/A)."""
     labels = list(por_label)
-    med = {lb: _medianas(rs) for lb, rs in por_label.items()}
+    med = {lb: _medianas(rs, stat) for lb, rs in por_label.items()}
     nombres = [r["name"][5:] for r in por_label[labels[0]] if r["name"].startswith("alcp.")]
     cab = "".join(f"{lb[:14]:>16}{'x nat':>8}" for lb in labels)
     extra = f"{'B/A':>8}{'sobrecoste':>12}" if len(labels) == 2 else ""
-    print(f"\n{'escenario':<30}{cab}{extra}   (ms; 'x nat' = alcp / nativo)")
+    print(f"\n{'escenario':<30}{cab}{extra}   (ms; 'x nat' = alcp / nativo; {stat[:-2]})")
     for n in nombres:
         fila, tiempos, nat_t = f"{n:<30}", [], None
         for lb in labels:
@@ -596,7 +596,7 @@ def intercalar(a) -> int:
         for r in rs:
             if r["error"]:
                 print(f"ERROR {r['name']}: {r['error']}")
-    imprimir_sobrecoste(por_label)
+    imprimir_sobrecoste(por_label, "min_s" if a.stat == "min" else "median_s")
     print(f"-> {out_dir}")
     return 1 if error else 0
 
@@ -620,6 +620,8 @@ def main(argv=None) -> int:
                     help="variantes a intercalar (cada una, un directorio con alcp/)")
     ap.add_argument("--rounds", type=int, default=3, help="rondas de --interleave (por defecto 3)")
     ap.add_argument("--out-dir", default=None, help="directorio de los JSON de --interleave")
+    ap.add_argument("--stat", choices=("median", "min"), default="median",
+                    help="estadístico de la tabla de --interleave (min es más robusto con ruido)")
     a = ap.parse_args(argv)
     if a.list:
         for e in construir():
