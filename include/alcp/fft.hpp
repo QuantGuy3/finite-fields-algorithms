@@ -15,14 +15,66 @@
 #include "fft_tables.hpp"
 #include "fp.hpp"
 
+#include <algorithm>
 #include <cstdint>
+#include <cstdlib>
+#include <future>
 #include <limits>
 #include <memory>
 #include <stdexcept>
 #include <string>
+#include <thread>
 #include <type_traits>
 #include <utility>
 #include <vector>
+
+// ---------------------------------------------------------------------------
+// Paralelismo (fase 3)
+// ---------------------------------------------------------------------------
+// Ayudantes mínimos sobre std::async (sin grupo de hilos persistente: así no
+// quedan hilos vivos al descargar el módulo de Python).  Solo se usan en
+// regiones sin estado compartido mutable: las operaciones de cuerpo son puras,
+// las tablas FFT se construyen ANTES de entrar en paralelo y el RNG no se usa
+// en la multiplicación.  El resultado no depende del número de hilos.
+// Número de hilos: std::thread::hardware_concurrency(), limitable con la
+// variable de entorno ALCP_THREADS (ALCP_THREADS=1 desactiva el paralelismo).
+namespace alcp::par {
+
+inline unsigned max_threads() {
+    static const unsigned n = [] {
+        unsigned hw = std::thread::hardware_concurrency();
+        if (hw == 0) hw = 1;
+        if (const char* s = std::getenv("ALCP_THREADS")) {
+            const long v = std::strtol(s, nullptr, 10);
+            if (v >= 1) return static_cast<unsigned>(v) < hw ? static_cast<unsigned>(v) : hw;
+        }
+        return hw;
+    }();
+    return n;
+}
+
+// f(lo, hi) sobre [0, total) troceado en bloques de al menos min_chunk
+// elementos; el último bloque lo ejecuta el hilo llamante.  Las excepciones
+// se propagan (future::get).
+template <class F>
+void parallel_for(std::size_t total, std::size_t min_chunk, F&& f) {
+    std::size_t T = max_threads();
+    if (min_chunk == 0) min_chunk = 1;
+    if (total / min_chunk < T) T = total / min_chunk;
+    if (T <= 1) { f(std::size_t(0), total); return; }
+    std::vector<std::future<void>> fut;
+    fut.reserve(T - 1);
+    const std::size_t chunk = (total + T - 1) / T;
+    std::size_t lo = 0;
+    for (std::size_t t = 0; t + 1 < T && lo < total; ++t, lo += chunk) {
+        const std::size_t hi = std::min(total, lo + chunk);
+        fut.push_back(std::async(std::launch::async, [&f, lo, hi] { f(lo, hi); }));
+    }
+    if (lo < total) f(lo, total);
+    for (auto& x : fut) x.get();
+}
+
+}  // namespace alcp::par
 
 namespace alcp::fft {
 

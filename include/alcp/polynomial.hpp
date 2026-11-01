@@ -37,8 +37,10 @@
 #include "field.hpp"
 
 #include <algorithm>
+#include <future>
 #include <stdexcept>
 #include <string>
+#include <type_traits>
 #include <utility>
 #include <vector>
 
@@ -55,6 +57,11 @@ public:
 
     // Below this many coefficients in the smaller operand, schoolbook wins.
     static constexpr std::size_t kKaratsubaCutoff = 32;
+    // Karatsuba reparte sus tres subproductos entre hilos solo si ambos
+    // operandos tienen al menos tantos coeficientes (coste de crear hilos):
+    // 256 si el elemento es un entero (F_p, productos baratos) y 64 si es un
+    // vector (F_q: cada producto de elementos ya cuesta O(n^2) operaciones).
+    static constexpr std::size_t kParKaratsubaMin = std::is_same_v<Elem, BigInt> ? 256 : 64;
 
     // Número máximo de intentos aleatorios de equal_degree_split antes de
     // concluir que la entrada no cumple la precondición (ver equal_degree).
@@ -228,7 +235,11 @@ public:
         if (is_zero() || o.is_zero()) return zero(*K_);
         if (c_.size() <= kKaratsubaCutoff || o.c_.size() <= kKaratsubaCutoff)
             return mul_school(o);
-        return Poly(*K_, karatsuba_rec(*K_, c_.data(), c_.size(), o.c_.data(), o.c_.size()));
+        // Profundidad paralela: 2 niveles (hasta 9 ramas) si hay >= 9 hilos,
+        // 1 nivel (3 ramas) si hay >= 3, ninguno en otro caso.
+        const unsigned T = par::max_threads();
+        const int depth = (T >= 9) ? 2 : (T >= 3 ? 1 : 0);
+        return Poly(*K_, karatsuba_rec(*K_, c_.data(), c_.size(), o.c_.data(), o.c_.size(), depth));
     }
 
     // ---- Euclidean division ------------------------------------------------
@@ -673,8 +684,12 @@ private:
     // lead(a)·lead(b) != 0).
     // Si a y b son la misma vista (cuadrado), aL+aH y bL+bH coinciden: la suma
     // se calcula una vez (trabajo redundante idéntico).
+    // Paralelismo: con par_depth > 0 y ambos operandos de al menos
+    // kParKaratsubaMin coeficientes, z0 y z2 se calculan en otros dos hilos
+    // mientras este calcula z1 (los tres subproductos son independientes y las
+    // operaciones de cuerpo son puras); los hijos reciben par_depth - 1.
     static std::vector<Elem> karatsuba_rec(const Field& K, const Elem* a, std::size_t na,
-                                           const Elem* b, std::size_t nb) {
+                                           const Elem* b, std::size_t nb, int par_depth = 0) {
         const bool same = (a == b && na == nb);
         if (na <= kKaratsubaCutoff || nb <= kKaratsubaCutoff) {
             // Caso base: exactamente mul_school (se reutiliza para heredar
@@ -692,20 +707,41 @@ private:
         const std::size_t nbL = same ? naL : trimmed_len(K, b, std::min(m, nb));
         const std::size_t nbH = (m < nb) ? nb - m : 0;
 
-        std::vector<Elem> z0, z2, z1;
-        if (naL > 0 && nbL > 0) z0 = karatsuba_rec(K, a, naL, b, nbL);
-        if (naH > 0 && nbH > 0) z2 = karatsuba_rec(K, a + m, naH, b + m, nbH);
-        {
+        const bool par = par_depth > 0 && std::min(na, nb) >= kParKaratsubaMin;
+        const int child = par ? par_depth - 1 : 0;
+        auto calc_z0 = [&]() -> std::vector<Elem> {
+            if (naL > 0 && nbL > 0) return karatsuba_rec(K, a, naL, b, nbL, child);
+            return {};
+        };
+        auto calc_z2 = [&]() -> std::vector<Elem> {
+            if (naH > 0 && nbH > 0) return karatsuba_rec(K, a + m, naH, b + m, nbH, child);
+            return {};
+        };
+        auto calc_z1 = [&]() -> std::vector<Elem> {
             std::vector<Elem> sa = (naH > 0) ? add_views(K, a, naL, a + m, naH)
                                              : std::vector<Elem>(a, a + naL);
             if (same) {
-                if (!sa.empty()) z1 = karatsuba_rec(K, sa.data(), sa.size(), sa.data(), sa.size());
-            } else {
-                std::vector<Elem> sb = (nbH > 0) ? add_views(K, b, nbL, b + m, nbH)
-                                                 : std::vector<Elem>(b, b + nbL);
-                if (!sa.empty() && !sb.empty())
-                    z1 = karatsuba_rec(K, sa.data(), sa.size(), sb.data(), sb.size());
+                if (!sa.empty()) return karatsuba_rec(K, sa.data(), sa.size(), sa.data(), sa.size(), child);
+                return {};
             }
+            std::vector<Elem> sb = (nbH > 0) ? add_views(K, b, nbL, b + m, nbH)
+                                             : std::vector<Elem>(b, b + nbL);
+            if (!sa.empty() && !sb.empty())
+                return karatsuba_rec(K, sa.data(), sa.size(), sb.data(), sb.size(), child);
+            return {};
+        };
+
+        std::vector<Elem> z0, z2, z1;
+        if (par) {
+            auto f0 = std::async(std::launch::async, calc_z0);
+            auto f2 = std::async(std::launch::async, calc_z2);
+            z1 = calc_z1();
+            z0 = f0.get();
+            z2 = f2.get();
+        } else {
+            z0 = calc_z0();
+            z2 = calc_z2();
+            z1 = calc_z1();
         }
         // z1 -= z0; z1 -= z2 (en sitio) y recorte.
         const std::size_t n1 = std::max({z1.size(), z0.size(), z2.size()});
