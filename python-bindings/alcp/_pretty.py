@@ -144,11 +144,21 @@ def polinomio(coefs: Sequence, nombre_var: str, estilo: str,
     """
     var = variable(nombre_var, estilo)
     partes = []
+    # Cachés locales: ``formato`` es función pura del coeficiente y los
+    # coeficientes se repiten mucho (sobre todo en cuerpos pequeños), así que
+    # cada valor distinto se formatea una sola vez; lo mismo con el texto
+    # «coeficiente + separador» que precede a la potencia de la variable.
+    formatos: dict = {}
+    prefijos: dict = {}
     for k in range(len(coefs) - 1, -1, -1):
-        f = formato(coefs[k])
+        c = coefs[k]
+        if c in formatos:
+            f = formatos[c]
+        else:
+            f = formatos[c] = formato(c)
         if f is None:
             continue
-        texto, compuesto = f
+        texto = f[0]
         if k == 0:
             partes.append(texto)
             continue
@@ -156,8 +166,11 @@ def polinomio(coefs: Sequence, nombre_var: str, estilo: str,
         if texto == "1":
             partes.append(pot)
         else:
-            sep = _separador_producto(estilo, nombre_var, texto)
-            partes.append((parentesis(texto, estilo) if compuesto else texto) + sep + pot)
+            prefijo = prefijos.get(f)
+            if prefijo is None:
+                sep = _separador_producto(estilo, nombre_var, texto)
+                prefijo = prefijos[f] = (parentesis(texto, estilo) if f[1] else texto) + sep
+            partes.append(prefijo + pot)
     return " + ".join(partes) if partes else "0"
 
 
