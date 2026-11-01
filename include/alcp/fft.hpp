@@ -15,6 +15,7 @@
 #include "fft_tables.hpp"
 
 #include <limits>
+#include <memory>
 #include <stdexcept>
 #include <string>
 #include <utility>
@@ -39,8 +40,8 @@ inline unsigned long ceil_log2(std::size_t n) {
 template <class Field>
 const FFTTables<typename Field::Elem>& tables(const Field& K, unsigned long k) {
     using Elem = typename Field::Elem;
-    auto it = K.fft_cache_.find(k);
-    if (it != K.fft_cache_.end()) return it->second;
+    // Acceso directo por índice: la caché es un vector indexado por k.
+    if (k < K.fft_cache_.size() && K.fft_cache_[k]) return *K.fft_cache_[k];
 
     if (k >= static_cast<unsigned long>(std::numeric_limits<std::size_t>::digits) - 1)
         throw std::invalid_argument("fft::tables: k = " + std::to_string(k) + " demasiado grande");
@@ -49,8 +50,8 @@ const FFTTables<typename Field::Elem>& tables(const Field& K, unsigned long k) {
                                     std::to_string(k) + " (capacidad FFT " +
                                     std::to_string(K.fft_capacity()) + ")");
 
-    FFTTables<Elem> t;
-    t.k = k;
+    auto t = std::make_shared<FFTTables<Elem>>();
+    t->k = k;
     const std::size_t n = std::size_t(1) << k;
     const std::size_t half = n / 2;
 
@@ -60,22 +61,73 @@ const FFTTables<typename Field::Elem>& tables(const Field& K, unsigned long k) {
     Elem g = K.pow(K.fft_base_root(), BigInt(1) << (cap - k));
     Elem g_inv = K.inv(g);
 
-    t.fwd.resize(half);
-    t.inv.resize(half);
+    t->fwd.resize(half);
+    t->inv.resize(half);
     if (half > 0) {
-        t.fwd[0] = K.one();
-        t.inv[0] = K.one();
+        t->fwd[0] = K.one();
+        t->inv[0] = K.one();
         for (std::size_t i = 1; i < half; ++i) {
-            t.fwd[i] = K.mul(t.fwd[i - 1], g);
-            t.inv[i] = K.mul(t.inv[i - 1], g_inv);
+            t->fwd[i] = K.mul(t->fwd[i - 1], g);
+            t->inv[i] = K.mul(t->inv[i - 1], g_inv);
         }
     }
-    t.inv_n = K.inv(K.from_int(BigInt(static_cast<unsigned long>(n))));
+    t->inv_n = K.inv(K.from_int(BigInt(static_cast<unsigned long>(n))));
 
-    auto [pos, ok] = K.fft_cache_.emplace(k, std::move(t));
-    (void)ok;
-    return pos->second;
+    // Twiddles por etapa, contiguos (ver fft_tables.hpp): copia de los mismos
+    // valores reordenados; no se calcula ninguna potencia nueva.
+    if (half > 1) {
+        t->fwd_st.reserve(half - 1);
+        t->inv_st.reserve(half - 1);
+        for (std::size_t len = 2; len < n; len <<= 1) {
+            const std::size_t step = n / len;
+            for (std::size_t j = 0; j < len / 2; ++j) {
+                t->fwd_st.push_back(t->fwd[j * step]);
+                t->inv_st.push_back(t->inv[j * step]);
+            }
+        }
+    }
+
+    // Permutación de inversión de bits, precalculada como lista de intercambios.
+    for (std::size_t i = 1, j = 0; i < n; ++i) {
+        std::size_t bit = n >> 1;
+        for (; j & bit; bit >>= 1) j ^= bit;
+        j ^= bit;
+        if (i < j) t->swaps.emplace_back(i, j);
+    }
+
+    if (K.fft_cache_.size() <= k) K.fft_cache_.resize(k + 1);
+    K.fft_cache_[k] = t;
+    return *t;
 }
+
+namespace detail {
+
+// Mariposas DIT de las etapas len = 2..n sobre `a` ya permutado.  Para la
+// etapa len < n los twiddles se leen seguidos de `st` (desde len/2 - 1); para
+// len = n, de `last` (la tabla completa, paso 1).  Las operaciones son las del
+// algoritmo original: v = w·a[i+j+h]; a[i+j+h] = a[i+j] - v; a[i+j] = a[i+j] + v.
+// Se calcula la resta antes que la suma para no tener que copiar a[i+j].
+template <class Field>
+void butterflies(const Field& K, typename Field::Elem* a, std::size_t n,
+                 const std::vector<typename Field::Elem>& st,
+                 const std::vector<typename Field::Elem>& last) {
+    using Elem = typename Field::Elem;
+    for (std::size_t len = 2; len <= n; len <<= 1) {
+        const std::size_t half = len >> 1;
+        const Elem* tw = (len == n) ? last.data() : st.data() + (half - 1);
+        for (std::size_t i = 0; i < n; i += len) {
+            Elem* x = a + i;
+            Elem* y = a + i + half;
+            for (std::size_t j = 0; j < half; ++j) {
+                Elem v = K.mul(tw[j], y[j]);
+                y[j] = K.sub(x[j], v);
+                x[j] = K.add(x[j], v);
+            }
+        }
+    }
+}
+
+}  // namespace detail
 
 // In-place iterative radix-2 DIT transform of `a` (size must be 2^k).
 // inverse=false: forward DFT.  inverse=true: inverse DFT (includes the n^{-1}
@@ -95,29 +147,12 @@ void transform(const Field& K, std::vector<typename Field::Elem>& a, bool invers
     // Las tablas no dependen de `a`: obtenerlas antes de la permutación no
     // cambia el resultado (ni el consumo del generador aleatorio).
     const auto& t = tables(K, k);
-    const auto& tw = inverse ? t.inv : t.fwd;  // length n/2, full-size twiddles
 
-    // Bit-reversal permutation.
-    for (std::size_t i = 1, j = 0; i < n; ++i) {
-        std::size_t bit = n >> 1;
-        for (; j & bit; bit >>= 1) j ^= bit;
-        j ^= bit;
-        if (i < j) std::swap(a[i], a[j]);
-    }
+    // Bit-reversal permutation (precalculada en las tablas).
+    for (const auto& [i, j] : t.swaps) std::swap(a[i], a[j]);
 
-    for (std::size_t len = 2; len <= n; len <<= 1) {
-        const std::size_t step = n / len;       // stride into the twiddle table
-        const std::size_t half = len >> 1;
-        for (std::size_t i = 0; i < n; i += len) {
-            for (std::size_t j = 0; j < half; ++j) {
-                const auto& w = tw[j * step];
-                typename Field::Elem u = a[i + j];
-                typename Field::Elem v = K.mul(w, a[i + j + half]);
-                a[i + j] = K.add(u, v);
-                a[i + j + half] = K.sub(u, v);
-            }
-        }
-    }
+    if (inverse) detail::butterflies(K, a.data(), n, t.inv_st, t.inv);
+    else         detail::butterflies(K, a.data(), n, t.fwd_st, t.fwd);
 
     if (inverse)
         for (auto& x : a) x = K.mul(x, t.inv_n);
@@ -145,9 +180,15 @@ std::vector<typename Field::Elem> convolve(const Field& K,
     const unsigned long k = ceil_log2(L);
     const std::size_t n = std::size_t(1) << k;
 
-    std::vector<Elem> fa(n, K.zero()), fb(n, K.zero());
-    for (std::size_t i = 0; i < A.size(); ++i) fa[i] = A[i];
-    for (std::size_t i = 0; i < B.size(); ++i) fb[i] = B[i];
+    // Copia directa de los coeficientes y relleno con ceros (sin construir
+    // primero n ceros para sobrescribirlos después).
+    std::vector<Elem> fa, fb;
+    fa.reserve(n);
+    fa.assign(A.begin(), A.end());
+    fa.resize(n, K.zero());
+    fb.reserve(n);
+    fb.assign(B.begin(), B.end());
+    fb.resize(n, K.zero());
 
     transform(K, fa, false);
     transform(K, fb, false);
