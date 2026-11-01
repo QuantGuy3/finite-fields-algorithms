@@ -51,6 +51,16 @@ def _poli_desde_indices(R: "PolynomialRing", coefs: list) -> "Polynomial":
     return R._envolver(R._K._nat.poly(list(coefs)))
 
 
+def _valores(K: FiniteField, coefs) -> list:
+    """``[K._valor(c) for c in coefs]`` con caminos rápidos para int y para los
+    elementos del propio cuerpo (mismo resultado y mismo orden de errores)."""
+    p, clase, valor = K._p, K._clase, K._valor
+    return [c % p if c.__class__ is int
+            else c._v if c.__class__ is clase and c._K is K
+            else valor(c)
+            for c in coefs]
+
+
 def _comprobar_grado(d: int) -> None:
     if d > GRADO_MAXIMO:
         raise ValueError(f"grado {texto_entero(d)} demasiado grande (máximo {GRADO_MAXIMO})")
@@ -210,7 +220,7 @@ class PolynomialRing(_pretty.Imprimible):
         if isinstance(x, dict):
             return self._desde_dict(x)
         if isinstance(x, (list, tuple)):
-            return K._nat.poly([K._valor(c) for c in x])
+            return K._nat.poly(_valores(K, x))
         if isinstance(x, FieldElement):
             v = K._valor(x, operando)
             return v if v is _PROMOVER else K._nat.poly([v])
@@ -227,7 +237,7 @@ class PolynomialRing(_pretty.Imprimible):
         except TypeError:
             raise TypeError(f"no se puede convertir un valor de tipo {type(x).__name__!r} "
                             f"en un polinomio de {self!r}") from None
-        return K._nat.poly([K._valor(c) for c in coefs])
+        return K._nat.poly(_valores(K, coefs))
 
     def _desde_polinomio(self, f: "Polynomial", operando: bool):
         S = f._R
