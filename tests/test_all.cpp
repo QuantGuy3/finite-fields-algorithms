@@ -267,6 +267,13 @@ static void test_mul_algos(const Field& F, int da, int db) {
         P viafft = a.mul(b, MulAlgo::FFT);
         CHECK(school == viafft);
     }
+    // Cuadrado con el MISMO objeto como operando (camino a*a: una sola
+    // transformada directa en la FFT).
+    P sq = a.mul_school(a);
+    CHECK(sq == a * a);
+    CHECK(sq == a.mul(a, MulAlgo::Karatsuba));
+    if (fft::fft_exponent(F, 2 * a.coeffs().size() - 1) >= 0)
+        CHECK(sq == a.mul(a, MulAlgo::FFT));
 }
 
 // ----------------------------------------------------------------------------
