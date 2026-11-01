@@ -29,6 +29,7 @@ de cálculo (división por cero, potencias no válidas) conservan su tipo
 from __future__ import annotations
 
 import operator
+import re
 from typing import Callable, Dict, List, Mapping, NamedTuple, Optional, Set
 
 # Profundidad máxima de paréntesis (evita RecursionError con entradas hostiles).
@@ -39,6 +40,11 @@ _SUPER = {"⁰": "0", "¹": "1", "²": "2", "³": "3", "⁴": "4", "⁵": "5",
 _OPERADORES = {"+": "+", "-": "-", "−": "-", "*": "*", "·": "*", "⋅": "*",
                "×": "*", "∗": "*", "/": "/", "÷": "/", "^": "^"}
 _DIGITOS = frozenset("0123456789")
+_SIGNOS = frozenset("+-")
+# Rachas de cifras ASCII y de superíndices (equivalen a los bucles carácter a
+# carácter sobre _DIGITOS y _SUPER, pero recorren la racha en C).
+_RE_CIFRAS = re.compile("[0-9]+")
+_RE_SUPER = re.compile("[" + "".join(_SUPER) + "]+")
 
 # Tipos de token
 NUM, VAR, OP, ABRE, CIERRA, SUP, FIN = "número", "variable", "operador", "(", ")", "superíndice", "fin"
@@ -102,15 +108,12 @@ def tokenizar(texto: str, nombres: Mapping[str, object]) -> List[Token]:
         if c.isspace():
             i += 1
         elif c in _DIGITOS:
-            j = i
-            while j < n and texto[j] in _DIGITOS:
-                j += 1
-            toks.append(Token(NUM, entero_decimal(texto[i:j]), i))
+            j = _RE_CIFRAS.match(texto, i).end()
+            # Solo cifras ASCII: es lo que haría entero_decimal, sin revalidar.
+            toks.append(Token(NUM, _cifras_a_entero(texto[i:j]), i))
             i = j
         elif c in _SUPER:
-            j = i
-            while j < n and texto[j] in _SUPER:
-                j += 1
+            j = _RE_SUPER.match(texto, i).end()
             cifras = "".join(_SUPER[ch] for ch in texto[i:j])
             try:
                 valor = entero_decimal(cifras)
@@ -208,18 +211,24 @@ class _Analizador:
                              if t.tipo == NUM else "símbolo inesperado")
         return v
 
+    # Los métodos de la gramática leen el token actual con self.toks[self.i]
+    # (sin pasar por la propiedad ``actual`` ni ``es_op``): son el bucle caliente.
     def suma(self):
         v = self.termino()
-        while self.es_op("+", "-"):
-            signo = self.avanzar().valor
+        toks = self.toks
+        while True:
+            t = toks[self.i]
+            if t.tipo != OP or t.valor not in _SIGNOS:
+                return v
+            self.i += 1
             w = self.termino()
-            v = v + w if signo == "+" else v - w
-        return v
+            v = v + w if t.valor == "+" else v - w
 
     def termino(self):
         v = self.unario()
+        toks = self.toks
         while True:
-            t = self.actual
+            t = toks[self.i]
             if t.tipo == OP and t.valor == "*":
                 self.avanzar()
                 v = v * self.unario()
@@ -234,15 +243,20 @@ class _Analizador:
     def unario(self):
         # Iterativo (no recursivo): admite cadenas largas de signos.
         negativo = False
-        while self.es_op("+", "-"):
-            negativo ^= self.avanzar().valor == "-"
+        toks = self.toks
+        while True:
+            t = toks[self.i]
+            if t.tipo != OP or t.valor not in _SIGNOS:
+                break
+            self.i += 1
+            negativo ^= t.valor == "-"
         v = self.potencia()
         return -v if negativo else v
 
     def potencia(self):
-        t0 = self.actual
+        t0 = self.toks[self.i]
         base = self.atomo()
-        t = self.actual
+        t = self.toks[self.i]
         if t.tipo == OP and t.valor == "^":
             self.avanzar()
             k = self.exponente()
@@ -278,7 +292,7 @@ class _Analizador:
         self.avanzar()
 
     def atomo(self):
-        t = self.actual
+        t = self.toks[self.i]
         if t.tipo == NUM:
             self.avanzar()
             return self.constante(t.valor)
