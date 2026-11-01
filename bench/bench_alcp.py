@@ -206,6 +206,22 @@ def construir() -> list:
         texto = format(R(lst), "unicode")
         return _rep(lambda: R(texto), 20), _rep(lambda: Fn.poly(lst), 20), _ind_poli, lambda P: P.coeffs()
 
+    @add("poly.from_str_distinct.d40", "R(cadena) de grado 40 en F_101, 20 cadenas distintas", 20)
+    def _(alcp, nat, rng):
+        # Cadenas distintas en cada repetición: mide el analizador sin la caché
+        # de cadenas repetidas (un sufijo '+ 0*k' distinto no cambia el valor).
+        R, Fn = alcp.GF(P101)["x"], nat.Fp(P101)
+        lst = _coefs(rng, P101, 40)
+        base = format(R(lst), "unicode")
+        cont = iter(range(10**9))
+
+        def pkg():
+            r = None
+            for _ in range(20):
+                r = R(f"{base} + 0*{next(cont)}")
+            return r
+        return pkg, _rep(lambda: Fn.poly(lst), 20), _ind_poli, lambda P: P.coeffs()
+
     @add("poly.from_str_f9.d40", "R(cadena ascii) de grado 40 en F_9 (x10)", 10)
     def _(alcp, nat, rng):
         R, Kn = alcp.GF(9)["x"], nat.Fq(3, [1, 0, 1])
@@ -510,7 +526,7 @@ def imprimir_sobrecoste(por_label: dict, stat: str = "median_s") -> None:
     labels = list(por_label)
     med = {lb: _medianas(rs, stat) for lb, rs in por_label.items()}
     nombres = [r["name"][5:] for r in por_label[labels[0]] if r["name"].startswith("alcp.")]
-    cab = "".join(f"{lb[:14]:>16}{'x nat':>8}" for lb in labels)
+    cab = "".join(f"{lb[:14]:>16}{'x nat':>9}" for lb in labels)
     extra = f"{'B/A':>8}{'sobrecoste':>12}" if len(labels) == 2 else ""
     print(f"\n{'escenario':<30}{cab}{extra}   (ms; 'x nat' = alcp / nativo; {stat[:-2]})")
     for n in nombres:
@@ -520,7 +536,9 @@ def imprimir_sobrecoste(por_label: dict, stat: str = "median_s") -> None:
             tn = med[lb].get("nat." + n)
             nat_t = tn if nat_t is None else nat_t
             tiempos.append(t)
-            ratio = f"{t / tn:7.2f}x" if t and tn else f"{'-':>8}"
+            ratio = f"{'-':>9}"
+            if t and tn:
+                ratio = f"{t / tn:8.2f}x" if t / tn < 1000 else f"{t / tn:8.0f}x"
             fila += (f"{t * 1e3:16.3f}" if t else f"{'ERR':>16}") + ratio
         if len(labels) == 2 and all(tiempos):
             fila += f"{tiempos[1] / tiempos[0]:8.3f}"
