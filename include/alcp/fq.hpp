@@ -132,41 +132,65 @@ public:
     }
 
     // --- arithmetic ---------------------------------------------------------
+    // Implementación con la API C de GMP escribiendo directamente en los
+    // coeficientes del resultado (sin temporales de gmpxx).  Las entradas están
+    // en [0, p), así que en add/sub basta una corrección condicional.
     Elem add(const Elem& a, const Elem& b) const {
         Elem r(n_);
-        for (unsigned long i = 0; i < n_; ++i) { r[i] = a[i] + b[i]; if (r[i] >= p_) r[i] -= p_; }
+        for (unsigned long i = 0; i < n_; ++i) {
+            mpz_ptr ri = r[i].get_mpz_t();
+            mpz_add(ri, a[i].get_mpz_t(), b[i].get_mpz_t());
+            if (mpz_cmp(ri, p_.get_mpz_t()) >= 0) mpz_sub(ri, ri, p_.get_mpz_t());
+        }
         return r;
     }
     Elem sub(const Elem& a, const Elem& b) const {
         Elem r(n_);
-        for (unsigned long i = 0; i < n_; ++i) { r[i] = a[i] - b[i]; if (sgn(r[i]) < 0) r[i] += p_; }
+        for (unsigned long i = 0; i < n_; ++i) {
+            mpz_ptr ri = r[i].get_mpz_t();
+            mpz_sub(ri, a[i].get_mpz_t(), b[i].get_mpz_t());
+            if (mpz_sgn(ri) < 0) mpz_add(ri, ri, p_.get_mpz_t());
+        }
         return r;
     }
     Elem neg(const Elem& a) const {
         Elem r(n_);
-        for (unsigned long i = 0; i < n_; ++i) r[i] = (a[i] == 0) ? BigInt(0) : (p_ - a[i]);
+        for (unsigned long i = 0; i < n_; ++i)
+            if (mpz_sgn(a[i].get_mpz_t()) != 0) mpz_sub(r[i].get_mpz_t(), p_.get_mpz_t(), a[i].get_mpz_t());
         return r;
     }
+    // Producto: convolución de los coeficientes y reducción módulo el g mónico,
+    // las mismas operaciones que antes.  Detalles de implementación:
+    //   * la convolución vive en un búfer por hilo que se reutiliza entre
+    //     llamadas (sus mpz conservan la memoria reservada: no hay malloc por
+    //     coeficiente en el régimen estacionario);
+    //   * a[i]·b[j] se acumula con mpz_addmul y la reducción por g con
+    //     mpz_submul, sin temporales;
+    //   * cada coeficiente se reduce módulo p una sola vez (mpz_tdiv_r).
     Elem mul(const Elem& a, const Elem& b) const {
-        std::vector<BigInt> conv(2 * n_ - 1, BigInt(0));
+        const std::size_t L = 2 * static_cast<std::size_t>(n_) - 1;
+        std::vector<BigInt>& conv = conv_scratch(L);
+        for (std::size_t k = 0; k < L; ++k) mpz_set_ui(conv[k].get_mpz_t(), 0);
         for (unsigned long i = 0; i < n_; ++i) {
-            if (a[i] == 0) continue;
+            mpz_srcptr ai = a[i].get_mpz_t();
+            if (mpz_sgn(ai) == 0) continue;
             for (unsigned long j = 0; j < n_; ++j)
-                conv[i + j] += a[i] * b[j];
+                mpz_addmul(conv[i + j].get_mpz_t(), ai, b[j].get_mpz_t());
         }
         // reduce modulo the monic g: x^n = -(g_0 + ... + g_{n-1} x^{n-1}).
-        for (std::size_t k = conv.size(); k-- > n_; ) {
-            BigInt c = conv[k] % p_;
-            if (c == 0) continue;
-            std::size_t base = k - n_;
+        BigInt c;
+        for (std::size_t k = L; k-- > n_; ) {
+            mpz_tdiv_r(c.get_mpz_t(), conv[k].get_mpz_t(), p_.get_mpz_t());
+            if (mpz_sgn(c.get_mpz_t()) == 0) continue;
+            const std::size_t base = k - n_;
             for (unsigned long t = 0; t < n_; ++t)
-                conv[base + t] -= c * g_[t];
+                mpz_submul(conv[base + t].get_mpz_t(), c.get_mpz_t(), g_[t].get_mpz_t());
         }
         Elem r(n_);
         for (unsigned long i = 0; i < n_; ++i) {
-            BigInt v = conv[i] % p_;
-            if (sgn(v) < 0) v += p_;
-            r[i] = v;
+            mpz_ptr ri = r[i].get_mpz_t();
+            mpz_tdiv_r(ri, conv[i].get_mpz_t(), p_.get_mpz_t());
+            if (mpz_sgn(ri) < 0) mpz_add(ri, ri, p_.get_mpz_t());
         }
         return r;
     }
@@ -253,6 +277,15 @@ private:
     std::vector<BigInt> g_;  // length n+1, monic
     mutable bool base_root_ready_ = false;
     mutable Elem base_root_{};
+
+    // Búfer de la convolución de mul(), uno por hilo y compartido por todos los
+    // Fq del hilo (mul no es reentrante: no llama a nada que lo use).  Crece
+    // hasta el mayor L pedido y no se libera: así sus mpz conservan la memoria.
+    static std::vector<BigInt>& conv_scratch(std::size_t L) {
+        thread_local std::vector<BigInt> buf;
+        if (buf.size() < L) buf.resize(L);
+        return buf;
+    }
 
     // Delegating constructor from a (base field, modulus) pair.
     Fq(std::pair<Fp, std::vector<BigInt>> pr) : Fq(std::move(pr.first), std::move(pr.second)) {}
