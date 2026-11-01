@@ -62,6 +62,34 @@ concept FiniteField =
         { K.fft_cache_ } -> std::same_as<FFTCache<typename F::Elem>&>;
     };
 
+// ---------------------------------------------------------------------------
+// Ganchos OPCIONALES de acumulación perezosa (reducción diferida).
+//
+// Un cuerpo puede ofrecer un tipo acumulador Acc capaz de sumar productos a·b
+// SIN reducirlos, y reducir una sola vez al final.  Poly<Field> los detecta en
+// tiempo de compilación (if constexpr) en sus bucles internos (mul_school,
+// divmod): un cuerpo sin ganchos sigue el camino de siempre (mul + add por
+// término).  Los ganchos no cambian el algoritmo: la suma de los productos es
+// la misma, solo se reduce módulo p (y módulo g en F_q) una vez por
+// coeficiente en lugar de una vez por término.
+//
+//   using Acc;                              // construible por defecto
+//   void acc_clear(Acc& s);                 // s = 0 (y lo dimensiona si hace falta)
+//   void acc_set(Acc& s, Elem a);           // s = a
+//   void acc_fma(Acc& s, Elem a, Elem b);   // s += a·b   (sin reducir)
+//   Elem acc_reduce(Acc& s);                // valor reducido de s; puede consumir s
+//                                           //   (después solo vale acc_clear/acc_set)
+// ---------------------------------------------------------------------------
+template <class F>
+concept LazyAccumulation =
+    std::default_initializable<typename F::Acc> &&
+    requires(const F& K, typename F::Acc& s, const typename F::Elem& a) {
+        K.acc_clear(s);
+        K.acc_set(s, a);
+        K.acc_fma(s, a, a);
+        { K.acc_reduce(s) } -> std::convertible_to<typename F::Elem>;
+    };
+
 namespace detail {
 
 // ¿Son a y b el mismo cuerpo?  Camino rápido: el mismo objeto.  Si no, se usa

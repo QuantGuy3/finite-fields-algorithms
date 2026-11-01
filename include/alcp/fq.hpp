@@ -168,28 +168,50 @@ public:
     //     mpz_submul, sin temporales;
     //   * cada coeficiente se reduce módulo p una sola vez (mpz_tdiv_r).
     Elem mul(const Elem& a, const Elem& b) const {
+        std::vector<BigInt>& conv = conv_scratch(2 * static_cast<std::size_t>(n_) - 1);
+        acc_clear(conv);
+        acc_fma(conv, a, b);
+        return acc_reduce(conv);
+    }
+
+    // --- acumulación perezosa (ganchos opcionales, ver field.hpp) -----------
+    // El acumulador es la convolución SIN reducir (2n - 1 coeficientes enteros):
+    // sumar productos a·b de F_q es sumar sus convoluciones, y la reducción
+    // módulo g y módulo p (lo caro) se hace una sola vez, en acc_reduce.
+    using Acc = std::vector<BigInt>;
+    void acc_clear(Acc& s) const {
         const std::size_t L = 2 * static_cast<std::size_t>(n_) - 1;
-        std::vector<BigInt>& conv = conv_scratch(L);
-        for (std::size_t k = 0; k < L; ++k) mpz_set_ui(conv[k].get_mpz_t(), 0);
+        if (s.size() < L) s.resize(L);
+        for (std::size_t k = 0; k < L; ++k) mpz_set_ui(s[k].get_mpz_t(), 0);
+    }
+    void acc_set(Acc& s, const Elem& a) const {
+        acc_clear(s);
+        for (unsigned long i = 0; i < n_; ++i) mpz_set(s[i].get_mpz_t(), a[i].get_mpz_t());
+    }
+    void acc_fma(Acc& s, const Elem& a, const Elem& b) const {
         for (unsigned long i = 0; i < n_; ++i) {
             mpz_srcptr ai = a[i].get_mpz_t();
             if (mpz_sgn(ai) == 0) continue;
             for (unsigned long j = 0; j < n_; ++j)
-                mpz_addmul(conv[i + j].get_mpz_t(), ai, b[j].get_mpz_t());
+                mpz_addmul(s[i + j].get_mpz_t(), ai, b[j].get_mpz_t());
         }
+    }
+    // Reduce la convolución acumulada (la consume: s queda como búfer de trabajo).
+    Elem acc_reduce(Acc& s) const {
+        const std::size_t L = 2 * static_cast<std::size_t>(n_) - 1;
         // reduce modulo the monic g: x^n = -(g_0 + ... + g_{n-1} x^{n-1}).
         BigInt c;
         for (std::size_t k = L; k-- > n_; ) {
-            mpz_tdiv_r(c.get_mpz_t(), conv[k].get_mpz_t(), p_.get_mpz_t());
+            mpz_tdiv_r(c.get_mpz_t(), s[k].get_mpz_t(), p_.get_mpz_t());
             if (mpz_sgn(c.get_mpz_t()) == 0) continue;
             const std::size_t base = k - n_;
             for (unsigned long t = 0; t < n_; ++t)
-                mpz_submul(conv[base + t].get_mpz_t(), c.get_mpz_t(), g_[t].get_mpz_t());
+                mpz_submul(s[base + t].get_mpz_t(), c.get_mpz_t(), g_[t].get_mpz_t());
         }
         Elem r(n_);
         for (unsigned long i = 0; i < n_; ++i) {
             mpz_ptr ri = r[i].get_mpz_t();
-            mpz_tdiv_r(ri, conv[i].get_mpz_t(), p_.get_mpz_t());
+            mpz_tdiv_r(ri, s[i].get_mpz_t(), p_.get_mpz_t());
             if (mpz_sgn(ri) < 0) mpz_add(ri, ri, p_.get_mpz_t());
         }
         return r;
@@ -354,5 +376,6 @@ inline bool same_field(const Fq& a, const Fq& b) { return &a == &b || a == b; }
 
 // Fq cumple la interfaz de cuerpo finito (concepto de field.hpp).
 static_assert(FiniteField<Fq>);
+static_assert(LazyAccumulation<Fq>);
 
 }  // namespace alcp
