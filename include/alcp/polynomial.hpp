@@ -170,7 +170,22 @@ public:
         if (algo == MulAlgo::Auto) {
             const std::size_t L = na + nb - 1;
             const std::size_t small = std::min(na, nb);
-            if (fft::fft_exponent(*K_, L) >= 0 && L >= 64)
+            const bool can_fft = fft::fft_exponent(*K_, L) >= 0;
+            // Regla original: FFT si cabe y L >= 64.  Se conserva solo para
+            // reproducir el consumo del generador aleatorio (ver abajo).
+            const bool old_fft = can_fft && L >= 64;
+            bool use_fft = can_fft && prefer_fft(*K_, small, std::max(na, nb), L);
+            // La primera transformada de un cuerpo calcula su raíz base con el
+            // RNG.  Para que la secuencia aleatoria (y por tanto factor(),
+            // Fq(p, n), etc.) sea idéntica a la original, la raíz se calcula
+            // exactamente cuando la regla original habría usado la FFT: no se
+            // adelanta (FFT nueva solo si la caché ya tiene tablas, es decir,
+            // si la raíz ya existe) ni se omite (se pide aunque no se use).
+            if (use_fft && !old_fft && K_->fft_cache_.empty()) use_fft = false;
+            // (Se construyen las tablas, que piden la raíz: así la caché deja
+            // de estar vacía y los productos siguientes pueden usar la FFT.)
+            if (old_fft && !use_fft) (void)fft::tables(*K_, fft::ceil_log2(L));
+            if (use_fft)
                 algo = MulAlgo::FFT;
             else if (small >= kKaratsubaCutoff)
                 algo = MulAlgo::Karatsuba;
@@ -607,6 +622,28 @@ private:
     }
 
     // coefficients [lo, hi) as a polynomial (drops the x^lo..x^{hi-1} window down to x^0).
+    // ---- Umbrales de despacho Auto ------------------------------------------
+    // ¿Conviene la FFT (supuesto que cabe) para un producto de operandos con
+    // `small` y `large` coeficientes (L = small + large - 1)?  Depende de la
+    // implementación de la NTT del cuerpo y, sobre todo, del operando MENOR:
+    // con uno diminuto (p. ej. q·x1 en gcd_ext, con q de grado 1) el escolar
+    // cuesta O(large) y la FFT O(L log L).  Calibrado con medidas en Zen 3
+    // (g++ 15.2 -O3, GMP 6.3) de escolar/Karatsuba/FFT en una rejilla de
+    // tamaños sobre F_998244353, el r de 255 bits de BLS12-381 y
+    // F_((2^61-1)^2):
+    //   * Word (F_p, p < 2^62): la FFT gana desde L = 2-4 en todos los casos.
+    //   * Limb (F_p, p >= 2^62): FFT si small >= 16, o small >= 8 y L <= 128.
+    //   * Generic (F_q y resto): FFT si small >= 64, o small >= 32 y
+    //     large <= 2·small; con small <= 16 la FFT era hasta 10-20x más lenta.
+    static bool prefer_fft(const Field& K, std::size_t small, std::size_t large, std::size_t L) {
+        switch (fft::backend(K)) {
+            case fft::Backend::Word: return L >= 4;
+            case fft::Backend::Limb: return small >= 16 || (small >= 8 && L <= 128);
+            case fft::Backend::Generic:
+            default: return small >= 64 || (small >= 32 && large <= 2 * small);
+        }
+    }
+
     // ---- Karatsuba sobre vistas -------------------------------------------
     // Longitud de la vista a[0..n) sin ceros finales (lo que haría trim()).
     static std::size_t trimmed_len(const Field& K, const Elem* a, std::size_t n) {

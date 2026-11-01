@@ -281,6 +281,16 @@ bool limb_ntt_eligible(const Field& K) {
     }
 }
 
+// Implementación de la NTT que usará el cuerpo (para los umbrales de despacho
+// de Poly::mul, que dependen mucho de ella).
+enum class Backend { Word, Limb, Generic };
+template <class Field>
+Backend backend(const Field& K) {
+    if (word_ntt_eligible(K)) return Backend::Word;
+    if (limb_ntt_eligible(K)) return Backend::Limb;
+    return Backend::Generic;
+}
+
 // Smallest k with 2^k >= n   (ceil log2).  ceil_log2(0)=ceil_log2(1)=0.
 inline unsigned long ceil_log2(std::size_t n) {
     unsigned long k = 0;
