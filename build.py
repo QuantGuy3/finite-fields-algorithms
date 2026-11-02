@@ -38,6 +38,10 @@ Opciones comunes:
     --flags "..."    flags extra del compilador (se añaden tras los de serie).
     -j N             compilaciones en paralelo (por defecto, nº de CPU).
     -B / --force     recompila aunque los binarios estén al día.
+    --perfil P       arquitectura: portable (x86-64 genérico, por defecto; el
+                     .pyd funciona en cualquier PC x86-64), v3 (x86-64-v3:
+                     AVX2/BMI2, CPU de 2013 en adelante) o nativo
+                     (-march=native, solo para la máquina que compila).
 
 Variables de entorno:
     CXX              compilador C++ (por defecto g++).
@@ -348,9 +352,32 @@ def comprobar_compilador() -> str:
     return cxx
 
 
+# Perfiles de arquitectura (--perfil).  Solo cambian la generación de código,
+# nunca el algoritmo ni el resultado (los checksums de bench_suite coinciden).
+#   portable  x86-64 genérico: el binario (y el .pyd) funciona en cualquier
+#             CPU x86-64.  Es el perfil por defecto y el que se distribuye.
+#   v3        x86-64-v3 (AVX2, BMI2, FMA, MOVBE; Intel Haswell 2013+, AMD
+#             Zen 1+).  Falla con «illegal instruction» en CPU más antiguas.
+#   nativo    -march=native: solo para la CPU de la máquina que compila.
+PERFILES: dict[str, list[str]] = {
+    "portable": [],
+    "v3": ["-march=x86-64-v3"],
+    "nativo": ["-march=native"],
+}
+
+# Flags del perfil de esta ejecución (las fija main()).
+FLAGS_PERFIL: list[str] = []
+
+
+def flags_de_perfil(perfil: str) -> list[str]:
+    return list(PERFILES[perfil])
+
+
 def flags_extra(cli: list[str] | None) -> list[str]:
-    """Flags extra: primero ALCP_CXXFLAGS y después --flags (gana el último)."""
-    extra = shlex.split(os.environ.get("ALCP_CXXFLAGS", ""))
+    """Flags extra: las del perfil (--perfil), después ALCP_CXXFLAGS y por
+    último --flags (gana el último)."""
+    extra = list(FLAGS_PERFIL)
+    extra += shlex.split(os.environ.get("ALCP_CXXFLAGS", ""))
     for f in cli or []:
         extra += shlex.split(f)
     return extra
@@ -997,6 +1024,9 @@ def construir_parser() -> argparse.ArgumentParser:
                          help="compilaciones en paralelo")
     compila.add_argument("-B", "--force", action="store_true",
                          help="recompila aunque esté al día")
+    compila.add_argument("--perfil", choices=sorted(PERFILES), default="portable",
+                         help="arquitectura destino: portable (x86-64 genérico, por defecto), "
+                              "v3 (x86-64-v3: AVX2/BMI2) o nativo (-march=native)")
 
     p = argparse.ArgumentParser(
         prog="build.py", parents=[comunes],
@@ -1067,6 +1097,7 @@ def main(argv: list[str]) -> int:
                   a.orden == "ci")
     op = Opciones(flags=getattr(a, "flags", []), jobs=getattr(a, "jobs", os.cpu_count() or 2),
                   force=getattr(a, "force", False))
+    FLAGS_PERFIL[:] = flags_de_perfil(getattr(a, "perfil", "portable"))
     t0 = time.perf_counter()
     if UI.verbose:
         UI.nota(f"python: {sys.executable} ({sys.version.split()[0]}); "
