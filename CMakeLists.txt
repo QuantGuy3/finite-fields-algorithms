@@ -35,6 +35,19 @@ if(CMAKE_CXX_COMPILER_ID MATCHES "GNU|Clang")
   endif()
 endif()
 
+# LTO opcional (equivale a «build.py --lto»).  Cada test es una sola unidad de
+# traducción y GMP es estática y sin LTO, así que el efecto esperado es pequeño.
+option(ALCP_LTO "Optimización en tiempo de enlace (-flto)" OFF)
+if(ALCP_LTO)
+  include(CheckIPOSupported)
+  check_ipo_supported(RESULT _alcp_ipo OUTPUT _alcp_ipo_msg)
+  if(_alcp_ipo)
+    set(CMAKE_INTERPROCEDURAL_OPTIMIZATION ON)
+  else()
+    message(WARNING "ALCP_LTO: el compilador no admite LTO: ${_alcp_ipo_msg}")
+  endif()
+endif()
+
 # Biblioteca de interfaz (solo cabeceras).
 add_library(alcp INTERFACE)
 target_include_directories(alcp INTERFACE ${CMAKE_CURRENT_SOURCE_DIR}/include)

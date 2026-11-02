@@ -42,6 +42,8 @@ Opciones comunes:
                      .pyd funciona en cualquier PC x86-64), v3 (x86-64-v3:
                      AVX2/BMI2, CPU de 2013 en adelante) o nativo
                      (-march=native, solo para la máquina que compila).
+    --lto            optimización en tiempo de enlace (-flto, una partición).
+    (cov-cpp ignora --perfil/--lto.)
 
 Variables de entorno:
     CXX              compilador C++ (por defecto g++).
@@ -364,19 +366,23 @@ PERFILES: dict[str, list[str]] = {
     "v3": ["-march=x86-64-v3"],
     "nativo": ["-march=native"],
 }
+# LTO (--lto).  Con -flto=auto, en Windows (sin jobserver de make) GCC avisa
+# «using serial compilation of N LTRANS jobs»; con una sola partición no hay
+# aviso y, al ser una única unidad de traducción, no se pierde nada.
+FLAGS_LTO = ["-flto", "-flto-partition=one"]
 
-# Flags del perfil de esta ejecución (las fija main()).
+# Flags de --perfil/--lto de esta ejecución (las fija main()).
 FLAGS_PERFIL: list[str] = []
 
 
-def flags_de_perfil(perfil: str) -> list[str]:
-    return list(PERFILES[perfil])
+def flags_de_perfil(perfil: str, lto: bool) -> list[str]:
+    return [*PERFILES[perfil], *(FLAGS_LTO if lto else [])]
 
 
-def flags_extra(cli: list[str] | None) -> list[str]:
-    """Flags extra: las del perfil (--perfil), después ALCP_CXXFLAGS y por
-    último --flags (gana el último)."""
-    extra = list(FLAGS_PERFIL)
+def flags_extra(cli: list[str] | None, con_perfil: bool = True) -> list[str]:
+    """Flags extra: las del perfil (--perfil/--lto), después
+    ALCP_CXXFLAGS y por último --flags (gana el último)."""
+    extra = list(FLAGS_PERFIL) if con_perfil else []
     extra += shlex.split(os.environ.get("ALCP_CXXFLAGS", ""))
     for f in cli or []:
         extra += shlex.split(f)
@@ -707,7 +713,10 @@ def paso_module(op: Opciones, perfil: str = "release") -> Paso:
     UI.seccion(f"Módulo nativo ({perfil}) -> {salida.relative_to(RAIZ).as_posix()}")
     PAQUETE.mkdir(parents=True, exist_ok=True)
     obj_dir = BUILD / "module-obj" if perfil == "coverage" else None
-    r = construir_modulo(salida, perfil, flags_extra(op.flags), op.force, obj_dir)
+    # Con --coverage se compila y enlaza por separado: sin las flags de perfil
+    # (LTO no casa con eso ni con la instrumentación de cobertura).
+    extra = flags_extra(op.flags, con_perfil=perfil != "coverage")
+    r = construir_modulo(salida, perfil, extra, op.force, obj_dir)
     informar_compilacion("alcp_native", r)
     if not r.ok:
         if "Permission denied" in r.salida:
@@ -715,7 +724,7 @@ def paso_module(op: Opciones, perfil: str = "release") -> Paso:
         UI.fin_seccion()
         return Paso("module", "FALLO", time.perf_counter() - t0, "no compila")
     ri = importar_con_reintento(PAQUETE, lambda: construir_modulo(
-        salida, perfil, flags_extra(op.flags), True, obj_dir))
+        salida, perfil, extra, True, obj_dir))
     UI.linea("OK" if ri.ok else "FALLO", "importar alcp_native", ri.segundos)
     UI.bloque(ri.salida)
     UI.fin_seccion()
@@ -828,7 +837,9 @@ def paso_cov_cpp(op: Opciones, timeout: float = 1800) -> Paso:
     obj, bin_tests, mod_dir = COV / "obj", COV / "tests", COV / "module"
     for d in (obj, bin_tests, mod_dir):
         d.mkdir(parents=True, exist_ok=True)
-    extra = flags_extra(op.flags)
+    # Sin las flags de perfil: LTO no casa con compilar y enlazar por separado
+    # ni con la instrumentación de cobertura.
+    extra = flags_extra(op.flags, con_perfil=False)
     cov_f = ["-O0", "-g", "--coverage"]
     deps = cabeceras()
 
@@ -1027,6 +1038,8 @@ def construir_parser() -> argparse.ArgumentParser:
     compila.add_argument("--perfil", choices=sorted(PERFILES), default="portable",
                          help="arquitectura destino: portable (x86-64 genérico, por defecto), "
                               "v3 (x86-64-v3: AVX2/BMI2) o nativo (-march=native)")
+    compila.add_argument("--lto", action="store_true",
+                         help="optimización en tiempo de enlace (-flto)")
 
     p = argparse.ArgumentParser(
         prog="build.py", parents=[comunes],
@@ -1097,7 +1110,8 @@ def main(argv: list[str]) -> int:
                   a.orden == "ci")
     op = Opciones(flags=getattr(a, "flags", []), jobs=getattr(a, "jobs", os.cpu_count() or 2),
                   force=getattr(a, "force", False))
-    FLAGS_PERFIL[:] = flags_de_perfil(getattr(a, "perfil", "portable"))
+    FLAGS_PERFIL[:] = flags_de_perfil(getattr(a, "perfil", "portable"),
+                                      getattr(a, "lto", False))
     t0 = time.perf_counter()
     if UI.verbose:
         UI.nota(f"python: {sys.executable} ({sys.version.split()[0]}); "
