@@ -995,3 +995,123 @@ def test_docstrings_en_todo_lo_expuesto():
             if len(lineas) < 2:
                 sin_doc.append(nombre)
     assert sin_doc == []
+
+
+# ---------------------------------------------------------------------------
+# Backends: aritmética de 64 bits ('u64', p < 2^62) frente a GMP ('gmp')
+# ---------------------------------------------------------------------------
+P_TOPE = 2**62 - 57          # mayor primo < 2^62: aún cabe en 64 bits
+P_FUERA = 2**62 + 135        # primo > 2^62: siempre GMP
+AES = [1, 1, 0, 1, 1, 0, 0, 0, 1]
+
+
+def test_backend_por_defecto_y_forzado():
+    assert al.Fp(7).backend == "u64" and al.Fp(P_TOPE).backend == "u64"
+    assert al.is_prime(P_FUERA) and al.Fp(P_FUERA).backend == "gmp" and al.Fp(M127).backend == "gmp"
+    assert al.Fp(7, backend="gmp").backend == "gmp" and al.Fp(7, backend="auto").backend == "u64"
+    assert al.Fq(9).backend == "u64" and al.Fq(2, AES).backend == "u64"
+    assert al.Fq(M127).backend == "gmp" and al.Fq(M127, [1, 1]).backend == "gmp"
+    assert al.Fq(9, backend="gmp").backend == "gmp" and al.Fq(2, AES, backend="gmp").backend == "gmp"
+    for crear in (lambda: al.Fp(7, backend="rapido"), lambda: al.Fq(9, backend="u64"),
+                  lambda: al.Fq(3, [1, 0, 1], backend="")):
+        with pytest.raises(ValueError, match="backend desconocido"):
+            crear()
+    with pytest.raises(TypeError):
+        al.Fp(7, "gmp")  # backend solo por palabra clave
+    # Mismas excepciones con los dos backends.
+    for backend in ("auto", "gmp"):
+        with pytest.raises(ValueError, match="is not prime"):
+            al.Fp(15, backend=backend)
+        with pytest.raises(ValueError, match="not a prime power"):
+            al.Fq(12, backend=backend)
+        with pytest.raises(ValueError, match="irreducible"):
+            al.Fq(5, [1, 0, 1], backend=backend)
+        with pytest.raises(ZeroDivisionError):
+            al.Fp(7, backend=backend).inv(0)
+        with pytest.raises(ZeroDivisionError):
+            al.Fq(9, backend=backend).inv(0)
+
+
+def test_backend_igualdad_hash_y_repr():
+    a, b = al.Fp(7), al.Fp(7, backend="gmp")
+    assert a != b and a == al.Fp(7) and b == al.Fp(7, backend="gmp") and hash(a) == hash(b)
+    assert repr(a) == "Fp(7)" and repr(b) == "Fp(7, backend='gmp')" and repr(al.Fp(M127)) == f"Fp({M127})"
+    assert eval(repr(b), {"Fp": al.Fp}) == b and eval(repr(a), {"Fp": al.Fp}) == a
+    K, Kg = al.Fq(2, AES), al.Fq(2, AES, backend="gmp")
+    assert K != Kg and hash(K) == hash(Kg)
+    assert repr(K) == "Fq(2, [1, 1, 0, 1, 1, 0, 0, 0, 1])"
+    assert repr(Kg) == "Fq(2, [1, 1, 0, 1, 1, 0, 0, 0, 1], backend='gmp')"
+    assert eval(repr(Kg), {"Fq": al.Fq}) == Kg and repr(al.Fq(M127)).endswith("])")
+    # Polinomios de backends distintos: cuerpos distintos (en los dos órdenes).
+    pares = [(a.poly([1, 2]), b.poly([1, 2])), (K.poly([1, 2]), Kg.poly([1, 2]))]
+    for f, g in pares + [(y, x) for x, y in pares]:
+        assert f != g and not (f == g) and hash(f) == hash(g)
+        for op in (lambda: f + g, lambda: f - g, lambda: f * g, lambda: f // g, lambda: f % g,
+                   lambda: divmod(f, g), lambda: f.mul(g, "school"), lambda: f.compose(g), lambda: f.gcd(g),
+                   lambda: f.gcd_ext(g), lambda: f.inv_mod(g), lambda: f.pow_mod(2, g),
+                   lambda: f.multiplicity(g), lambda: al.divmod_toeplitz(f, g)):
+            with pytest.raises(ValueError, match="cuerpos distintos"):
+                op()
+
+
+def _bateria(K, semilla):
+    """Ejecuta (casi) toda la API sobre K y devuelve los resultados como datos.
+
+    Con la misma semilla, los dos backends deben dar EXACTAMENTE lo mismo
+    (también lo aleatorio: random, random_poly, fft_base_root, factor).
+    """
+    al.set_seed(semilla)
+    q, p = K.q, K.p
+    r = [p, q, K.n, K.fft_capacity(), K.fft_base_root(), K.from_int(-5), K.from_int(q * 3 + 2), K.random()]
+    a, b = (3 % q) or 1, q - 1
+    r += [K.add(a, b), K.sub(a, b), K.neg(a), K.mul(a, b), K.div(a, b), K.inv(b), K.pow(a, -3), K.pow(a, q + 5)]
+    if isinstance(K, al.Fq):
+        r += [K.modulus, K.from_index(-1), K.from_coeffs([p + 1, -1, 5, 7, 9]), K.to_coeffs(q - 1)]
+    f = K.poly([(i * i + 3) % q for i in range(12)] + [1])
+    g = K.poly([(5 * i + 1) % q for i in range(5)] + [1])
+    h = K.random_poly(6)
+    c = lambda x: x.coeffs()  # noqa: E731
+    r += [c(h), c(K.random_poly(-1)), f.coeffs(), f.coeff(3), f.coeff(100), f.degree(), f.is_zero(), f.is_one(),
+          f.leading(), f == g, f == K.poly(f.coeffs()), hash(f) == hash(K.poly(f.coeffs())),
+          c(copy.copy(f)), c(copy.deepcopy(f)), c(f + g), c(f - g), c(-f), c(f * g), c(f // g), c(f % g),
+          [c(x) for x in divmod(f, g)], c(g ** 3), c(f.mul(g, "school")), c(f.mul(g, "karatsuba")),
+          c(f.mul(g, "fft")), c(f.scalar_mul(a)), c(f.derivative()), c(f.monic()), f.evaluate(b),
+          c(g.compose(g)), f.is_irreducible(), f.is_squarefree(), c(f.gcd(g)),
+          [c(x) for x in f.gcd_ext(g)], c(f.pow_mod(q + 1, g)), f.multiplicity(K.poly([1, 1])),
+          c((f * f).radical()), f.to_string("y"), repr(g)]
+    u = K.poly([1, 1]) * K.poly([2, 1]) * K.poly([a, 1]) if q > 3 else K.poly([1, 1])
+    if g.gcd(f).degree() == 0:
+        r.append(c(g.inv_mod(f)))
+    r += [[(d, c(x)) for d, x in u.distinct_degree()]]
+    lineal = u.distinct_degree()[0][1]
+    r += [[c(x) for x in lineal.equal_degree(1)]]
+    fac, lc = (g * g * K.poly([a, 1])).factor()
+    r += [[(c(x), e) for x, e in fac], lc]
+    # Algoritmos rápidos.
+    k = min(K.fft_capacity(), 3)
+    raiz = K.pow(K.fft_base_root(), 2 ** (K.fft_capacity() - k)) if k > 0 else 1
+    v = [(7 * i + 2) % q for i in range(2 ** k)]
+    r += [al.dft(K, raiz, k, v), al.idft(K, raiz, k, v)]
+    t = [(3 * i + 1) % q or 1 for i in range(9)]
+    w = [(i + 4) % q for i in range(5)]
+    r += [al.toeplitz_lower_vec(K, 5, t, w), al.toeplitz_upper_vec(K, 5, t, w), al.toeplitz_vec(K, 5, t, w),
+          al.toeplitz_lower_inverse(K, 5, t), al.toeplitz_upper_inverse(K, 5, t),
+          [c(x) for x in al.divmod_toeplitz(f, g)]]
+    return r
+
+
+@pytest.mark.parametrize("crear", [
+    lambda **kw: al.Fp(2, **kw), lambda **kw: al.Fp(7, **kw), lambda **kw: al.Fp(101, **kw),
+    lambda **kw: al.Fp(P_NTT, **kw), lambda **kw: al.Fp(M61, **kw), lambda **kw: al.Fp(P_TOPE, **kw),
+    lambda **kw: al.Fq(2, AES, **kw), lambda **kw: al.Fq(7, [3, 4, 1, 2, 1], **kw),
+    lambda **kw: al.Fq(M61, [1, 0, 1], **kw), lambda **kw: al.Fq(3**5, **kw),
+], ids=["F2", "F7", "F101", "Fntt", "Fm61", "Ftope", "F2^8", "F7^4", "Fm61^2", "F3^5"])
+def test_backends_dan_lo_mismo(crear):
+    al.set_seed(11)
+    rapido = crear()
+    al.set_seed(11)
+    gmp = crear(backend="gmp")
+    assert rapido.backend == "u64" and gmp.backend == "gmp"
+    # Fq(q) aleatorio: el mismo módulo con los dos backends.
+    assert getattr(rapido, "modulus", None) == getattr(gmp, "modulus", None)
+    assert _bateria(rapido, 5) == _bateria(gmp, 5)
