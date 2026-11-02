@@ -229,10 +229,18 @@ private:
     mutable Elem base_root_ = 0;
 
     // x mod p para x < 2^(2k) (en particular, x = a·b con a, b < p).
+    // Los desplazamientos de 128 bits se escriben con dos palabras de 64 bits:
+    // con 2 <= k <= 62, todas las cuentas (k-1, 65-k, k+1, 63-k) están en
+    // [1, 63], así que no hace falta el caso «desplazamiento >= 64» que g++
+    // genera (con cmov) para un u128 >> n de n variable.  Mismo resultado.
     Elem barrett(detail::u128 x) const {
-        const std::uint64_t x1 = static_cast<std::uint64_t>(x >> (k_ - 1));  // < 2^(k+1)
-        const std::uint64_t q = static_cast<std::uint64_t>((static_cast<detail::u128>(x1) * m_) >> (k_ + 1));
-        std::uint64_t r = static_cast<std::uint64_t>(x) - q * p_;  // en [0, 3p), exacto módulo 2^64
+        const std::uint64_t lo = static_cast<std::uint64_t>(x);
+        const std::uint64_t hi = static_cast<std::uint64_t>(x >> 64);
+        const std::uint64_t x1 = (hi << (65 - k_)) | (lo >> (k_ - 1));  // x >> (k-1), < 2^(k+1)
+        const detail::u128 t = static_cast<detail::u128>(x1) * m_;
+        const std::uint64_t q = (static_cast<std::uint64_t>(t >> 64) << (63 - k_)) |
+                                (static_cast<std::uint64_t>(t) >> (k_ + 1));  // t >> (k+1)
+        std::uint64_t r = lo - q * p_;  // en [0, 3p), exacto módulo 2^64
         if (r >= p_) r -= p_;
         if (r >= p_) r -= p_;
         return r;

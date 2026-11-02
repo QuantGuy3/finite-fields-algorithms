@@ -139,6 +139,32 @@ void test_elementos(const BigInt& p) {
     CHECK(F.acc_reduce(s) == F.from_int(BigInt(5)));
 }
 
+// Producto (reducción de Barrett) y potencia en los límites de cada tamaño de
+// p: el menor primo > 2^j y el mayor primo < 2^(j+1), j = 1..61 (todos los
+// valores de k = bits de p), con los operandos extremos 1, 2, p-2, p-1 y
+// pseudoaleatorios, frente a GMP.
+void test_barrett_limites() {
+    bool ok = true;
+    int n = 0;
+    Rng R{12345};
+    for (unsigned j = 1; j <= 61 && ok; ++j) {
+        BigInt lo = BigInt(1) << j, hi = BigInt(1) << (j + 1);
+        mpz_nextprime(lo.get_mpz_t(), lo.get_mpz_t());
+        mpz_prevprime(hi.get_mpz_t(), hi.get_mpz_t());
+        for (const BigInt& p : {lo, hi}) {
+            Fp64 F(p);
+            Fp G(p);
+            std::vector<BigInt> xs = {BigInt(1), BigInt(2) % p, p - 2, p - 1};
+            for (int i = 0; i < 40; ++i) xs.push_back(R.big_below(p));
+            for (const BigInt& x : xs)
+                for (const BigInt& y : xs) ok = ok && F.to_bigint(F.mul(F.from_int(x), F.from_int(y))) == G.mul(x, y);
+            for (const BigInt& x : xs) ok = ok && F.to_bigint(F.pow(F.from_int(x), p - 2)) == G.pow(x, p - 2);
+            ++n;
+        }
+    }
+    CHECK_MSG(ok && n == 122, "Barrett en los límites de cada tamaño de p");
+}
+
 // ---------------------------------------------------------------------------
 // 3-4. Polinomios sobre Fp64 frente a Fp
 // ---------------------------------------------------------------------------
@@ -350,6 +376,7 @@ int main() {
     for (const BigInt& p : {BigInt(2), BigInt(3), BigInt(7), BigInt(101), BigInt(998244353), BigInt("4294967311"),
                             m61, top})
         test_elementos(p);
+    test_barrett_limites();
     std::printf("  elementos: %.0f ms\n", ms_desde(t0));
     unsigned long s = 10;
     for (const BigInt& p : {BigInt(2), BigInt(3), BigInt(7), BigInt(101), BigInt(998244353), m61, top})
