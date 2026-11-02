@@ -16,13 +16,19 @@
 //     elemento), de modo que la factorización y Fq(p, n) aleatorios siguen el
 //     mismo camino y dan el mismo resultado.
 //
-// Elección de la reducción: Barrett (no Montgomery).  Con Montgomery los
+// Elección de la reducción: Barrett (no Montgomery) para los elementos.  Con Montgomery los
 // elementos vivirían en la forma a·R mod p: habría que convertir en cada
 // entrada/salida y, sobre todo, operator<, eq, is_one, to_bigint y el orden
 // canónico de factor() dejarían de ser triviales.  Barrett trabaja sobre el
 // representante canónico, cuesta dos productos de 64x64->128 bits y uno de
 // 64x64->64 por multiplicación, sin divisiones, y su resultado es exacto tras a
 // lo sumo dos restas condicionales.
+//
+// Excepción interna: pow() hace la MISMA cadena de cuadrados y productos, pero
+// con los valores intermedios en forma de Montgomery (a·2^64 mod p), que
+// convierte al entrar y al salir (p impar).  El resultado es el mismo; solo
+// cambia la representación dentro del bucle, donde REDC tiene menos latencia
+// que Barrett y la cadena de cuadrados es secuencial.
 //
 //   k = bit_length(p) <= 62,  m = floor(2^(2k) / p)  (m <= 2^(k+1) <= 2^63)
 //   x = a·b < p^2 < 2^(2k)
@@ -104,6 +110,13 @@ public:
         // 2^128 mod p = ((2^128 - 1) mod p + 1) mod p
         c128_ = static_cast<std::uint64_t>((~detail::u128(0)) % p_);
         c128_ = (c128_ + 1 == p_) ? 0 : c128_ + 1;
+        // Montgomery (solo para pow, p impar): pinv = -p^(-1) mod 2^64 por
+        // iteración de Newton (cada paso duplica los bits correctos: 3 -> 96).
+        if (p_ & 1U) {
+            std::uint64_t x = p_;  // p·p ≡ 1 (mod 8): correcto en 3 bits
+            for (int i = 0; i < 5; ++i) x *= 2 - p_ * x;
+            pinv_ = ~x + 1;
+        }
     }
 
     // --- field data ---------------------------------------------------------
@@ -224,7 +237,8 @@ private:
     unsigned k_ = 0;         // bits de p
     std::uint64_t m_ = 0;    // floor(2^(2k) / p)
     detail::u128 lim_ = 0;   // 2^(2k): cota de validez de barrett()
-    std::uint64_t c128_ = 0; // 2^128 mod p
+    std::uint64_t c128_ = 0; // 2^128 mod p (= R^2 mod p para Montgomery, R = 2^64)
+    std::uint64_t pinv_ = 0; // -p^(-1) mod 2^64 (solo p impar)
     mutable bool base_root_ready_ = false;
     mutable Elem base_root_ = 0;
 
@@ -262,22 +276,42 @@ private:
 #endif
     }
 
-    // a^e (e >= 0) por cuadrados y productos de izquierda a derecha.
+    // REDC: t·2^(-64) mod p para t < p·2^64 (aquí t = a·b con a, b < p).
+    // t + m·p < 2^124 + 2^126 no desborda; el cociente es < 2p.
+    Elem redc(detail::u128 t) const {
+        const std::uint64_t m = static_cast<std::uint64_t>(t) * pinv_;
+        const std::uint64_t r = static_cast<std::uint64_t>((t + static_cast<detail::u128>(m) * p_) >> 64);
+        return r >= p_ ? r - p_ : r;
+    }
+    Elem mont_mul(Elem a, Elem b) const { return redc(static_cast<detail::u128>(a) * b); }
+
+    // a^e (e >= 0) por cuadrados y productos de izquierda a derecha.  Con p
+    // impar, r y a viven en forma de Montgomery dentro del bucle (mismas
+    // operaciones, otra representación); con p = 2, Barrett.
     Elem pow_nonneg(Elem a, mpz_srcptr e) const {
-        Elem r = 1;
-        if (mpz_sgn(e) == 0) return r;
+        if (mpz_sgn(e) == 0) return 1;
+        if ((p_ & 1U) == 0) return pow_bits(a, e, 1, [this](Elem x, Elem y) { return mul(x, y); });
+        const Elem am = mont_mul(a, c128_);     // a·R mod p
+        const Elem uno = mont_mul(1, c128_);    // R mod p
+        const Elem r = pow_bits(am, e, uno, [this](Elem x, Elem y) { return mont_mul(x, y); });
+        return redc(r);                         // r·R^(-1) mod p
+    }
+
+    // Cadena de cuadrados y productos con el producto mul_ (Barrett o REDC).
+    template <class Mul>
+    static Elem pow_bits(Elem a, mpz_srcptr e, Elem r, Mul mul_) {
         if (mpz_size(e) == 1) {
             // Exponente de una palabra: los bits se leen de un registro.
             const std::uint64_t x = detail::mpz_to_u64(e);
             for (int i = 63 - __builtin_clzll(x); i >= 0; --i) {
-                r = mul(r, r);
-                if ((x >> i) & 1U) r = mul(r, a);
+                r = mul_(r, r);
+                if ((x >> i) & 1U) r = mul_(r, a);
             }
             return r;
         }
         for (std::size_t i = mpz_sizeinbase(e, 2); i-- > 0; ) {
-            r = mul(r, r);
-            if (mpz_tstbit(e, i)) r = mul(r, a);
+            r = mul_(r, r);
+            if (mpz_tstbit(e, i)) r = mul_(r, a);
         }
         return r;
     }
