@@ -20,6 +20,21 @@ if(NOT CMAKE_BUILD_TYPE AND NOT CMAKE_CONFIGURATION_TYPES)
   set(CMAKE_BUILD_TYPE Release)
 endif()
 
+# Perfil de arquitectura (equivale a «build.py --perfil»): portable (x86-64
+# genérico, por defecto), v3 (-march=x86-64-v3) o nativo (-march=native).
+# Solo cambia la generación de código, no los resultados.
+set(ALCP_PERFIL "portable" CACHE STRING "Arquitectura destino: portable, v3 o nativo")
+set_property(CACHE ALCP_PERFIL PROPERTY STRINGS portable v3 nativo)
+if(CMAKE_CXX_COMPILER_ID MATCHES "GNU|Clang")
+  if(ALCP_PERFIL STREQUAL "v3")
+    add_compile_options(-march=x86-64-v3)
+  elseif(ALCP_PERFIL STREQUAL "nativo")
+    add_compile_options(-march=native)
+  elseif(NOT ALCP_PERFIL STREQUAL "portable")
+    message(FATAL_ERROR "ALCP_PERFIL desconocido: ${ALCP_PERFIL}")
+  endif()
+endif()
+
 # Biblioteca de interfaz (solo cabeceras).
 add_library(alcp INTERFACE)
 target_include_directories(alcp INTERFACE ${CMAKE_CURRENT_SOURCE_DIR}/include)
