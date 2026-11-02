@@ -596,6 +596,11 @@ class ExtensionField(FiniteField):
                 f"{_pretty.nombre_cuerpo(self._p, estilo)}[{var}]/({g})")
 
 
+# Creación de elementos sin pasar por FiniteField._crear en los caminos rápidos
+# de los operadores (una llamada Python menos por operación; mismo resultado).
+_nuevo = object.__new__
+
+
 # ---------------------------------------------------------------------------
 # Elementos
 # ---------------------------------------------------------------------------
@@ -656,43 +661,70 @@ class FieldElement(_pretty.Imprimible):
     def __add__(self, otro):
         K = self._K
         if otro.__class__ is self.__class__ and otro._K is K:
-            return K._crear(K._add(self._v, otro._v))
+            e = _nuevo(K._clase)
+            e._K = K
+            e._v = K._add(self._v, otro._v)
+            return e
         if otro.__class__ is int:           # camino rápido: entero (n·1)
-            return K._crear(K._add(self._v, otro % K._p))
+            e = _nuevo(K._clase)
+            e._K = K
+            e._v = K._add(self._v, otro % K._p)
+            return e
         return self._binaria(otro, "add", False)
 
     def __radd__(self, otro):
         if otro.__class__ is int:
             K = self._K
-            return K._crear(K._add(otro % K._p, self._v))
+            e = _nuevo(K._clase)
+            e._K = K
+            e._v = K._add(otro % K._p, self._v)
+            return e
         return self._binaria(otro, "add", True)
 
     def __sub__(self, otro):
         K = self._K
         if otro.__class__ is self.__class__ and otro._K is K:
-            return K._crear(K._sub(self._v, otro._v))
+            e = _nuevo(K._clase)
+            e._K = K
+            e._v = K._sub(self._v, otro._v)
+            return e
         if otro.__class__ is int:           # camino rápido: entero (n·1)
-            return K._crear(K._sub(self._v, otro % K._p))
+            e = _nuevo(K._clase)
+            e._K = K
+            e._v = K._sub(self._v, otro % K._p)
+            return e
         return self._binaria(otro, "sub", False)
 
     def __rsub__(self, otro):
         if otro.__class__ is int:
             K = self._K
-            return K._crear(K._sub(otro % K._p, self._v))
+            e = _nuevo(K._clase)
+            e._K = K
+            e._v = K._sub(otro % K._p, self._v)
+            return e
         return self._binaria(otro, "sub", True)
 
     def __mul__(self, otro):
         K = self._K
         if otro.__class__ is self.__class__ and otro._K is K:
-            return K._crear(K._mul(self._v, otro._v))
+            e = _nuevo(K._clase)
+            e._K = K
+            e._v = K._mul(self._v, otro._v)
+            return e
         if otro.__class__ is int:           # camino rápido: entero (n·1)
-            return K._crear(K._mul(self._v, otro % K._p))
+            e = _nuevo(K._clase)
+            e._K = K
+            e._v = K._mul(self._v, otro % K._p)
+            return e
         return self._binaria(otro, "mul", False)
 
     def __rmul__(self, otro):
         if otro.__class__ is int:
             K = self._K
-            return K._crear(K._mul(otro % K._p, self._v))
+            e = _nuevo(K._clase)
+            e._K = K
+            e._v = K._mul(otro % K._p, self._v)
+            return e
         return self._binaria(otro, "mul", True)
 
     def __truediv__(self, otro):
@@ -700,7 +732,10 @@ class FieldElement(_pretty.Imprimible):
         if otro.__class__ is self.__class__ and otro._K is K:
             if not otro._v:
                 raise ZeroDivisionError(f"división por cero en {K!r}")
-            return K._crear(K._div(self._v, otro._v))
+            e = _nuevo(K._clase)
+            e._K = K
+            e._v = K._div(self._v, otro._v)
+            return e
         return self._binaria(otro, "div", False)
 
     def __rtruediv__(self, otro):
