@@ -436,6 +436,14 @@ namespace detail {
 // len = n, de `last` (la tabla completa, paso 1).  Las operaciones son las del
 // algoritmo original: v = w·a[i+j+h]; a[i+j+h] = a[i+j] - v; a[i+j] = a[i+j] + v.
 // Se calcula la resta antes que la suma para no tener que copiar a[i+j].
+//
+// Paralelismo: las n/2 mariposas de una etapa son independientes entre sí
+// (cada una toca un par distinto); se reparten por bloques entre hilos y se
+// espera a todos antes de la etapa siguiente.  Bloque mínimo: kParChunk
+// mariposas (más grande si el elemento es un entero barato).
+template <class Elem>
+inline constexpr std::size_t kParChunk = std::is_same_v<Elem, BigInt> ? 1024 : 32;
+
 template <class Field>
 void butterflies(const Field& K, typename Field::Elem* a, std::size_t n,
                  const std::vector<typename Field::Elem>& st,
@@ -444,15 +452,19 @@ void butterflies(const Field& K, typename Field::Elem* a, std::size_t n,
     for (std::size_t len = 2; len <= n; len <<= 1) {
         const std::size_t half = len >> 1;
         const Elem* tw = (len == n) ? last.data() : st.data() + (half - 1);
-        for (std::size_t i = 0; i < n; i += len) {
-            Elem* x = a + i;
-            Elem* y = a + i + half;
-            for (std::size_t j = 0; j < half; ++j) {
-                Elem v = K.mul(tw[j], y[j]);
-                y[j] = K.sub(x[j], v);
-                x[j] = K.add(x[j], v);
+        // Mariposas b en [lo, hi) de esta etapa: bloque i = (b / half)·len,
+        // posición j = b % half.
+        auto body = [&](std::size_t lo, std::size_t hi) {
+            for (std::size_t b = lo; b < hi; ++b) {
+                const std::size_t j = b % half;
+                Elem* x = a + (b / half) * len + j;
+                Elem* y = x + half;
+                Elem v = K.mul(tw[j], *y);
+                *y = K.sub(*x, v);
+                *x = K.add(*x, v);
             }
-        }
+        };
+        par::parallel_for(n / 2, kParChunk<Elem>, body);
     }
 }
 
@@ -503,7 +515,10 @@ void transform(const Field& K, std::vector<typename Field::Elem>& a, bool invers
     else         detail::butterflies(K, a.data(), n, t.fwd_st, t.fwd);
 
     if (inverse)
-        for (auto& x : a) x = K.mul(x, t.inv_n);
+        par::parallel_for(n, 2 * detail::kParChunk<typename Field::Elem>,
+                          [&](std::size_t lo, std::size_t hi) {
+                              for (std::size_t i = lo; i < hi; ++i) a[i] = K.mul(a[i], t.inv_n);
+                          });
 }
 
 // Is an FFT-based convolution of total length `result_len` possible in K?
@@ -515,6 +530,11 @@ long fft_exponent(const Field& K, std::size_t result_len) {
     unsigned long k = ceil_log2(result_len);
     return (k <= K.fft_capacity()) ? static_cast<long>(k) : -1;
 }
+
+// Tamaño de transformada a partir del cual las dos transformadas directas de
+// convolve van en hilos distintos (camino en palabras / multi-limb).
+inline constexpr std::size_t kParWordMin = std::size_t(1) << 13;
+inline constexpr std::size_t kParLimbMin = std::size_t(1) << 9;
 
 // Linear convolution of coefficient vectors A and B via FFT.  Caller must have
 // checked fft_exponent(K, A.size()+B.size()-1) >= 0.
@@ -541,13 +561,23 @@ std::vector<typename Field::Elem> convolve(const Field& K,
             const u64 p = t.word.p;
             std::vector<u64> wa(n, 0);
             for (std::size_t i = 0; i < A.size(); ++i) wa[i] = word::to_word(A[i]);
-            word::transform(t, wa.data(), n, false);
             if (&A == &B) {  // cuadrado: una sola transformada directa
+                word::transform(t, wa.data(), n, false);
                 for (std::size_t i = 0; i < n; ++i) wa[i] = word::mul_mod(wa[i], wa[i], p);
             } else {
                 std::vector<u64> wb(n, 0);
                 for (std::size_t i = 0; i < B.size(); ++i) wb[i] = word::to_word(B[i]);
-                word::transform(t, wb.data(), n, false);
+                // Las dos transformadas directas son independientes: con n
+                // grande, la de B va en otro hilo (las tablas ya existen).
+                if (n >= kParWordMin && par::max_threads() > 1) {
+                    auto fb = std::async(std::launch::async,
+                                         [&] { word::transform(t, wb.data(), n, false); });
+                    word::transform(t, wa.data(), n, false);
+                    fb.get();
+                } else {
+                    word::transform(t, wa.data(), n, false);
+                    word::transform(t, wb.data(), n, false);
+                }
                 for (std::size_t i = 0; i < n; ++i) wa[i] = word::mul_mod(wa[i], wb[i], p);
             }
             word::transform(t, wa.data(), n, true);
@@ -561,14 +591,26 @@ std::vector<typename Field::Elem> convolve(const Field& K,
             limb::Ctx C(t.limb);
             std::vector<u64> wa(n * N, 0);
             for (std::size_t i = 0; i < A.size(); ++i) limb::to_limbs(A[i], wa.data() + i * N, N);
-            limb::transform(t, C, wa.data(), n, false);
             if (&A == &B) {  // cuadrado: una sola transformada directa
+                limb::transform(t, C, wa.data(), n, false);
                 for (std::size_t i = 0; i < n; ++i)
                     C.mul_mod(wa.data() + i * N, wa.data() + i * N, wa.data() + i * N);
             } else {
                 std::vector<u64> wb(n * N, 0);
                 for (std::size_t i = 0; i < B.size(); ++i) limb::to_limbs(B[i], wb.data() + i * N, N);
-                limb::transform(t, C, wb.data(), n, false);
+                // Transformadas de A y B en paralelo (cada hilo con su propio
+                // espacio de trabajo Ctx).
+                if (n >= kParLimbMin && par::max_threads() > 1) {
+                    auto fb = std::async(std::launch::async, [&] {
+                        limb::Ctx C2(t.limb);
+                        limb::transform(t, C2, wb.data(), n, false);
+                    });
+                    limb::transform(t, C, wa.data(), n, false);
+                    fb.get();
+                } else {
+                    limb::transform(t, C, wa.data(), n, false);
+                    limb::transform(t, C, wb.data(), n, false);
+                }
                 for (std::size_t i = 0; i < n; ++i)
                     C.mul_mod(wa.data() + i * N, wa.data() + i * N, wb.data() + i * N);
             }
@@ -587,18 +629,23 @@ std::vector<typename Field::Elem> convolve(const Field& K,
     fa.resize(n, K.zero());
     transform(K, fa, false);
 
+    const std::size_t chunk = 2 * detail::kParChunk<Elem>;
     if (&A == &B) {
         // Cuadrado (a*a, frecuente en pow_mod y Ben-Or): la transformada
         // directa de B sería idéntica a la de A, así que se reutiliza.  Es
         // evitar trabajo redundante idéntico: mismo algoritmo, mismo resultado.
-        for (std::size_t i = 0; i < n; ++i) fa[i] = K.mul(fa[i], fa[i]);
+        par::parallel_for(n, chunk, [&](std::size_t lo, std::size_t hi) {
+            for (std::size_t i = lo; i < hi; ++i) fa[i] = K.mul(fa[i], fa[i]);
+        });
     } else {
         std::vector<Elem> fb;
         fb.reserve(n);
         fb.assign(B.begin(), B.end());
         fb.resize(n, K.zero());
         transform(K, fb, false);
-        for (std::size_t i = 0; i < n; ++i) fa[i] = K.mul(fa[i], fb[i]);
+        par::parallel_for(n, chunk, [&](std::size_t lo, std::size_t hi) {
+            for (std::size_t i = lo; i < hi; ++i) fa[i] = K.mul(fa[i], fb[i]);
+        });
     }
     transform(K, fa, true);
 
