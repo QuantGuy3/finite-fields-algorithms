@@ -143,7 +143,13 @@ def polinomio(coefs: Sequence, nombre_var: str, estilo: str,
     ``None`` si es cero.  El polinomio sin términos se escribe ``0``.
     """
     var = variable(nombre_var, estilo)
+    # La potencia «var + exponente(k, estilo)» se escribe en línea (una
+    # bifurcación por estilo en vez de dos llamadas por término).
+    unicode_ = estilo == "unicode"
+    ascii_ = estilo == "ascii"
+    tabla = _SUPERINDICES
     partes = []
+    agregar = partes.append
     # Cachés locales: ``formato`` es función pura del coeficiente y los
     # coeficientes se repiten mucho (sobre todo en cuerpos pequeños), así que
     # cada valor distinto se formatea una sola vez; lo mismo con el texto
@@ -160,17 +166,24 @@ def polinomio(coefs: Sequence, nombre_var: str, estilo: str,
             continue
         texto = f[0]
         if k == 0:
-            partes.append(texto)
+            agregar(texto)
             continue
-        pot = var + exponente(k, estilo)
+        if k == 1:
+            pot = var
+        elif unicode_:
+            pot = var + str(k).translate(tabla)
+        elif ascii_:
+            pot = f"{var}^{k}"
+        else:
+            pot = f"{var}^{{{k}}}"
         if texto == "1":
-            partes.append(pot)
+            agregar(pot)
         else:
             prefijo = prefijos.get(f)
             if prefijo is None:
                 sep = _separador_producto(estilo, nombre_var, texto)
                 prefijo = prefijos[f] = (parentesis(texto, estilo) if f[1] else texto) + sep
-            partes.append(prefijo + pot)
+            agregar(prefijo + pot)
     return " + ".join(partes) if partes else "0"
 
 
