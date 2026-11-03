@@ -9,10 +9,11 @@ resultados (mediana, mínimo, IQR, speedup y verificación de checksums).
 Subcomandos::
 
     build      --include DIR --label NOMBRE [--cxxflags "..."] [--ldflags "..."] [--cxx g++]
+               [--pgo [--pgo-filter RE]] [--fast-alloc]
     run        --label NOMBRE [--filter RE] [--reps N] [--min-time S] [--warmup N] [--out RUTA]
     interleave --labels A B C [--rounds R] [--filter RE] [--reps N] [--min-time S] [--per-scenario]
     compare    --base A --labels B C [--md salida.md] [--html salida.html]
-    module     --source bindings.cpp --include DIR --label NOMBRE [--cxxflags "..."]
+    module     --source bindings.cpp --include DIR --label NOMBRE [--cxxflags "..."] [--fast-alloc]
 
 Las etiquetas (``--label``) identifican cada variante: el ejecutable va a
 ``build/bench/<label>/bench_suite.exe`` y los resultados a
@@ -294,6 +295,40 @@ def default_ldflags() -> str:
     return "-static -lgmpxx -lgmp" if IS_WIN else "-lgmpxx -lgmp"
 
 
+# Asignador opcional para GMP (include/alcp/alloc.hpp de ESTE repositorio).  Se
+# inyecta con -include, de modo que funciona también con cabeceras que no lo
+# tienen (p. ej. la línea base original) sin tocar bench_suite.cpp.
+ALLOC_HPP = REPO / "include" / "alcp" / "alloc.hpp"
+
+
+def _fast_alloc_flags() -> list[str]:
+    if not ALLOC_HPP.is_file():
+        sys.exit(f"--fast-alloc: no existe {ALLOC_HPP}")
+    return ["-DALCP_FAST_ALLOC", "-include", ALLOC_HPP.as_posix()]
+
+
+def _compile(cmd: list[str]) -> int:
+    print("$ " + " ".join(shlex.quote(c) for c in cmd), flush=True)
+    return subprocess.run(cmd, check=False).returncode
+
+
+def _run_blocked_retry(run_cmd: list[str], relink_cmd: list[str], **kw) -> subprocess.CompletedProcess:
+    """Ejecuta `run_cmd`; si Windows (Smart App Control, WinError 4551) o el
+    antivirus bloquean el binario recién creado, lo vuelve a enlazar con
+    `relink_cmd` (cambia su hash) y reintenta."""
+    last: OSError | None = None
+    for intento in range(4):
+        try:
+            return subprocess.run(run_cmd, check=False, **kw)
+        except OSError as e:
+            last = e
+            print(f"  (binario bloqueado: {e}; se vuelve a enlazar)", flush=True)
+            time.sleep(0.5 * (intento + 1))
+            if _compile(relink_cmd) != 0:
+                break
+    raise last  # type: ignore[misc]
+
+
 def cmd_build(a: argparse.Namespace) -> int:
     include = Path(a.include).resolve()
     if not (include / "alcp" / "alcp.hpp").is_file():
@@ -302,15 +337,48 @@ def cmd_build(a: argparse.Namespace) -> int:
     out_dir.mkdir(parents=True, exist_ok=True)
     exe = out_dir / EXE_NAME
     ldflags = a.ldflags if a.ldflags is not None else default_ldflags()
-    cmd = [a.cxx, "-std=c++23", "-Wall", "-Wextra", *_split_flags(a.cxxflags), f"-I{include}",
-           str(SUITE_SRC), *_split_flags(ldflags), "-o", str(exe)]
-    print("$ " + " ".join(shlex.quote(c) for c in cmd), flush=True)
+    cxxflags = _split_flags(a.cxxflags) + (_fast_alloc_flags() if a.fast_alloc else [])
+
+    def make_cmd(extra: list[str]) -> list[str]:
+        return [a.cxx, "-std=c++23", "-Wall", "-Wextra", *cxxflags, *extra, f"-I{include}",
+                str(SUITE_SRC), *_split_flags(ldflags), "-o", str(exe)]
+
+    pgo: dict | None = None
     t0 = time.perf_counter()
-    cp = subprocess.run(cmd, check=False)
+    if a.pgo:
+        # PGO en tres pasos.  El perfil (.gcda) queda junto al ejecutable con
+        # el nombre derivado de -o (bench_suite.gcda), igual en los dos
+        # compilados; -fprofile-dir no se usa porque en Windows GCC «mangla»
+        # la ruta absoluta (C:...) en un directorio que no llega a crear.
+        for g in out_dir.glob("*.gcda"):
+            g.unlink()
+        gen = make_cmd(["-fprofile-generate"])
+        if (rc := _compile(gen)) != 0:
+            print(f"ERROR: la compilación instrumentada falló (código {rc})", file=sys.stderr)
+            return rc
+        train = [str(exe), "--reps", "1", "--min-time", "0", "--warmup", "0"]
+        if a.pgo_filter:
+            train += ["--filter", a.pgo_filter]
+        print("$ " + " ".join(shlex.quote(c) for c in train) + "   (entrenamiento PGO)", flush=True)
+        t1 = time.perf_counter()
+        cp = _run_blocked_retry(train, gen, stdout=subprocess.DEVNULL)
+        t_train = time.perf_counter() - t1
+        perfiles = sorted(out_dir.glob("*.gcda"))
+        if cp.returncode != 0 or not perfiles:
+            print(f"ERROR: el entrenamiento PGO falló (código {cp.returncode}, "
+                  f"{len(perfiles)} perfiles .gcda)", file=sys.stderr)
+            return cp.returncode or 1
+        # -fprofile-partial-training: las funciones que el entrenamiento no
+        # ejecuta se optimizan como sin perfil (en vez de como «frías»).
+        cmd = make_cmd(["-fprofile-use", "-fprofile-partial-training"])
+        pgo = {"train_filter": a.pgo_filter, "train_seconds": round(t_train, 2),
+               "generate_command": gen, "train_command": train}
+    else:
+        cmd = make_cmd([])
+    if (rc := _compile(cmd)) != 0:
+        print(f"ERROR: la compilación falló (código {rc})", file=sys.stderr)
+        return rc
     dt = time.perf_counter() - t0
-    if cp.returncode != 0:
-        print(f"ERROR: la compilación falló (código {cp.returncode})", file=sys.stderr)
-        return cp.returncode
     headers = sorted((include / "alcp").glob("*.hpp"))
     info = {
         "label": a.label,
@@ -320,8 +388,10 @@ def cmd_build(a: argparse.Namespace) -> int:
         "include_sha256": _sha256_files(headers),
         "suite_source_sha256": _sha256_files([SUITE_SRC]),
         "compiler": _compiler_info(a.cxx),
-        "cxxflags": a.cxxflags,
+        "cxxflags": a.cxxflags + (" --fast-alloc" if a.fast_alloc else "") + (" --pgo" if a.pgo else ""),
         "ldflags": ldflags,
+        "fast_alloc": bool(a.fast_alloc),
+        "pgo": pgo,
         "command": cmd,
         "build_seconds": round(dt, 2),
         "built": _now_iso(),
@@ -878,7 +948,8 @@ def cmd_module(a: argparse.Namespace) -> int:
     ext = sysconfig.get_config_var("EXT_SUFFIX") or (".pyd" if IS_WIN else ".so")
     out = out_dir / f"alcp_native{ext}"
     py_inc = sysconfig.get_path("include")
-    cmd = [a.cxx, "-shared", "-std=c++23", *_split_flags(a.cxxflags), f"-I{include}",
+    cmd = [a.cxx, "-shared", "-std=c++23", *_split_flags(a.cxxflags),
+           *(_fast_alloc_flags() if a.fast_alloc else []), f"-I{include}",
            f"-I{pybind11.get_include()}", f"-I{py_inc}", str(src)]
     if IS_WIN:
         # g++ (MinGW) + CPython de MSVC: se enlaza contra pythonXY de la
@@ -900,7 +971,9 @@ def cmd_module(a: argparse.Namespace) -> int:
     info = {"label": a.label, "kind": "module", "source": str(src), "source_sha256": _sha256_files([src]),
             "source_git": _git_info(src.parent), "include": str(include), "include_git": _git_info(include),
             "include_sha256": _sha256_files(sorted((include / "alcp").glob("*.hpp"))),
-            "compiler": _compiler_info(a.cxx), "cxxflags": a.cxxflags, "command": cmd,
+            "compiler": _compiler_info(a.cxx),
+            "cxxflags": a.cxxflags + (" --fast-alloc" if a.fast_alloc else ""),
+            "fast_alloc": bool(a.fast_alloc), "command": cmd,
             "python": sys.version, "ext_suffix": ext, "build_seconds": round(dt, 2), "built": _now_iso()}
     (out_dir / "build_info.json").write_text(json.dumps(scrub_paths(info), indent=2, ensure_ascii=False),
                                              encoding="utf-8")
@@ -940,6 +1013,14 @@ def main(argv: list[str] | None = None) -> int:
     b.add_argument("--cxxflags", default="-O3", help='flags de compilación (por defecto "-O3")')
     b.add_argument("--ldflags", default=None, help=f'flags de enlace (por defecto "{default_ldflags()}")')
     b.add_argument("--cxx", default=default_cxx, help="compilador (por defecto $CXX o g++)")
+    b.add_argument("--pgo", action="store_true",
+                   help="PGO: compila instrumentado, entrena ejecutando la suite (--reps 1) y "
+                        "recompila con -fprofile-use -fprofile-partial-training")
+    b.add_argument("--pgo-filter", default=None,
+                   help="expresión regular de los escenarios de entrenamiento PGO (por defecto, todos)")
+    b.add_argument("--fast-alloc", action="store_true",
+                   help="activa el asignador con caché para GMP (include/alcp/alloc.hpp de este repo, "
+                        "inyectado con -include; vale también para la línea base)")
     b.set_defaults(func=cmd_build)
 
     def add_run_opts(p: argparse.ArgumentParser, reps: int | None, min_time: float | None) -> None:
@@ -979,6 +1060,8 @@ def main(argv: list[str] | None = None) -> int:
     m.add_argument("--label", required=True, help="el módulo va a build/bench/<label>/module/")
     m.add_argument("--cxxflags", default="-O3")
     m.add_argument("--cxx", default=default_cxx)
+    m.add_argument("--fast-alloc", action="store_true",
+                   help="activa el asignador con caché para GMP (como en build)")
     m.set_defaults(func=cmd_module)
 
     args = ap.parse_args(_normalize_argv(sys.argv[1:] if argv is None else argv))

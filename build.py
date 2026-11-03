@@ -22,7 +22,10 @@ Subcomandos:
     oracle    python-bindings/oracle.py -> build/oracle_vectors.txt y xcheck sobre él.
     module    Compila python-bindings/bindings.cpp ->
               python-bindings/alcp/alcp_native<EXT_SUFFIX> y comprueba que importa.
-              Opciones: --debug (-O0 -g), --coverage (-O0 -g --coverage).
+              Opciones: --debug (-O0 -g), --coverage (-O0 -g --coverage),
+              --pgo (-O3 con optimización guiada por perfil: compila un
+              módulo instrumentado, lo entrena con bench/bench_python.py y
+              recompila con el perfil; ver construir_modulo_pgo).
     pytest    Ejecuta pytest con la configuración de pyproject.toml; los
               argumentos que siguen al subcomando se pasan tal cual.
     cov-cpp   Cobertura C++ con gcov + gcovr -> build/coverage-cpp/ (ver abajo).
@@ -705,6 +708,65 @@ def importar_con_reintento(carpeta: Path, regenerar) -> Resultado:
     return ri
 
 
+def construir_modulo_pgo(salida: Path, extra: list[str]) -> Resultado:
+    """Módulo con PGO (optimización guiada por perfil), en tres pasos:
+
+    1. compila un módulo instrumentado (-fprofile-generate) en build/pgo-module/;
+    2. lo entrena ejecutando bench/bench_python.py contra él (--reps 1): así
+       el perfil refleja el uso típico desde Python (productos, factorización,
+       conversiones, bucles de llamadas pequeñas...);
+    3. lo recompila con -fprofile-use -fprofile-partial-training en el MISMO
+       destino (GCC busca el .gcda por el nombre de la salida) y lo copia a
+       `salida`.
+
+    -fprofile-partial-training: lo que el entrenamiento no ejecuta se optimiza
+    como sin perfil (no como código «frío»), para no penalizar el resto de la
+    API.  Solo cambia decisiones del compilador (inlining, disposición del
+    código, desenrollado); el algoritmo y los resultados son los mismos.
+    """
+    t0 = time.perf_counter()
+    carpeta = BUILD / "pgo-module"
+    borrar(carpeta)
+    carpeta.mkdir(parents=True, exist_ok=True)
+    tmp = carpeta / salida.name
+    script = RAIZ / "bench" / "bench_python.py"
+    if not script.exists():
+        raise ErrorEntorno(f"--pgo necesita {script} para el entrenamiento")
+    gen = extra + ["-fprofile-generate"]
+    r = construir_modulo(tmp, "release", gen, True)
+    if not r.ok:
+        return r
+    UI.linea("OK", "módulo instrumentado (-fprofile-generate)", r.segundos)
+    entreno = [sys.executable, str(script), "--module-dir", str(carpeta),
+               "--json", str(carpeta / "entrenamiento.json"),
+               "--reps", "1", "--min-time", "0", "--warmup", "0"]
+    UI.comando(entreno)
+    re_ = correr(entreno, env=env_ejecucion(PYTHONIOENCODING="utf-8"), timeout=1800)
+    for _ in range(2):          # Smart App Control: regenerar cambia el hash
+        if re_.ok or "Application Control" not in re_.salida:
+            break
+        UI.nota("el sistema bloquea el módulo instrumentado; se regenera y se reintenta")
+        if not construir_modulo(tmp, "release", gen, True).ok:
+            break
+        re_ = correr(entreno, env=env_ejecucion(PYTHONIOENCODING="utf-8"), timeout=1800)
+    perfiles = list(carpeta.glob("*.gcda"))
+    if not re_.ok or not perfiles:
+        UI.bloque(re_.salida)
+        return Resultado(1, "el entrenamiento PGO ha fallado (sin perfil .gcda)",
+                         time.perf_counter() - t0)
+    UI.linea("OK", f"entrenamiento PGO (bench_python.py, {len(perfiles)} perfil)", re_.segundos)
+    r = construir_modulo(tmp, "release", extra + ["-fprofile-use", "-fprofile-partial-training"],
+                         True)
+    if not r.ok:
+        return r
+    shutil.copy2(tmp, salida)
+    # El sello de `salida` (si lo hay) es de un build normal: se borra para que
+    # el próximo «build.py module» sin --pgo recompile en lugar de dar por
+    # bueno el módulo PGO.
+    ruta_sello(salida).unlink(missing_ok=True)
+    return Resultado(0, r.salida, time.perf_counter() - t0, avisos=r.avisos)
+
+
 def paso_module(op: Opciones, perfil: str = "release") -> Paso:
     comprobar_compilador()
     include_pybind11()          # requisito: falla aquí, antes de abrir la sección
@@ -712,6 +774,19 @@ def paso_module(op: Opciones, perfil: str = "release") -> Paso:
     salida = PAQUETE / ("alcp_native" + sufijo_modulo())
     UI.seccion(f"Módulo nativo ({perfil}) -> {salida.relative_to(RAIZ).as_posix()}")
     PAQUETE.mkdir(parents=True, exist_ok=True)
+    if perfil == "pgo":
+        r = construir_modulo_pgo(salida, flags_extra(op.flags))
+        informar_compilacion("alcp_native (PGO)", r)
+        if not r.ok:
+            UI.fin_seccion()
+            return Paso("module", "FALLO", time.perf_counter() - t0, "PGO: no compila o no entrena")
+        ri = importar_con_reintento(PAQUETE, lambda: construir_modulo_pgo(
+            salida, flags_extra(op.flags)))
+        UI.linea("OK" if ri.ok else "FALLO", "importar alcp_native", ri.segundos)
+        UI.bloque(ri.salida)
+        UI.fin_seccion()
+        return Paso("module", "OK" if ri.ok else "FALLO", time.perf_counter() - t0,
+                    "PGO" if ri.ok else "no se puede importar")
     obj_dir = BUILD / "module-obj" if perfil == "coverage" else None
     # Con --coverage se compila y enlaza por separado: sin las flags de perfil
     # (LTO no casa con eso ni con la instrumentación de cobertura).
@@ -1052,6 +1127,8 @@ def construir_parser() -> argparse.ArgumentParser:
     grupo = m.add_mutually_exclusive_group()
     grupo.add_argument("--debug", action="store_true", help="-O0 -g")
     grupo.add_argument("--coverage", action="store_true", help="-O0 -g --coverage")
+    grupo.add_argument("--pgo", action="store_true",
+                       help="-O3 con PGO entrenado con bench/bench_python.py")
     sub.add_parser("pytest", parents=[comunes], help="ejecuta pytest (argumentos tal cual)")
     sub.add_parser("cov-cpp", parents=[comunes, compila], help="cobertura C++ con gcovr")
     sub.add_parser("bench", parents=[comunes], help="benchmarks (argumentos tal cual)")
@@ -1123,7 +1200,8 @@ def main(argv: list[str]) -> int:
         elif a.orden == "oracle":
             pasos.append(paso_oracle(op))
         elif a.orden == "module":
-            perfil = "coverage" if a.coverage else "debug" if a.debug else "release"
+            perfil = ("coverage" if a.coverage else "debug" if a.debug
+                      else "pgo" if a.pgo else "release")
             pasos.append(paso_module(op, perfil))
         elif a.orden == "pytest":
             pasos.append(paso_pytest(paso_directo))
