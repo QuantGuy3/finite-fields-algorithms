@@ -207,12 +207,6 @@ class PolynomialRing(_pretty.Imprimible):
         cuerpo primo (la operación se hará allí).
         """
         K = self._K
-        # Caminos rápidos (los más frecuentes como operandos): un int (n·1) y un
-        # elemento del propio cuerpo; dan lo mismo que la cascada de abajo.
-        if x.__class__ is int:
-            return K._nat.poly([x % K._p])
-        if x.__class__ is K._clase and x._K is K:
-            return K._nat.poly([x._v])
         if isinstance(x, Polynomial):
             return self._desde_polinomio(x, operando)
         if isinstance(x, str):
@@ -616,13 +610,7 @@ class Polynomial(_pretty.Imprimible):
     def __call__(self, v):
         """``f(v)``: evaluación si v es convertible al cuerpo; composición si es un
         polinomio o una cadena que contiene la variable."""
-        R = self._R
-        K = R._K
-        # Caminos rápidos: evaluación en un int o en un elemento del propio cuerpo.
-        if v.__class__ is int:
-            return K._crear(self._p.evaluate(v % K._p))
-        if v.__class__ is K._clase and v._K is K:
-            return K._crear(self._p.evaluate(v._v))
+        R, K = self._R, self._R._K
         if isinstance(v, Polynomial):
             S = v._R
             if S._K is not K and S._K._n == 1 and S._K._p == K._p:
