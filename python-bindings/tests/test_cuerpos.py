@@ -607,3 +607,6 @@ def test_reconstruccion_de_elementos_valida_el_indice():
     with pytest.raises(ValueError, match="el índice debe estar en"):
         modulo_field._elemento(GF(9), 9)
     assert modulo_field._elemento(GF(9), 3) == GF(9).gen
+    assert modulo_field._elemento(GF(9), True) == 1          # no es int exacto: from_index
+    e = GF(9).gen
+    assert e.__reduce__() == e.__reduce_ex__(2) == (modulo_field._elemento, (GF(9), 3))

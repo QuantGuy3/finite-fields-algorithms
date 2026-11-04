@@ -36,6 +36,9 @@ from .field import _PROMOVER, FieldElement, FiniteField, _texto_elemento, valida
 #: Grado máximo de un polinomio construido desde Python (protege la memoria).
 GRADO_MAXIMO = 10**7
 
+# Caché de cadenas ya analizadas (ver _parse.Cache).
+_CACHE_ANALIZADOR = _parse.Cache()
+
 _OPERADORES = {"add": operator.add, "sub": operator.sub, "mul": operator.mul,
                "floordiv": operator.floordiv, "mod": operator.mod, "divmod": divmod}
 
@@ -46,6 +49,16 @@ _DIVISIONES = frozenset({"floordiv", "mod", "divmod", "truediv"})
 def _poli_desde_indices(R: "PolynomialRing", coefs: list) -> "Polynomial":
     """Reconstruye un polinomio a partir de los valores/índices de sus coeficientes (pickle)."""
     return R._envolver(R._K._nat.poly(list(coefs)))
+
+
+def _valores(K: FiniteField, coefs) -> list:
+    """``[K._valor(c) for c in coefs]`` con caminos rápidos para int y para los
+    elementos del propio cuerpo (mismo resultado y mismo orden de errores)."""
+    p, clase, valor = K._p, K._clase, K._valor
+    return [c % p if c.__class__ is int
+            else c._v if c.__class__ is clase and c._K is K
+            else valor(c)
+            for c in coefs]
 
 
 def _comprobar_grado(d: int) -> None:
@@ -194,14 +207,20 @@ class PolynomialRing(_pretty.Imprimible):
         cuerpo primo (la operación se hará allí).
         """
         K = self._K
+        # Caminos rápidos (los más frecuentes como operandos): un int (n·1) y un
+        # elemento del propio cuerpo; dan lo mismo que la cascada de abajo.
+        if x.__class__ is int:
+            return K._nat.poly([x % K._p])
+        if x.__class__ is K._clase and x._K is K:
+            return K._nat.poly([x._v])
         if isinstance(x, Polynomial):
             return self._desde_polinomio(x, operando)
         if isinstance(x, str):
-            return self._analizar(x)._p
+            return self._analizar_cacheado(x)[0]
         if isinstance(x, dict):
             return self._desde_dict(x)
         if isinstance(x, (list, tuple)):
-            return K._nat.poly([K._valor(c) for c in x])
+            return K._nat.poly(_valores(K, x))
         if isinstance(x, FieldElement):
             v = K._valor(x, operando)
             return v if v is _PROMOVER else K._nat.poly([v])
@@ -218,7 +237,7 @@ class PolynomialRing(_pretty.Imprimible):
         except TypeError:
             raise TypeError(f"no se puede convertir un valor de tipo {type(x).__name__!r} "
                             f"en un polinomio de {self!r}") from None
-        return K._nat.poly([K._valor(c) for c in coefs])
+        return K._nat.poly(_valores(K, coefs))
 
     def _desde_polinomio(self, f: "Polynomial", operando: bool):
         S = f._R
@@ -249,12 +268,37 @@ class PolynomialRing(_pretty.Imprimible):
             coefs[k] = v
         return K._nat.poly(coefs)
 
+    def _analizar_cacheado(self, texto: str) -> tuple:
+        """``(polinomio nativo, variables usadas)`` de ``texto``.
+
+        Las cadenas cortas que ya se analizaron se toman de la caché (los
+        polinomios nativos son inmutables, así que se pueden compartir).
+        """
+        r = _CACHE_ANALIZADOR.get(self, texto)
+        if r is None:
+            usadas: set = set()
+            f = self._analizar(texto, usadas)._p
+            r = (f, frozenset(usadas))
+            if f.degree() <= _parse.CACHE_LONGITUD_MAXIMA:      # no retener monstruos
+                _CACHE_ANALIZADOR.put(self, texto, r)
+        return r
+
     def _analizar(self, texto: str, usadas=None) -> "Polynomial":
         K = self._K
         variables = {self._var: self._gen}
         if K._var:
             variables[K._var] = self._envolver(K._nat.poly([K._p]))   # índice de a: p
-        return _parse.analizar(texto, self._constante, variables, _dividir_constante, usadas)
+        return _parse.analizar(texto, self._constante, variables, _dividir_constante, usadas,
+                               {self._var: self._potencia_variable})
+
+    def _potencia_variable(self, x: "Polynomial", k: int) -> "Polynomial":
+        """``x ** k`` para el generador x en el analizador: con k >= 2 construye el
+        monomio directamente (mismo resultado y mismos errores que ``x ** k``, sin
+        las multiplicaciones de la potenciación)."""
+        if k < 2:
+            return x ** k
+        _comprobar_grado(k)
+        return self._envolver(self._K._nat.poly([0] * k + [1]))
 
     def _constante(self, n: int) -> "Polynomial":
         return self._envolver(self._K._nat.poly([n % self._K._p]))
@@ -468,18 +512,37 @@ class Polynomial(_pretty.Imprimible):
         return self._binaria(otro, "mul", True)
 
     def __floordiv__(self, otro):
+        # Camino rápido: otro polinomio del mismo anillo (mismo resultado y
+        # mismo error que _binaria, sin la cascada de conversiones).
+        if otro.__class__ is Polynomial and otro._R is self._R:
+            b = otro._p
+            if b.is_zero():
+                raise ZeroDivisionError("división por el polinomio cero")
+            return self._R._envolver(self._p // b)
         return self._binaria(otro, "floordiv", False)
 
     def __rfloordiv__(self, otro):
         return self._binaria(otro, "floordiv", True)
 
     def __mod__(self, otro):
+        if otro.__class__ is Polynomial and otro._R is self._R:
+            b = otro._p
+            if b.is_zero():
+                raise ZeroDivisionError("división por el polinomio cero")
+            return self._R._envolver(self._p % b)
         return self._binaria(otro, "mod", False)
 
     def __rmod__(self, otro):
         return self._binaria(otro, "mod", True)
 
     def __divmod__(self, otro):
+        if otro.__class__ is Polynomial and otro._R is self._R:
+            b = otro._p
+            if b.is_zero():
+                raise ZeroDivisionError("división por el polinomio cero")
+            R = self._R
+            c, r = divmod(self._p, b)
+            return R._envolver(c), R._envolver(r)
         return self._binaria(otro, "divmod", False)
 
     def __rdivmod__(self, otro):
@@ -572,18 +635,23 @@ class Polynomial(_pretty.Imprimible):
     def __call__(self, v):
         """``f(v)``: evaluación si v es convertible al cuerpo; composición si es un
         polinomio o una cadena que contiene la variable."""
-        R, K = self._R, self._R._K
+        R = self._R
+        K = R._K
+        # Caminos rápidos: evaluación en un int o en un elemento del propio cuerpo.
+        if v.__class__ is int:
+            return K._crear(self._p.evaluate(v % K._p))
+        if v.__class__ is K._clase and v._K is K:
+            return K._crear(self._p.evaluate(v._v))
         if isinstance(v, Polynomial):
             S = v._R
             if S._K is not K and S._K._n == 1 and S._K._p == K._p:
                 S = K[S._var]       # v sobre F_p y f sobre una extensión: se sube v
             return S._envolver(S._nativo(self).compose(S._nativo(v)))
         if isinstance(v, str):
-            usadas = set()
-            g = R._analizar(v, usadas)
+            g, usadas = R._analizar_cacheado(v)
             if R._var in usadas:
-                return R._envolver(self._p.compose(g._p))
-            v = g
+                return R._envolver(self._p.compose(g))
+            v = R._envolver(g)
         elif isinstance(v, FieldElement) and v._K is not K and K._n == 1 and v._K._p == K._p:
             # Polinomio sobre F_p evaluado en un elemento de una extensión L
             # (los valores de F_p son sus índices en L).

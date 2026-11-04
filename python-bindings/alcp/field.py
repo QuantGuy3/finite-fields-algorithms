@@ -61,12 +61,19 @@ if TYPE_CHECKING:
 #: ``K.elements()`` (y ``iter(K)``) solo enumera cuerpos de hasta este cardinal.
 ENUMERACION_MAXIMA = 10**6
 
+#: Textos de elementos de una extensión que recuerda cada cuerpo (a partir de
+#: aquí se dejan de guardar: la caché no crece sin límite).
+TEXTOS_MAXIMOS = 4096
+
 # Marca interna: «el otro operando vive en una extensión de este cuerpo primo;
 # hay que llevar este operando a ella y repetir la operación allí».
 _PROMOVER = object()
 
 _OPERADORES = {"add": operator.add, "sub": operator.sub,
                "mul": operator.mul, "div": operator.truediv}
+
+# Caché de cadenas ya analizadas como elementos (ver _parse.Cache).
+_CACHE_ANALIZADOR = _parse.Cache()
 
 # Cachés: cuerpos por parámetros y módulos deterministas por (p, n).
 _cuerpos: dict = {}
@@ -187,6 +194,14 @@ def _modulo_dado(modulus, p: int, n: int) -> tuple:
 
 def _elemento(K: "FiniteField", v: int) -> "FieldElement":
     """Reconstruye un elemento a partir de su valor/índice (pickle)."""
+    # Camino rápido para el caso normal (un cuerpo y un índice int válido): sin
+    # pasar por from_index/entero.  Cualquier otro caso se valida como siempre.
+    if (type(v) is int and (K.__class__ is PrimeField or K.__class__ is ExtensionField)
+            and 0 <= v < K._q):
+        e = object.__new__(K._clase)
+        e._K = K
+        e._v = v
+        return e
     return K.from_index(v)
 
 
@@ -203,7 +218,12 @@ class FiniteField(_pretty.Imprimible):
     """
 
     __slots__ = ("_nat", "_p", "_n", "_q", "_var", "_clase", "_anillos",
-                 "_fact_q1", "_nocuadrado", "_primitivo")
+                 "_fact_q1", "_nocuadrado", "_primitivo",
+                 # Métodos del cuerpo nativo ya enlazados: evita buscarlos (y crear
+                 # el método ligado) en cada operación, algo caro en pybind11.
+                 "_add", "_sub", "_mul", "_div", "_neg", "_pow",
+                 # Textos ya calculados de elementos de una extensión: (v, estilo) -> texto.
+                 "_textos")
     # numpy: que no trate el cuerpo (iterable) como un array al compararlo con
     # sus escalares (GF(9) == numpy.int64(1) daba un array de 9 booleanos).
     __array_ufunc__ = None
@@ -222,6 +242,9 @@ class FiniteField(_pretty.Imprimible):
         self._fact_q1 = None
         self._nocuadrado = None
         self._primitivo = None
+        self._add, self._sub, self._mul = nat.add, nat.sub, nat.mul
+        self._div, self._neg, self._pow = nat.div, nat.neg, nat.pow
+        self._textos = {}
 
     # -- datos -------------------------------------------------------------
     @property
@@ -410,7 +433,11 @@ class FiniteField(_pretty.Imprimible):
                 return _PROMOVER
             return self._desde_elemento(x, operando)
         if isinstance(x, str):
-            return self._analizar(x)._v
+            v = _CACHE_ANALIZADOR.get(self, x)
+            if v is None:
+                v = self._analizar(x)._v
+                _CACHE_ANALIZADOR.put(self, x, v)
+            return v
         if isinstance(x, _poly.Polynomial):
             if operando:
                 return None
@@ -569,6 +596,11 @@ class ExtensionField(FiniteField):
                 f"{_pretty.nombre_cuerpo(self._p, estilo)}[{var}]/({g})")
 
 
+# Creación de elementos sin pasar por FiniteField._crear en los caminos rápidos
+# de los operadores (una llamada Python menos por operación; mismo resultado).
+_nuevo = object.__new__
+
+
 # ---------------------------------------------------------------------------
 # Elementos
 # ---------------------------------------------------------------------------
@@ -629,28 +661,70 @@ class FieldElement(_pretty.Imprimible):
     def __add__(self, otro):
         K = self._K
         if otro.__class__ is self.__class__ and otro._K is K:
-            return K._crear(K._nat.add(self._v, otro._v))
+            e = _nuevo(K._clase)
+            e._K = K
+            e._v = K._add(self._v, otro._v)
+            return e
+        if otro.__class__ is int:           # camino rápido: entero (n·1)
+            e = _nuevo(K._clase)
+            e._K = K
+            e._v = K._add(self._v, otro % K._p)
+            return e
         return self._binaria(otro, "add", False)
 
     def __radd__(self, otro):
+        if otro.__class__ is int:
+            K = self._K
+            e = _nuevo(K._clase)
+            e._K = K
+            e._v = K._add(otro % K._p, self._v)
+            return e
         return self._binaria(otro, "add", True)
 
     def __sub__(self, otro):
         K = self._K
         if otro.__class__ is self.__class__ and otro._K is K:
-            return K._crear(K._nat.sub(self._v, otro._v))
+            e = _nuevo(K._clase)
+            e._K = K
+            e._v = K._sub(self._v, otro._v)
+            return e
+        if otro.__class__ is int:           # camino rápido: entero (n·1)
+            e = _nuevo(K._clase)
+            e._K = K
+            e._v = K._sub(self._v, otro % K._p)
+            return e
         return self._binaria(otro, "sub", False)
 
     def __rsub__(self, otro):
+        if otro.__class__ is int:
+            K = self._K
+            e = _nuevo(K._clase)
+            e._K = K
+            e._v = K._sub(otro % K._p, self._v)
+            return e
         return self._binaria(otro, "sub", True)
 
     def __mul__(self, otro):
         K = self._K
         if otro.__class__ is self.__class__ and otro._K is K:
-            return K._crear(K._nat.mul(self._v, otro._v))
+            e = _nuevo(K._clase)
+            e._K = K
+            e._v = K._mul(self._v, otro._v)
+            return e
+        if otro.__class__ is int:           # camino rápido: entero (n·1)
+            e = _nuevo(K._clase)
+            e._K = K
+            e._v = K._mul(self._v, otro % K._p)
+            return e
         return self._binaria(otro, "mul", False)
 
     def __rmul__(self, otro):
+        if otro.__class__ is int:
+            K = self._K
+            e = _nuevo(K._clase)
+            e._K = K
+            e._v = K._mul(otro % K._p, self._v)
+            return e
         return self._binaria(otro, "mul", True)
 
     def __truediv__(self, otro):
@@ -658,14 +732,17 @@ class FieldElement(_pretty.Imprimible):
         if otro.__class__ is self.__class__ and otro._K is K:
             if not otro._v:
                 raise ZeroDivisionError(f"división por cero en {K!r}")
-            return K._crear(K._nat.div(self._v, otro._v))
+            e = _nuevo(K._clase)
+            e._K = K
+            e._v = K._div(self._v, otro._v)
+            return e
         return self._binaria(otro, "div", False)
 
     def __rtruediv__(self, otro):
         return self._binaria(otro, "div", True)
 
     def __neg__(self):
-        return self._K._crear(self._K._nat.neg(self._v))
+        return self._K._crear(self._K._neg(self._v))
 
     def __pos__(self):
         return self
@@ -679,7 +756,7 @@ class FieldElement(_pretty.Imprimible):
         k = entero(k, "el exponente")
         if k < 0 and not self._v:
             raise ZeroDivisionError(f"el 0 de {self._K!r} no tiene inverso")
-        return self._K._crear(self._K._nat.pow(self._v, k))
+        return self._K._crear(self._K._pow(self._v, k))
 
     def inverse(self) -> "FieldElement":
         """Inverso multiplicativo.  ``ZeroDivisionError`` para el 0."""
@@ -706,6 +783,11 @@ class FieldElement(_pretty.Imprimible):
         return self._v != 0
 
     def __reduce__(self):
+        return (_elemento, (self._K, self._v))
+
+    def __reduce_ex__(self, protocol):
+        # Lo mismo que __reduce__, sin el paso intermedio de object.__reduce_ex__
+        # (pickle de listas grandes de elementos).
         return (_elemento, (self._K, self._v))
 
     def __copy__(self):
@@ -822,9 +904,13 @@ def _texto_elemento(K: FiniteField, v: int, estilo: str):
     """(texto, compuesto) del elemento de valor/índice ``v`` de K."""
     if K._n == 1:
         return str(v), False
-    coefs = K._nat.to_coeffs(v)
-    texto = _pretty.polinomio_entero(coefs, K._var, estilo)
-    return texto, sum(1 for c in coefs if c) > 1
+    r = K._textos.get((v, estilo))
+    if r is None:
+        coefs = K._nat.to_coeffs(v)
+        r = (_pretty.polinomio_entero(coefs, K._var, estilo), sum(1 for c in coefs if c) > 1)
+        if len(K._textos) < TEXTOS_MAXIMOS:
+            K._textos[(v, estilo)] = r
+    return r
 
 
 class PrimeFieldElement(FieldElement):

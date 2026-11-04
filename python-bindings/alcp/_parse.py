@@ -159,8 +159,10 @@ class _Analizador:
     def __init__(self, texto: str, constante: Callable[[int], object],
                  variables: Mapping[str, object],
                  dividir: Callable[[object, object], object],
-                 usadas: Optional[Set[str]]):
+                 usadas: Optional[Set[str]],
+                 potencias: Optional[Mapping[str, Callable[[object, int], object]]] = None):
         self.texto = texto
+        self.potencias = potencias
         self.constante = constante
         self.variables = variables
         self.dividir = dividir
@@ -238,15 +240,23 @@ class _Analizador:
         return -v if negativo else v
 
     def potencia(self):
+        t0 = self.actual
         base = self.atomo()
         t = self.actual
         if t.tipo == OP and t.valor == "^":
             self.avanzar()
-            return self.calcular(operator.pow, base, self.exponente(), t.pos)
-        if t.tipo == SUP:
+            k = self.exponente()
+        elif t.tipo == SUP:
             self.avanzar()
-            return self.calcular(operator.pow, base, t.valor, t.pos)
-        return base
+            k = t.valor
+        else:
+            return base
+        elevar = operator.pow
+        if t0.tipo == VAR and self.potencias is not None:
+            # Potencia de una variable con una construcción directa del destino
+            # (p. ej. el monomio x^k), equivalente a base ** k.
+            elevar = self.potencias.get(t0.valor, operator.pow)
+        return self.calcular(elevar, base, k, t.pos)
 
     def exponente(self) -> int:
         parentesis = self.actual.tipo == ABRE
@@ -289,15 +299,54 @@ class _Analizador:
         raise self.error("se esperaba un número, una variable o '('")
 
 
+#: Las cadenas de hasta esta longitud se recuerdan ya analizadas (por destino).
+CACHE_LONGITUD_MAXIMA = 1000
+#: Número máximo de cadenas recordadas en cada caché (se descarta la más antigua).
+CACHE_ENTRADAS = 512
+
+
+class Cache:
+    """Caché pequeña de resultados del analizador: (destino, texto) -> valor.
+
+    Solo guarda cadenas ``str`` exactas (no subclases) de hasta
+    :data:`CACHE_LONGITUD_MAXIMA` caracteres y los análisis que terminaron
+    bien (los errores se recalculan, con el mismo mensaje).  El destino (un
+    cuerpo o un anillo, que viven tanto como el proceso porque están
+    cacheados) se identifica por su ``id`` y se comprueba al leer.
+    """
+
+    __slots__ = ("_d",)
+
+    def __init__(self) -> None:
+        self._d: dict = {}
+
+    def get(self, destino, texto):
+        if type(texto) is not str:
+            return None
+        r = self._d.get((id(destino), texto))
+        return r[1] if r is not None and r[0] is destino else None
+
+    def put(self, destino, texto, valor) -> None:
+        if type(texto) is not str or len(texto) > CACHE_LONGITUD_MAXIMA:
+            return
+        d = self._d
+        if len(d) >= CACHE_ENTRADAS:
+            del d[next(iter(d))]
+        d[(id(destino), texto)] = (destino, valor)
+
+
 def analizar(texto: str, constante: Callable[[int], object],
              variables: Optional[Mapping[str, object]] = None,
              dividir: Callable[[object, object], object] = operator.truediv,
-             usadas: Optional[Set[str]] = None):
+             usadas: Optional[Set[str]] = None,
+             potencias: Optional[Mapping[str, Callable[[object, int], object]]] = None):
     """Evalúa ``texto`` con las operaciones de los valores de la estructura destino.
 
     ``constante(n)`` convierte un entero literal ``n >= 0``; ``variables``
     asocia cada nombre a su valor; ``dividir(a, b)`` implementa ``/``.  Si se da
     ``usadas``, se le añaden los nombres de variable que aparecen.
+    ``potencias`` asocia (opcionalmente) a un nombre de variable una función
+    ``elevar(valor, k)`` equivalente a ``valor ** k`` pero más barata.
     """
     vars_: Dict[str, object] = dict(variables or {})
-    return _Analizador(texto, constante, vars_, dividir, usadas).analizar()
+    return _Analizador(texto, constante, vars_, dividir, usadas, potencias).analizar()

@@ -182,3 +182,55 @@ def test_variables_de_varias_letras_en_anillos():
 def test_operador_division_por_defecto():
     assert _parse.analizar("6/3", Fraction) == 2
     assert _parse.analizar("6/4", Fraction, None, operator.truediv) == Fraction(3, 2)
+
+
+# ---------------------------------------------------------------------------
+# Caché de cadenas ya analizadas (rendimiento de la capa Python)
+# ---------------------------------------------------------------------------
+class _Cadena(str):
+    """Subclase de str: no se guarda en la caché (su __eq__/__hash__ podrían ser otros)."""
+
+
+def test_cache_devuelve_el_mismo_resultado_y_comparte_el_nativo():
+    R = GF(7)["x"]
+    f, g = R("x^3 + 2x + 1"), R("x^3 + 2x + 1")
+    assert f == g and f is not g
+    assert f._p is g._p                     # el nativo (inmutable) se comparte
+    K = GF(9)
+    assert K("a + 1") == K("a + 1") == K.from_index(4)
+    assert K("0") == K("0") == 0            # el índice 0 también se recuerda
+
+
+def test_cache_no_guarda_subclases_ni_cadenas_largas_ni_grados_enormes():
+    R = GF(5)["x"]
+    s = _Cadena("x^2 + 1")
+    assert R(s) == R("x^2 + 1") and R(s)._p is not R(s)._p
+    assert GF(5)(_Cadena("3")) == 3
+    largo = " + ".join(["x"] * 600)         # más de CACHE_LONGITUD_MAXIMA caracteres
+    assert len(largo) > _parse.CACHE_LONGITUD_MAXIMA
+    assert R(largo) == 600 * R.gen and R(largo)._p is not R(largo)._p
+    grande = f"x^{_parse.CACHE_LONGITUD_MAXIMA + 1}"
+    assert R(grande).degree == _parse.CACHE_LONGITUD_MAXIMA + 1
+    assert R(grande)._p is not R(grande)._p
+
+
+def test_cache_descarta_la_entrada_mas_antigua(monkeypatch):
+    monkeypatch.setattr(_parse, "CACHE_ENTRADAS", 2)
+    c = _parse.Cache()
+    R = GF(3)["x"]
+    for i, t in enumerate(("a", "b", "c")):
+        c.put(R, t, i)
+    assert c.get(R, "a") is None and c.get(R, "b") == 1 and c.get(R, "c") == 2
+    assert c.get(GF(3)["y"], "b") is None   # otro destino
+    assert c.get(R, _Cadena("b")) is None
+
+
+def test_cache_no_recuerda_errores_y_evalua_con_cadenas():
+    R = GF(7)["x"]
+    for _ in range(2):
+        with pytest.raises(ValueError, match="variable desconocida"):
+            R("x + y")
+    f = R("x^2 + 1")
+    assert f("x + 1") == R("x^2 + 2x + 2")  # composición (la variable aparece)
+    assert f("3") == GF(7)(3)               # evaluación (constante)
+    assert f("3") == GF(7)(3)               # segunda vez, desde la caché
