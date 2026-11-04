@@ -359,6 +359,10 @@ def comprobar_compilador() -> str:
 #   v3        x86-64-v3 (AVX2, BMI2, FMA, MOVBE; Intel Haswell 2013+, AMD
 #             Zen 1+).  Falla con «illegal instruction» en CPU más antiguas.
 #   nativo    -march=native: solo para la CPU de la máquina que compila.
+# Decisión (fase 3, docs/optimizacion/README.md §6): el perfil por defecto es
+# «portable» porque en la medición final -march=native solo dio +0,9 % de media
+# geométrica (24,57x frente a 24,36x sobre baseline-original, dentro del ruido)
+# y el binario dejaría de funcionar en otras CPU.  LTO tampoco aportó (±2 %).
 PERFILES: dict[str, list[str]] = {
     "portable": [],
     "v3": ["-march=x86-64-v3"],
@@ -371,6 +375,13 @@ FLAGS_PERFIL: list[str] = []
 
 def flags_de_perfil(perfil: str) -> list[str]:
     return list(PERFILES[perfil])
+
+
+# Flags de cobertura.  -fprofile-update=atomic: el núcleo tiene regiones
+# paralelas (Karatsuba y NTT con std::async) y, con contadores no atómicos,
+# dos hilos que pasan a la vez por la misma línea pueden perder o corromper
+# cuentas; gcovr aborta entonces con «Got negative hit value».
+FLAGS_COV = ["-O0", "-g", "--coverage", "-fprofile-update=atomic"]
 
 
 def flags_extra(cli: list[str] | None) -> list[str]:
@@ -620,7 +631,7 @@ def cmds_modulo(salida: Path, perfil: str, extra: list[str],
     """
     cxx = compilador()
     opt = {"release": ["-O3"], "debug": ["-O0", "-g"],
-           "coverage": ["-O0", "-g", "--coverage"]}[perfil]
+           "coverage": FLAGS_COV}[perfil]
     py_inc = sysconfig.get_path("include")
     compilar_f = [*FLAGS_BASE, "-I", str(INCLUDE),
                   # -isystem: los avisos de cabeceras ajenas no cuentan
@@ -829,7 +840,7 @@ def paso_cov_cpp(op: Opciones, timeout: float = 1800) -> Paso:
     for d in (obj, bin_tests, mod_dir):
         d.mkdir(parents=True, exist_ok=True)
     extra = flags_extra(op.flags)
-    cov_f = ["-O0", "-g", "--coverage"]
+    cov_f = FLAGS_COV
     deps = cabeceras()
 
     def enlazar_test(src: Path, exe: Path) -> Resultado:
