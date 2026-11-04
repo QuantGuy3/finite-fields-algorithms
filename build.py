@@ -373,6 +373,13 @@ def flags_de_perfil(perfil: str) -> list[str]:
     return list(PERFILES[perfil])
 
 
+# Flags de cobertura.  -fprofile-update=atomic: el núcleo tiene regiones
+# paralelas (Karatsuba y NTT con std::async) y, con contadores no atómicos,
+# dos hilos que pasan a la vez por la misma línea pueden perder o corromper
+# cuentas; gcovr aborta entonces con «Got negative hit value».
+FLAGS_COV = ["-O0", "-g", "--coverage", "-fprofile-update=atomic"]
+
+
 def flags_extra(cli: list[str] | None) -> list[str]:
     """Flags extra: las del perfil (--perfil), después ALCP_CXXFLAGS y por
     último --flags (gana el último)."""
@@ -620,7 +627,7 @@ def cmds_modulo(salida: Path, perfil: str, extra: list[str],
     """
     cxx = compilador()
     opt = {"release": ["-O3"], "debug": ["-O0", "-g"],
-           "coverage": ["-O0", "-g", "--coverage"]}[perfil]
+           "coverage": FLAGS_COV}[perfil]
     py_inc = sysconfig.get_path("include")
     compilar_f = [*FLAGS_BASE, "-I", str(INCLUDE),
                   # -isystem: los avisos de cabeceras ajenas no cuentan
@@ -829,7 +836,7 @@ def paso_cov_cpp(op: Opciones, timeout: float = 1800) -> Paso:
     for d in (obj, bin_tests, mod_dir):
         d.mkdir(parents=True, exist_ok=True)
     extra = flags_extra(op.flags)
-    cov_f = ["-O0", "-g", "--coverage"]
+    cov_f = FLAGS_COV
     deps = cabeceras()
 
     def enlazar_test(src: Path, exe: Path) -> Resultado:
