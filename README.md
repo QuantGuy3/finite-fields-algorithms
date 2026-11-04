@@ -24,3 +24,36 @@ Re-implementación completa del código Python en C++23, con enteros de precisi�
 
 - Python 3
 - C++23 (GMP/mpz_class, pybind11, CMake)
+
+## Mejoras de la rama `mejoras-cpp-pybind`
+
+Trabajo sobre el port C++ y el binding pybind11. Las prácticas originales de `python/` no se han modificado.
+
+| Área | Qué hay | Documento |
+|---|---|---|
+| Núcleo C++ | Validaciones, errores tipados, `factor()` canónico, `evaluate`/`compose`/`is_squarefree`, concepto `FiniteField` | [docs/diseno.md](docs/diseno.md) |
+| Paquete Python `alcp` | `GF(q)`, `K["x"]`, conversión de tipos generosa (enteros, cadenas, listas, dicts, `Fraction`), impresión Unicode/ASCII/LaTeX | [docs/diseno.md](docs/diseno.md) §6 |
+| Tests | Tests C++ (más de 170 000 comprobaciones), paridad con las prácticas originales y 709 tests de pytest con cobertura del 100 % | `build.py all` |
+| Ejemplos | Recorrido didáctico por la librería | [python-bindings/ejemplos.py](python-bindings/ejemplos.py) |
+| Velocidad | Mismos algoritmos, 24,4x más rápido de media en la suite C++ (128 escenarios) y 9,7x en el módulo Python | [docs/optimizacion/README.md](docs/optimizacion/README.md) |
+| Comparativa | Frente a python-flint, galois y SymPy | [docs/optimizacion/comparativa.md](docs/optimizacion/comparativa.md) |
+
+### Uso rápido
+
+Se necesitan g++ con C++23 y GMP (en Windows, MSYS2 ucrt64), Python 3 con `pybind11` y, para los tests, `pytest` y `pytest-cov`.
+
+```bash
+python build.py all
+```
+
+```bash
+python python-bindings/ejemplos.py
+```
+
+```python
+import alcp
+K = alcp.GF(9, modulus="x^2+1")
+R = K["x"]
+f = R("x^4 + a*x + 2")
+print(f.factor())
+```
