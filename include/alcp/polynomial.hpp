@@ -60,9 +60,12 @@ public:
     static constexpr std::size_t kKaratsubaCutoff = 32;
     // Karatsuba reparte sus tres subproductos entre hilos solo si ambos
     // operandos tienen al menos tantos coeficientes (coste de crear hilos):
-    // 256 si el elemento es un entero (F_p, productos baratos) y 64 si es un
-    // vector (F_q: cada producto de elementos ya cuesta O(n^2) operaciones).
-    static constexpr std::size_t kParKaratsubaMin = std::is_same_v<Elem, BigInt> ? 256 : 64;
+    // 256 si el elemento es un entero GMP (F_p), 1024 si es una palabra de
+    // máquina (Fp64: el producto cuesta unos nanosegundos y con 64-512
+    // coeficientes crear los hilos cuesta más que el propio producto) y 64 si
+    // es un vector (F_q: cada producto de elementos ya cuesta O(n^2)).
+    static constexpr std::size_t kParKaratsubaMin =
+        std::is_same_v<Elem, BigInt> ? 256 : (std::is_arithmetic_v<Elem> ? 1024 : 64);
 
     // Número máximo de intentos aleatorios de equal_degree_split antes de
     // concluir que la entrada no cumple la precondición (ver equal_degree).
@@ -697,7 +700,15 @@ private:
     //   * Limb (F_p, p >= 2^62): FFT si small >= 16, o small >= 8 y L <= 128.
     //   * Generic (F_q y resto): FFT si small >= 64, o small >= 32 y
     //     large <= 2·small; con small <= 16 la FFT era hasta 10-20x más lenta.
+    //   * Fp64 (elementos en palabras de máquina, NTT en palabras): el escolar
+    //     con acumulación perezosa de 128 bits es tan barato que la FFT solo
+    //     gana con small >= 128, o con small >= 48 y large <= 4·small
+    //     (medido en F_998244353 con g++ 15.2 -O3 en Zen 3).
     static bool prefer_fft(const Field& K, std::size_t small, std::size_t large, std::size_t L) {
+        if constexpr (fft::NativeWordField<Field>) {
+            (void)K; (void)L;
+            return small >= 128 || (small >= 48 && large <= 4 * small);
+        }
         switch (fft::backend(K)) {
             case fft::Backend::Word: return L >= 4;
             case fft::Backend::Limb: return small >= 16 || (small >= 8 && L <= 128);
