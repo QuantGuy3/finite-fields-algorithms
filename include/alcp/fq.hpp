@@ -36,6 +36,7 @@
 #include "fp64.hpp"
 #include "polynomial.hpp"
 
+#include <atomic>
 #include <stdexcept>
 #include <string>
 #include <utility>
@@ -177,14 +178,26 @@ public:
     }
     // Producto: convolución de los coeficientes y reducción módulo el g mónico,
     // las mismas operaciones que antes.  Detalles de implementación:
-    //   * la convolución vive en un búfer por hilo que se reutiliza entre
-    //     llamadas (con GMP sus mpz conservan la memoria reservada: no hay
-    //     malloc por coeficiente en el régimen estacionario);
+    //   * la convolución vive en un búfer que se reutiliza entre llamadas
+    //     (con GMP sus mpz conservan la memoria reservada: no hay malloc por
+    //     coeficiente en el régimen estacionario); si otro hilo lo está
+    //     usando (región paralela), se usa un acumulador local;
     //   * a[i]·b[j] se acumula sin reducir con el gancho acc_fma de Base
     //     (mpz_addmul en Fp; producto de 128 bits en Fp64);
     //   * cada coeficiente se reduce módulo p una sola vez.
     Elem mul(const Elem& a, const Elem& b) const {
-        Acc& conv = conv_scratch();
+        Scratch& s = conv_scratch();
+        if (!s.busy.exchange(true, std::memory_order_acquire)) {
+            // Búfer compartido conseguido: se libera también si algo lanza.
+            struct Liberar {
+                std::atomic<bool>& f;
+                ~Liberar() { f.store(false, std::memory_order_release); }
+            } liberar{s.busy};
+            acc_clear(s.buf);
+            acc_fma(s.buf, a, b);
+            return acc_reduce(s.buf);
+        }
+        Acc conv;  // búfer ocupado por otro hilo: acumulador propio
         acc_clear(conv);
         acc_fma(conv, a, b);
         return acc_reduce(conv);
@@ -315,12 +328,22 @@ private:
 
     std::size_t conv_len() const { return 2 * static_cast<std::size_t>(n_) - 1; }
 
-    // Búfer de la convolución de mul(), uno por hilo y compartido por todos los
-    // cuerpos FqT<Base> del hilo (mul no es reentrante: no llama a nada que lo
-    // use).  Crece hasta el mayor tamaño pedido y no se libera.
-    static Acc& conv_scratch() {
-        thread_local Acc buf;
-        return buf;
+    // Búfer de la convolución de mul(), compartido por todos los cuerpos
+    // FqT<Base> del proceso y protegido por un indicador atómico (mul no es
+    // reentrante: no llama a nada que lo use).  Crece hasta el mayor tamaño
+    // pedido y se libera al terminar el programa.
+    // No es thread_local a propósito: con MinGW-w64 (g++ 15.2, enlace
+    // estático), un thread_local con destructor no trivial corrompe el montón
+    // cuando terminan los hilos de std::async de las regiones paralelas
+    // (0xC0000374).  Así, el hilo que consigue el búfer lo reutiliza y los
+    // demás usan un acumulador local; el resultado es el mismo.
+    struct Scratch {
+        std::atomic<bool> busy{false};
+        Acc buf;
+    };
+    static Scratch& conv_scratch() {
+        static Scratch s;
+        return s;
     }
 
     // Delegating constructor from a (base field, modulus) pair.
