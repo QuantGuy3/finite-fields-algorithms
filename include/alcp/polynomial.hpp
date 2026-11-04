@@ -37,6 +37,7 @@
 #include "field.hpp"
 
 #include <algorithm>
+#include <cstddef>
 #include <future>
 #include <stdexcept>
 #include <string>
@@ -145,12 +146,18 @@ public:
     bool operator!=(const Poly& o) const { return !(*this == o); }
 
     // ---- additive structure ------------------------------------------------
+    // Suma y resta: el resultado se construye una sola vez, coeficiente a
+    // coeficiente (sin rellenar primero con ceros y copiar), con las mismas
+    // operaciones del cuerpo: add/sub en la parte común; en la parte que solo
+    // tiene un operando, su copia (o -o_i = 0 - o_i en la resta).
     Poly operator+(const Poly& o) const {
         require_same_field(o);
-        std::size_t n = std::max(c_.size(), o.c_.size());
-        std::vector<Elem> r(n, K_->zero());
-        for (std::size_t i = 0; i < c_.size(); ++i) r[i] = c_[i];
-        for (std::size_t i = 0; i < o.c_.size(); ++i) r[i] = K_->add(r[i], o.c_[i]);
+        const std::size_t m = std::min(c_.size(), o.c_.size());
+        const std::vector<Elem>& larga = c_.size() >= o.c_.size() ? c_ : o.c_;
+        std::vector<Elem> r;
+        r.reserve(larga.size());
+        for (std::size_t i = 0; i < m; ++i) r.push_back(K_->add(c_[i], o.c_[i]));
+        r.insert(r.end(), larga.begin() + static_cast<std::ptrdiff_t>(m), larga.end());
         return Poly(*K_, std::move(r));
     }
     Poly operator-() const {
@@ -160,10 +167,12 @@ public:
     }
     Poly operator-(const Poly& o) const {
         require_same_field(o);
-        std::size_t n = std::max(c_.size(), o.c_.size());
-        std::vector<Elem> r(n, K_->zero());
-        for (std::size_t i = 0; i < c_.size(); ++i) r[i] = c_[i];
-        for (std::size_t i = 0; i < o.c_.size(); ++i) r[i] = K_->sub(r[i], o.c_[i]);
+        const std::size_t m = std::min(c_.size(), o.c_.size());
+        std::vector<Elem> r;
+        r.reserve(std::max(c_.size(), o.c_.size()));
+        for (std::size_t i = 0; i < m; ++i) r.push_back(K_->sub(c_[i], o.c_[i]));
+        for (std::size_t i = m; i < c_.size(); ++i) r.push_back(c_[i]);
+        for (std::size_t i = m; i < o.c_.size(); ++i) r.push_back(K_->neg(o.c_[i]));
         return Poly(*K_, std::move(r));
     }
 
@@ -214,6 +223,23 @@ public:
     Poly mul_school(const Poly& o) const {
         require_same_field(o);
         if (is_zero() || o.is_zero()) return zero(*K_);
+        if constexpr (LazyAccumulation<Field>) {
+            // Mismo doble bucle, con reducción perezosa: cada coeficiente del
+            // producto acumula sus productos c_i·o_j sin reducir y se reduce
+            // una sola vez al final (ganchos opcionales del cuerpo, field.hpp).
+            const std::size_t L = c_.size() + o.c_.size() - 1;
+            std::vector<typename Field::Acc> acc(L);
+            for (auto& s : acc) K_->acc_clear(s);
+            for (std::size_t i = 0; i < c_.size(); ++i) {
+                if (K_->is_zero(c_[i])) continue;
+                for (std::size_t j = 0; j < o.c_.size(); ++j)
+                    K_->acc_fma(acc[i + j], c_[i], o.c_[j]);
+            }
+            std::vector<Elem> r;
+            r.reserve(L);
+            for (auto& s : acc) r.push_back(K_->acc_reduce(s));
+            return Poly(*K_, std::move(r));
+        }
         std::vector<Elem> r(c_.size() + o.c_.size() - 1, K_->zero());
         for (std::size_t i = 0; i < c_.size(); ++i) {
             if (K_->is_zero(c_[i])) continue;
@@ -252,6 +278,31 @@ public:
 
         const int db = o.degree();
         Elem inv_lead = K_->inv(o.lead());
+        if constexpr (LazyAccumulation<Field>) {
+            // Misma división escolar con reducción perezosa: el resto de trabajo
+            // se guarda en acumuladores sin reducir; cada paso resta
+            // factor·o (sumando (-factor)·o_j, que es lo mismo módulo p) y solo
+            // se reduce el coeficiente principal cuando hace falta leerlo.  El
+            // término j = db no se acumula: el algoritmo lo anula exactamente
+            // y ese coeficiente ya no se vuelve a leer.
+            const std::size_t nr = c_.size();
+            std::vector<typename Field::Acc> acc(nr);
+            for (std::size_t k = 0; k < nr; ++k) K_->acc_set(acc[k], c_[k]);
+            std::vector<Elem> q(degree() - db + 1, K_->zero());
+            for (int dr = static_cast<int>(nr) - 1; dr >= db; --dr) {
+                Elem lr = K_->acc_reduce(acc[dr]);
+                if (K_->is_zero(lr)) continue;  // cero que ha aparecido: se salta
+                const int pos = dr - db;
+                Elem factor = K_->mul(lr, inv_lead);
+                const Elem nfactor = K_->neg(factor);
+                q[pos] = std::move(factor);
+                for (int j = 0; j < db; ++j) K_->acc_fma(acc[pos + j], nfactor, o.c_[j]);
+            }
+            std::vector<Elem> rem;
+            rem.reserve(static_cast<std::size_t>(db));
+            for (int k = 0; k < db; ++k) rem.push_back(K_->acc_reduce(acc[k]));
+            return {Poly(*K_, std::move(q)), Poly(*K_, std::move(rem))};
+        }
         std::vector<Elem> r = c_;  // working remainder
         std::vector<Elem> q(degree() - db + 1, K_->zero());
 
