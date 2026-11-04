@@ -20,7 +20,8 @@
 //      factorización.
 //   6. Excepciones y validación: p no primo, p demasiado grande, invertir 0.
 //   7. NTT en palabras de Fp64 (mul Auto/FFT, cuadrado, fast::dft/idft) y
-//      regiones paralelas con Fq64 (mariposas genéricas y Karatsuba).
+//      regiones paralelas: NTT multi-limb de Fp, Fq64 (mariposas genéricas y
+//      Karatsuba).
 #include "alcp/alcp.hpp"
 #include "check.hpp"
 
@@ -417,6 +418,17 @@ void test_ntt_y_paralelismo() {
     const auto i64 = fast::idft(F, g, k, d64);
     ok = i64 == v64;
     CHECK_MSG(ok, "fast::idft(dft(v)) == v en Fp64");
+
+    // NTT multi-limb (Fp, r de 255 bits de BLS12-381) con n = 1024: las dos
+    // transformadas directas van en hilos distintos (cada uno con su Ctx).
+    {
+        const BigInt r("0x73eda753299d7d483339d80809a1d80553bda402fffe5bfeffffffff00000001");
+        Fp B(r);
+        const auto xi = rand_ints(R, r, 300), yi = rand_ints(R, r, 300);
+        PG x = PG::from_ints(B, xi), y = PG::from_ints(B, yi);
+        CHECK_MSG(big(x.mul(y, MulAlgo::FFT)) == big(x.mul(y, MulAlgo::Schoolbook)), "Fp 255 bits FFT 300x300");
+        CHECK_MSG(big(x.mul(x, MulAlgo::FFT)) == big(x.mul(x, MulAlgo::Schoolbook)), "Fp 255 bits cuadrado FFT");
+    }
 
     // Fq64 sobre F_(2^61-1): NTT genérica con mariposas en paralelo
     // (n = 8192) y Karatsuba en paralelo.
