@@ -39,6 +39,14 @@
 // std::shared_ptr (holder de pybind11) y cada polinomio comparte ese puntero,
 // así que el cuerpo C++ al que apunta Poly<Field> vive al menos tanto como el
 // polinomio.
+//
+// Backend (fase 3): cada cuerpo de Python guarda un std::variant entre la
+// versión GMP del núcleo (Fp, Fq) y la de palabra de máquina (Fp64, Fq64 =
+// FqT<Fp64>, alcp/fp64.hpp).  Fp(p) y Fq(...) eligen 64 bits si p < 2^62
+// (backend="auto", por defecto) o GMP (backend="gmp", palabra clave opcional);
+// la propiedad `backend` dice cuál se usa ('u64' o 'gmp').  Los dos backends
+// dan los mismos resultados, las mismas excepciones y consumen igual el
+// generador aleatorio: la API Python no cambia, solo la velocidad.
 #include "alcp/alcp.hpp"
 
 #include <pybind11/pybind11.h>
@@ -54,13 +62,16 @@
 #include <string>
 #include <type_traits>
 #include <utility>
+#include <variant>
 #include <vector>
 
 namespace py = pybind11;
 
 using alcp::BigInt;
 using alcp::Fp;
+using alcp::Fp64;
 using alcp::Fq;
+using alcp::Fq64;
 
 // ---------------------------------------------------------------------------
 // Conversión de enteros Python <-> mpz
@@ -160,6 +171,12 @@ struct type_caster<mpz_class> {
 }  // namespace pybind11::detail
 
 namespace alcp_py {
+// Espacio de nombres anónimo: todo lo de aquí (envoltorios, operaciones y las
+// instancias de pybind11 que dependen de ellos) tiene enlace interno, así que
+// g++ no emite cada instancia de plantilla en su propia sección COMDAT.  Con
+// los dos backends, la compilación instrumentada (-O0 -g --coverage) superaba
+// las 32767 secciones COFF y el enlazador de MinGW (ld) fallaba sin mensaje.
+namespace {
 
 // Valor de un BigInt como entero de máquina T (k, n, índices, grados...).
 // Negativo en un tipo sin signo -> std::invalid_argument (ValueError); fuera de
@@ -180,19 +197,68 @@ T a_maquina(const BigInt& v, const char* nombre) {
 
 // ---------------------------------------------------------------------------
 // Cuerpos.  El objeto Python posee el cuerpo C++ mediante std::shared_ptr.
+// K es un std::variant: alternativa 0 = GMP (Fp, Fq), 1 = 64 bits (Fp64,
+// Fq64).  El backend se fija al construir y no cambia.  Dos cuerpos con los
+// mismos parámetros pero distinto backend se consideran distintos (no se
+// mezclan sus polinomios), algo que solo ocurre si se fuerza backend="gmp".
 // ---------------------------------------------------------------------------
+
+// backend="auto" -> false (64 bits si p cabe), "gmp" -> true (GMP siempre).
+inline bool backend_gmp(const std::string& b) {
+    if (b == "auto") return false;
+    if (b == "gmp") return true;
+    throw std::invalid_argument("backend desconocido: '" + b + "' (válidos: 'auto', 'gmp')");
+}
+
 struct FpW {
-    using Field = Fp;
-    Fp K;
-    explicit FpW(const BigInt& p) : K(p) {}
+    using Var = std::variant<Fp, Fp64>;
+    using PolyVar = std::variant<alcp::Poly<Fp>, alcp::Poly<Fp64>>;
+    Var K;
+    FpW(const BigInt& p, bool gmp) : K(crear(p, gmp)) {}
+
+    // Fp64 valida igual que Fp (mismo mensaje si p no es primo).
+    static Var crear(const BigInt& p, bool gmp) {
+        if (!gmp && Fp64::fits(p)) return Var(std::in_place_type<Fp64>, p);
+        return Var(std::in_place_type<Fp>, p);
+    }
 };
 
 struct FqW {
-    using Field = Fq;
-    Fq K;
-    explicit FqW(const BigInt& q) : K(q) {}
-    FqW(const BigInt& p, std::vector<BigInt> g) : K(Fp(p), std::move(g)) {}
+    using Var = std::variant<Fq, Fq64>;
+    using PolyVar = std::variant<alcp::Poly<Fq>, alcp::Poly<Fq64>>;
+    Var K;
+    FqW(const BigInt& q, bool gmp) : K(desde_q(q, gmp)) {}
+    FqW(const BigInt& p, std::vector<BigInt> g, bool gmp) : K(desde_modulo(p, std::move(g), gmp)) {}
+
+    // q se descompone aquí solo para elegir el backend (si q no es potencia de
+    // un primo, la misma excepción que daría Fq(q)).  prime_power_factor no usa
+    // el generador aleatorio global: el módulo aleatorio sale igual.
+    static Var desde_q(const BigInt& q, bool gmp) {
+        if (!gmp && Fp64::fits(alcp::prime_power_factor(q).first)) return Var(std::in_place_type<Fq64>, q);
+        return Var(std::in_place_type<Fq>, q);
+    }
+    static Var desde_modulo(const BigInt& p, std::vector<BigInt> g, bool gmp) {
+        if (!gmp && Fp64::fits(p)) return Var(std::in_place_type<Fq64>, Fp64(p), std::move(g));
+        return Var(std::in_place_type<Fq>, Fp(p), std::move(g));
+    }
 };
+
+// Aplica fn a la alternativa activa de un variant de dos tipos.  Equivale a
+// std::visit, pero con un simple if: std::visit instancia por cada llamada una
+// tabla de despacho y varias funciones auxiliares, y con -O0 --coverage el
+// objeto superaba el número de secciones COFF que admite ld de MinGW.
+template <class V, class Fn>
+decltype(auto) visitar2(V& v, Fn&& fn) {
+    static_assert(std::variant_size_v<std::remove_const_t<V>> == 2);
+    if (v.index() == 0) return fn(*std::get_if<0>(&v));
+    return fn(*std::get_if<1>(&v));
+}
+
+// Aplica fn al cuerpo concreto (Fp/Fp64 o Fq/Fq64) del envoltorio f.
+template <class W, class Fn>
+decltype(auto) en(const W& f, Fn&& fn) {
+    return visitar2(f.K, std::forward<Fn>(fn));
+}
 
 // Textos que dependen del tipo de cuerpo (nombres de clase y docstrings).
 template <class W> struct Info;
@@ -228,8 +294,12 @@ const char* doc(const char* plantilla) {
 // Elemento <-> entero de Python, según el cuerpo.
 inline Fp::Elem elem_in(const Fp& K, const BigInt& v) { return K.from_int(v); }
 inline BigInt elem_out(const Fp& /*K*/, const Fp::Elem& e) { return e; }
-inline Fq::Elem elem_in(const Fq& K, const BigInt& v) { return K.from_index(v); }
-inline BigInt elem_out(const Fq& K, const Fq::Elem& e) { return K.to_index(e); }
+inline Fp64::Elem elem_in(const Fp64& K, const BigInt& v) { return K.from_int(v); }
+inline BigInt elem_out(const Fp64& K, const Fp64::Elem& e) { return K.to_bigint(e); }
+template <class B>
+typename alcp::FqT<B>::Elem elem_in(const alcp::FqT<B>& K, const BigInt& v) { return K.from_index(v); }
+template <class B>
+BigInt elem_out(const alcp::FqT<B>& K, const typename alcp::FqT<B>::Elem& e) { return K.to_index(e); }
 
 // Listas completas.  Se construyen desde una vista (sin vector local: así no hay
 // código de limpieza de excepciones en estas líneas).  No se usa
@@ -247,54 +317,88 @@ std::vector<BigInt> elems_out(const Field& K, const std::vector<typename Field::
 }
 
 // Identidad de un cuerpo (para __hash__): sus parámetros, como en operator==.
+// No depende del backend (dos cuerpos que solo difieren en él tienen el mismo
+// hash aunque no sean iguales, lo que está permitido).
 inline py::tuple clave(const Fp& K) { return py::make_tuple("Fp", K.characteristic()); }
-inline py::tuple clave(const Fq& K) {
+inline py::tuple clave(const Fp64& K) { return py::make_tuple("Fp", K.characteristic()); }
+template <class B>
+py::tuple clave(const alcp::FqT<B>& K) {
     return py::make_tuple("Fq", K.characteristic(), py::tuple(py::cast(K.modulus())));
 }
 
-inline std::string repr_cuerpo(const Fp& K) { return "Fp(" + K.characteristic().get_str() + ")"; }
-inline std::string repr_cuerpo(const Fq& K) {
+// El repr es evaluable y da un cuerpo igual: si se forzó GMP para un p que
+// cabría en 64 bits, se añade backend='gmp'.
+inline std::string sufijo_backend(const BigInt& p, bool es_gmp) {
+    return es_gmp && Fp64::fits(p) ? ", backend='gmp'" : "";
+}
+inline std::string repr_cuerpo(const Fp& K) {
+    return "Fp(" + K.characteristic().get_str() + sufijo_backend(K.characteristic(), true) + ")";
+}
+inline std::string repr_cuerpo(const Fp64& K) { return "Fp(" + K.characteristic().get_str() + ")"; }
+template <class B>
+std::string repr_cuerpo(const alcp::FqT<B>& K) {
     std::string s = "Fq(" + K.characteristic().get_str() + ", [";
     for (std::size_t i = 0; i < K.modulus().size(); ++i) s += (i ? ", " : "") + K.modulus()[i].get_str();
-    return s + "])";
+    return s + "]" + sufijo_backend(K.characteristic(), std::is_same_v<B, Fp>) + ")";
 }
 
 // ---------------------------------------------------------------------------
 // Polinomios.  PolyW comparte el cuerpo (shared_ptr) para que el Field* que
-// guarda Poly no quede colgando.
+// guarda Poly no quede colgando.  p es un variant con el Poly del backend del
+// cuerpo (la misma alternativa que F->K).
 // ---------------------------------------------------------------------------
 template <class W>
 struct PolyW {
-    using Field = typename W::Field;
-    using P = alcp::Poly<Field>;
+    using PV = typename W::PolyVar;
 
     std::shared_ptr<W> F;  // mantiene vivo el cuerpo al que apunta p
-    P p;
+    PV p;
 
-    PolyW(std::shared_ptr<W> f, P q) : F(std::move(f)), p(std::move(q)) {
+    template <class Field>
+    PolyW(std::shared_ptr<W> f, alcp::Poly<Field> q) : F(std::move(f)), p(std::move(q)) {
         // Invariante: p apunta EXACTAMENTE al cuerpo que mantiene vivo F.  Un
         // resultado del núcleo puede apuntar al cuerpo del OTRO operando (p. ej.
         // gcd(a, b) devuelve a veces el propio b), que es igual en parámetros
         // (el núcleo lo ha comprobado) pero es otro objeto, que podría
         // destruirse antes.  En ese caso se reconstruye sobre F.
-        if (&p.field() != &F->K) p = P(F->K, p.coeffs());
+        auto& mio = std::get<alcp::Poly<Field>>(p);
+        const Field& K = std::get<Field>(F->K);
+        if (&mio.field() != &K) mio = alcp::Poly<Field>(K, mio.coeffs());
     }
 
-    const Field& K() const { return F->K; }
+    // Aplica fn al Poly concreto.
+    template <class Fn>
+    decltype(auto) con(Fn&& fn) const {
+        return visitar2(p, std::forward<Fn>(fn));
+    }
 
-    // Construye desde una lista de enteros.  El Poly se construye ANTES de mover
-    // el shared_ptr (el código original hacía PolyW(std::move(k), Poly(*k, ...)),
-    // con orden de evaluación no especificado: podía desreferenciar un puntero
-    // ya movido).
-    static PolyW desde_lista(std::shared_ptr<W> f, const std::vector<BigInt>& cs) {
-        P poly(f->K, elems_in(f->K, cs));
-        return PolyW(std::move(f), std::move(poly));
+    // El otro operando b como el mismo tipo concreto que x.  Si b usa otro
+    // backend, los cuerpos son distintos: el mismo error que da el núcleo.
+    template <class P>
+    static const P& par(const P& /*x*/, const PolyW& b) {
+        if (const P* y = std::get_if<P>(&b.p)) return *y;
+        throw std::invalid_argument("polinomios sobre cuerpos distintos");
+    }
+
+    // Construye desde una lista de enteros.  El Poly se construye ANTES de
+    // crear el envoltorio (el código original hacía PolyW(std::move(k),
+    // Poly(*k, ...)), con orden de evaluación no especificado: podía
+    // desreferenciar un puntero ya movido).
+    static PolyW desde_lista(const std::shared_ptr<W>& f, const std::vector<BigInt>& cs) {
+        return en(*f, [&](const auto& K) {
+            using Field = std::decay_t<decltype(K)>;
+            alcp::Poly<Field> poly(K, elems_in(K, cs));
+            return PolyW(f, std::move(poly));
+        });
     }
 
     // Envuelve un resultado del núcleo sobre el mismo cuerpo que *this.
-    PolyW mismo(P q) const { return PolyW(F, std::move(q)); }
+    template <class Field>
+    PolyW mismo(alcp::Poly<Field> q) const { return PolyW(F, std::move(q)); }
 
-    std::vector<BigInt> coeffs() const { return elems_out(K(), p.coeffs()); }
+    std::vector<BigInt> coeffs() const {
+        return con([](const auto& x) { return elems_out(x.field(), x.coeffs()); });
+    }
 };
 
 inline alcp::MulAlgo algoritmo(const std::string& s) {
@@ -339,15 +443,18 @@ constexpr const char* set_seed =
 
 // ---- cuerpos ----
 constexpr const char* fp = "Cuerpo primo F_p. Sus elementos son enteros en [0, p).";
-constexpr const char* fp_init = "Fp(p): F_p para un primo p. ValueError si p no es primo.";
+constexpr const char* fp_init =
+    "Fp(p, *, backend='auto'): F_p para un primo p. ValueError si p no es primo. backend='auto' usa "
+    "aritmética de 64 bits si p < 2^62 y GMP en otro caso; backend='gmp' fuerza GMP (mismos "
+    "resultados, solo cambia la velocidad).";
 constexpr const char* fp_n = "Grado de extensión (1).";
 constexpr const char* fq = "Cuerpo F_q = F_p[a]/(g), q = p^n. Sus elementos son índices en base p, en [0, q).";
 constexpr const char* fq_init_q =
-    "Fq(q): F_q con q = p^n y un módulo mónico irreducible aleatorio de grado n (reproducible con "
-    "set_seed). ValueError si q no es potencia de un primo.";
+    "Fq(q, *, backend='auto'): F_q con q = p^n y un módulo mónico irreducible aleatorio de grado n "
+    "(reproducible con set_seed). ValueError si q no es potencia de un primo. backend: como en Fp.";
 constexpr const char* fq_init_mod =
-    "Fq(p, modulus): F_p[a]/(g) con g = modulus en orden creciente (se hace mónico). ValueError si p "
-    "no es primo o g no es irreducible de grado >= 1.";
+    "Fq(p, modulus, *, backend='auto'): F_p[a]/(g) con g = modulus en orden creciente (se hace "
+    "mónico). ValueError si p no es primo o g no es irreducible de grado >= 1. backend: como en Fp.";
 constexpr const char* fq_n = "Grado de extensión n.";
 constexpr const char* fq_modulus = "Módulo mónico g en orden creciente (longitud n + 1).";
 constexpr const char* fq_from_index = "Índice normalizado: i mod q.";
@@ -359,10 +466,14 @@ constexpr const char* fq_to_coeffs =
 
 constexpr const char* c_p = "Característica p del cuerpo.";
 constexpr const char* c_q = "Cardinal q = p^n del cuerpo.";
-constexpr const char* c_eq = "Igualdad por parámetros (mismos p y módulo). Con otro tipo devuelve NotImplemented.";
+constexpr const char* c_eq =
+    "Igualdad por parámetros (mismos p y módulo) y backend. Con otro tipo devuelve NotImplemented.";
 constexpr const char* c_hash = "Hash coherente con __eq__ (calculado a partir de los parámetros).";
 constexpr const char* c_repr = "Representación evaluable: Fp(p) o Fq(p, [g0, ..., gn]).";
 constexpr const char* c_copia = "Los cuerpos son inmutables: devuelve el mismo objeto.";
+constexpr const char* c_backend =
+    "Aritmética que usa el cuerpo: 'u64' (palabras de 64 bits, p < 2^62) o 'gmp' (enteros de GMP). "
+    "Dos cuerpos con distinto backend no son iguales ni mezclan sus polinomios.";
 constexpr const char* c_fft_capacity =
     "Mayor k tal que 2^k divide a q - 1: tamaño máximo 2^k de una FFT en este cuerpo.";
 constexpr const char* c_fft_base_root =
@@ -481,139 +592,207 @@ constexpr const char* r_divmod =
 // no cubierta; por eso cada .def ocupa una sola línea.
 // ---------------------------------------------------------------------------
 
-// Parte común de Fp y Fq.
+// Parte común de Fp y Fq.  Cada operación se aplica al cuerpo concreto con
+// en(f, ...) (despacho sobre el backend).
 template <class W>
 struct OpsCuerpo {
     using PW = PolyW<W>;
-    using P = typename PW::P;
 
-    static BigInt p(const W& f) { return f.K.characteristic(); }
-    static BigInt q(const W& f) { return f.K.cardinality(); }
+    static BigInt p(const W& f) { return en(f, [](const auto& K) { return BigInt(K.characteristic()); }); }
+    static BigInt q(const W& f) { return en(f, [](const auto& K) { return BigInt(K.cardinality()); }); }
     static bool eq(const W& a, const W& b) { return a.K == b.K; }
-    static py::ssize_t hash(const W& f) { return py::hash(clave(f.K)); }
-    static std::string repr(const W& f) { return repr_cuerpo(f.K); }
+    static py::ssize_t hash(const W& f) { return en(f, [](const auto& K) { return py::hash(clave(K)); }); }
+    static std::string repr(const W& f) { return en(f, [](const auto& K) { return repr_cuerpo(K); }); }
+    static std::string backend(const W& f) { return f.K.index() == 0 ? "gmp" : "u64"; }
     static std::shared_ptr<W> copia(const std::shared_ptr<W>& f) { return f; }
     static std::shared_ptr<W> copia_profunda(const std::shared_ptr<W>& f, const py::dict& /*memo*/) { return f; }
-    static unsigned long fft_capacity(const W& f) { return f.K.fft_capacity(); }
-    static BigInt fft_base_root(const W& f) { return elem_out(f.K, f.K.fft_base_root()); }
-    static BigInt from_int(const W& f, const BigInt& a) { return elem_out(f.K, f.K.from_int(a)); }
-    static BigInt random(const W& f) { return elem_out(f.K, f.K.random()); }
+    static unsigned long fft_capacity(const W& f) { return en(f, [](const auto& K) { return K.fft_capacity(); }); }
+    static BigInt fft_base_root(const W& f) { return en(f, [](const auto& K) { return elem_out(K, K.fft_base_root()); }); }
+    static BigInt from_int(const W& f, const BigInt& a) { return en(f, [&](const auto& K) { return elem_out(K, K.from_int(a)); }); }
+    static BigInt random(const W& f) { return en(f, [](const auto& K) { return elem_out(K, K.random()); }); }
     static BigInt add(const W& f, const BigInt& a, const BigInt& b) {
-        return elem_out(f.K, f.K.add(elem_in(f.K, a), elem_in(f.K, b)));
+        return en(f, [&](const auto& K) { return elem_out(K, K.add(elem_in(K, a), elem_in(K, b))); });
     }
     static BigInt sub(const W& f, const BigInt& a, const BigInt& b) {
-        return elem_out(f.K, f.K.sub(elem_in(f.K, a), elem_in(f.K, b)));
+        return en(f, [&](const auto& K) { return elem_out(K, K.sub(elem_in(K, a), elem_in(K, b))); });
     }
-    static BigInt neg(const W& f, const BigInt& a) { return elem_out(f.K, f.K.neg(elem_in(f.K, a))); }
+    static BigInt neg(const W& f, const BigInt& a) { return en(f, [&](const auto& K) { return elem_out(K, K.neg(elem_in(K, a))); }); }
     static BigInt mul(const W& f, const BigInt& a, const BigInt& b) {
-        return elem_out(f.K, f.K.mul(elem_in(f.K, a), elem_in(f.K, b)));
+        return en(f, [&](const auto& K) { return elem_out(K, K.mul(elem_in(K, a), elem_in(K, b))); });
     }
     static BigInt div(const W& f, const BigInt& a, const BigInt& b) {
-        return elem_out(f.K, f.K.div(elem_in(f.K, a), elem_in(f.K, b)));
+        return en(f, [&](const auto& K) { return elem_out(K, K.div(elem_in(K, a), elem_in(K, b))); });
     }
-    static BigInt inv(const W& f, const BigInt& a) { return elem_out(f.K, f.K.inv(elem_in(f.K, a))); }
-    static BigInt pow(const W& f, const BigInt& a, const BigInt& k) { return elem_out(f.K, f.K.pow(elem_in(f.K, a), k)); }
-    static PW poly(std::shared_ptr<W> f, const std::vector<BigInt>& cs) { return PW::desde_lista(std::move(f), cs); }
+    static BigInt inv(const W& f, const BigInt& a) { return en(f, [&](const auto& K) { return elem_out(K, K.inv(elem_in(K, a))); }); }
+    static BigInt pow(const W& f, const BigInt& a, const BigInt& k) {
+        return en(f, [&](const auto& K) { return elem_out(K, K.pow(elem_in(K, a), k)); });
+    }
+    static PW poly(std::shared_ptr<W> f, const std::vector<BigInt>& cs) { return PW::desde_lista(f, cs); }
     static PW random_poly(std::shared_ptr<W> f, const BigInt& d) {
         // d < 0 da el polinomio cero.  El núcleo reserva d + 1 coeficientes en
         // un int: con d = INT_MAX se desbordaría, así que se exige d + 1 <= INT_MAX.
         const int g = sgn(d) < 0 ? -1 : a_maquina<int>(d + 1, "d") - 1;
-        P q = P::random(f->K, g);
-        return PW(std::move(f), std::move(q));
+        return en(*f, [&](const auto& K) {
+            using Field = std::decay_t<decltype(K)>;
+            alcp::Poly<Field> q = alcp::Poly<Field>::random(K, g);
+            return PW(f, std::move(q));
+        });
     }
 };
 
 // Exclusivo de Fp.
 struct OpsFp {
-    static std::shared_ptr<FpW> crear(const BigInt& p) { return std::make_shared<FpW>(p); }
+    static std::shared_ptr<FpW> crear(const BigInt& p, const std::string& backend) {
+        const bool gmp = backend_gmp(backend);
+        return std::make_shared<FpW>(p, gmp);
+    }
     static int n(const FpW& /*f*/) { return 1; }
 };
 
 // Exclusivo de Fq.
 struct OpsFq {
-    static std::shared_ptr<FqW> crear_q(const BigInt& q) { return std::make_shared<FqW>(q); }
-    static std::shared_ptr<FqW> crear_mod(const BigInt& p, const std::vector<BigInt>& g) {
-        return std::make_shared<FqW>(p, g);
+    static std::shared_ptr<FqW> crear_q(const BigInt& q, const std::string& backend) {
+        const bool gmp = backend_gmp(backend);
+        return std::make_shared<FqW>(q, gmp);
     }
-    static unsigned long n(const FqW& f) { return f.K.extension_degree(); }
-    static std::vector<BigInt> modulus(const FqW& f) { return f.K.modulus(); }
-    static BigInt from_index(const FqW& f, const BigInt& i) { return f.K.to_index(f.K.from_index(i)); }
-    static BigInt from_coeffs(const FqW& f, const std::vector<BigInt>& v) { return f.K.to_index(f.K.from_vector(v)); }
-    static std::vector<BigInt> to_coeffs(const FqW& f, const BigInt& i) { return f.K.from_index(i); }
+    static std::shared_ptr<FqW> crear_mod(const BigInt& p, const std::vector<BigInt>& g, const std::string& backend) {
+        const bool gmp = backend_gmp(backend);
+        return std::make_shared<FqW>(p, g, gmp);
+    }
+    static unsigned long n(const FqW& f) { return en(f, [](const auto& K) { return K.extension_degree(); }); }
+    static std::vector<BigInt> modulus(const FqW& f) { return en(f, [](const auto& K) { return K.modulus(); }); }
+    static BigInt from_index(const FqW& f, const BigInt& i) { return en(f, [&](const auto& K) { return K.to_index(K.from_index(i)); }); }
+    static BigInt from_coeffs(const FqW& f, const std::vector<BigInt>& v) {
+        return en(f, [&](const auto& K) { return K.to_index(K.from_vector(v)); });
+    }
+    static std::vector<BigInt> to_coeffs(const FqW& f, const BigInt& i) {
+        return en(f, [&](const auto& K) {
+            const auto e = K.from_index(i);
+            const auto& B = K.base_field();
+            const auto vista = e | std::views::transform([&B](const auto& c) { return B.to_bigint(c); });
+            return std::vector<BigInt>(vista.begin(), vista.end());
+        });
+    }
 };
 
-// Polinomios (idéntico para PolyFp y PolyFq).
+// Polinomios (idéntico para PolyFp y PolyFq).  a.con(...) aplica la operación
+// al Poly concreto; PW::par(x, b) da el otro operando con el mismo tipo.
 template <class W>
 struct OpsPoli {
     using PW = PolyW<W>;
-    using P = typename PW::P;
 
-    static PW crear(std::shared_ptr<W> f, const std::vector<BigInt>& cs) { return PW::desde_lista(std::move(f), cs); }
+    static PW crear(std::shared_ptr<W> f, const std::vector<BigInt>& cs) { return PW::desde_lista(f, cs); }
     static std::shared_ptr<W> field(const PW& a) { return a.F; }
     static std::vector<BigInt> coeffs(const PW& a) { return a.coeffs(); }
-    static BigInt coeff(const PW& a, const BigInt& i) { return elem_out(a.K(), a.p.coeff(a_maquina<std::size_t>(i, "i"))); }
-    static int degree(const PW& a) { return a.p.degree(); }
-    static bool is_zero(const PW& a) { return a.p.is_zero(); }
-    static bool is_one(const PW& a) { return a.p.is_one(); }
-    static BigInt leading(const PW& a) { return elem_out(a.K(), a.p.lead()); }
-    static bool eq(const PW& a, const PW& b) { return a.p == b.p; }
+    static BigInt coeff(const PW& a, const BigInt& i) {
+        const auto k = a_maquina<std::size_t>(i, "i");
+        return a.con([&](const auto& x) { return elem_out(x.field(), x.coeff(k)); });
+    }
+    static int degree(const PW& a) { return a.con([](const auto& x) { return x.degree(); }); }
+    static bool is_zero(const PW& a) { return a.con([](const auto& x) { return x.is_zero(); }); }
+    static bool is_one(const PW& a) { return a.con([](const auto& x) { return x.is_one(); }); }
+    static BigInt leading(const PW& a) { return a.con([](const auto& x) { return elem_out(x.field(), x.lead()); }); }
+    // Con distinto backend son cuerpos distintos: False, como en el núcleo.
+    static bool eq(const PW& a, const PW& b) {
+        return a.con([&](const auto& x) {
+            const auto* y = std::get_if<std::decay_t<decltype(x)>>(&b.p);
+            return y != nullptr && x == *y;
+        });
+    }
     static py::ssize_t hash(const PW& a) {
-        return py::hash(py::make_tuple(clave(a.K()), py::tuple(py::cast(a.coeffs()))));
+        return py::hash(py::make_tuple(en(*a.F, [](const auto& K) { return clave(K); }), py::tuple(py::cast(a.coeffs()))));
     }
     static PW copia(const PW& a) { return a; }
     static PW copia_profunda(const PW& a, const py::dict& /*memo*/) { return a; }
-    static PW add(const PW& a, const PW& b) { return a.mismo(a.p + b.p); }
-    static PW sub(const PW& a, const PW& b) { return a.mismo(a.p - b.p); }
-    static PW neg(const PW& a) { return a.mismo(-a.p); }
-    static PW mul_op(const PW& a, const PW& b) { return a.mismo(a.p * b.p); }
-    static PW floordiv(const PW& a, const PW& b) { return a.mismo(a.p / b.p); }
-    static PW mod(const PW& a, const PW& b) { return a.mismo(a.p % b.p); }
+    static PW add(const PW& a, const PW& b) { return a.con([&](const auto& x) { return a.mismo(x + PW::par(x, b)); }); }
+    static PW sub(const PW& a, const PW& b) { return a.con([&](const auto& x) { return a.mismo(x - PW::par(x, b)); }); }
+    static PW neg(const PW& a) { return a.con([&](const auto& x) { return a.mismo(-x); }); }
+    static PW mul_op(const PW& a, const PW& b) { return a.con([&](const auto& x) { return a.mismo(x * PW::par(x, b)); }); }
+    static PW floordiv(const PW& a, const PW& b) { return a.con([&](const auto& x) { return a.mismo(x / PW::par(x, b)); }); }
+    static PW mod(const PW& a, const PW& b) { return a.con([&](const auto& x) { return a.mismo(x % PW::par(x, b)); }); }
     static py::tuple divmod(const PW& a, const PW& b) {
-        auto [q, r] = a.p.divmod(b.p);
-        return py::make_tuple(a.mismo(std::move(q)), a.mismo(std::move(r)));
+        return a.con([&](const auto& x) {
+            auto [q, r] = x.divmod(PW::par(x, b));
+            return py::make_tuple(a.mismo(std::move(q)), a.mismo(std::move(r)));
+        });
     }
-    static PW pow(const PW& a, const BigInt& k) { return a.mismo(a.p.pow(k)); }
-    static PW mul(const PW& a, const PW& b, const std::string& algo) { return a.mismo(a.p.mul(b.p, algoritmo(algo))); }
-    static PW scalar_mul(const PW& a, const BigInt& e) { return a.mismo(a.p.scalar_mul(elem_in(a.K(), e))); }
-    static PW derivative(const PW& a) { return a.mismo(a.p.derivative()); }
-    static PW monic(const PW& a) { return a.mismo(a.p.monic()); }
-    static BigInt evaluate(const PW& a, const BigInt& x) { return elem_out(a.K(), a.p.evaluate(elem_in(a.K(), x))); }
-    static PW compose(const PW& a, const PW& g) { return a.mismo(a.p.compose(g.p)); }
-    static bool is_irreducible(const PW& a) { return a.p.is_irreducible(); }
-    static bool is_squarefree(const PW& a) { return a.p.is_squarefree(); }
-    static PW gcd(const PW& a, const PW& b) { return a.mismo(P::gcd(a.p, b.p)); }
+    static PW pow(const PW& a, const BigInt& k) { return a.con([&](const auto& x) { return a.mismo(x.pow(k)); }); }
+    static PW mul(const PW& a, const PW& b, const std::string& algo) {
+        const alcp::MulAlgo al = algoritmo(algo);
+        return a.con([&](const auto& x) { return a.mismo(x.mul(PW::par(x, b), al)); });
+    }
+    static PW scalar_mul(const PW& a, const BigInt& e) {
+        return a.con([&](const auto& x) { return a.mismo(x.scalar_mul(elem_in(x.field(), e))); });
+    }
+    static PW derivative(const PW& a) { return a.con([&](const auto& x) { return a.mismo(x.derivative()); }); }
+    static PW monic(const PW& a) { return a.con([&](const auto& x) { return a.mismo(x.monic()); }); }
+    static BigInt evaluate(const PW& a, const BigInt& v) {
+        return a.con([&](const auto& x) { return elem_out(x.field(), x.evaluate(elem_in(x.field(), v))); });
+    }
+    static PW compose(const PW& a, const PW& g) { return a.con([&](const auto& x) { return a.mismo(x.compose(PW::par(x, g))); }); }
+    static bool is_irreducible(const PW& a) { return a.con([](const auto& x) { return x.is_irreducible(); }); }
+    static bool is_squarefree(const PW& a) { return a.con([](const auto& x) { return x.is_squarefree(); }); }
+    static PW gcd(const PW& a, const PW& b) {
+        return a.con([&](const auto& x) {
+            using P = std::decay_t<decltype(x)>;
+            return a.mismo(P::gcd(x, PW::par(x, b)));
+        });
+    }
     static py::tuple gcd_ext(const PW& a, const PW& b) {
-        auto e = P::gcd_ext(a.p, b.p);
-        return py::make_tuple(a.mismo(std::move(e.g)), a.mismo(std::move(e.x)), a.mismo(std::move(e.y)));
+        return a.con([&](const auto& x) {
+            using P = std::decay_t<decltype(x)>;
+            auto e = P::gcd_ext(x, PW::par(x, b));
+            return py::make_tuple(a.mismo(std::move(e.g)), a.mismo(std::move(e.x)), a.mismo(std::move(e.y)));
+        });
     }
-    static PW inv_mod(const PW& a, const PW& m) { return a.mismo(P::inv_mod(a.p, m.p)); }
+    static PW inv_mod(const PW& a, const PW& m) {
+        return a.con([&](const auto& x) {
+            using P = std::decay_t<decltype(x)>;
+            return a.mismo(P::inv_mod(x, PW::par(x, m)));
+        });
+    }
     // El módulo cero se rechaza antes de llamar al núcleo: con k < 0, P::pow_mod
     // invierte primero módulo m y lanzaría «no invertible» (ValueError) en lugar
     // del ZeroDivisionError documentado.
     static PW pow_mod(const PW& a, const BigInt& k, const PW& m) {
-        if (m.p.is_zero()) throw alcp::division_by_zero("pow_mod: el módulo es el polinomio cero");
-        return a.mismo(P::pow_mod(a.p, k, m.p));
+        if (m.con([](const auto& y) { return y.is_zero(); }))
+            throw alcp::division_by_zero("pow_mod: el módulo es el polinomio cero");
+        return a.con([&](const auto& x) {
+            using P = std::decay_t<decltype(x)>;
+            return a.mismo(P::pow_mod(x, k, PW::par(x, m)));
+        });
     }
-    static int multiplicity(const PW& a, const PW& u) { return a.p.multiplicity(u.p); }
-    static PW radical(const PW& a) { return a.mismo(a.p.radical()); }
+    static int multiplicity(const PW& a, const PW& u) { return a.con([&](const auto& x) { return x.multiplicity(PW::par(x, u)); }); }
+    static PW radical(const PW& a) { return a.con([&](const auto& x) { return a.mismo(x.radical()); }); }
     static py::list distinct_degree(const PW& a) {
         py::list out;
-        for (auto& [d, prod] : a.p.distinct_degree()) out.append(py::make_tuple(d, a.mismo(prod)));
+        a.con([&](const auto& x) {
+            for (auto& [d, prod] : x.distinct_degree()) out.append(py::make_tuple(d, a.mismo(prod)));
+        });
         return out;
     }
     static py::list equal_degree(const PW& a, const BigInt& r) {
+        const int rr = a_maquina<int>(r, "r");
         py::list out;
-        for (auto& u : a.p.equal_degree(a_maquina<int>(r, "r"))) out.append(a.mismo(u));
+        a.con([&](const auto& x) {
+            for (auto& u : x.equal_degree(rr)) out.append(a.mismo(u));
+        });
         return out;
     }
     static py::tuple factor(const PW& a) {
-        auto f = a.p.factor();
-        py::list factores;
-        for (auto& [u, e] : f.factors) factores.append(py::make_tuple(a.mismo(u), e));
-        return py::make_tuple(factores, elem_out(a.K(), f.leading));
+        return a.con([&](const auto& x) {
+            auto f = x.factor();
+            py::list factores;
+            for (auto& [u, e] : f.factors) factores.append(py::make_tuple(a.mismo(u), e));
+            return py::make_tuple(factores, elem_out(x.field(), f.leading));
+        });
     }
-    static std::string to_string(const PW& a, const std::string& var) { return a.p.to_string(var); }
-    static std::string repr(const PW& a) { return std::string(Info<W>::poli) + "(" + a.p.to_string() + ")"; }
+    static std::string to_string(const PW& a, const std::string& var) {
+        return a.con([&](const auto& x) { return x.to_string(var); });
+    }
+    static std::string repr(const PW& a) {
+        return std::string(Info<W>::poli) + "(" + a.con([](const auto& x) { return x.to_string(); }) + ")";
+    }
 };
 
 // Algoritmos rápidos (Práctica 3): mismas funciones para Fp y Fq.
@@ -623,32 +802,45 @@ struct OpsRapidos {
     using V = std::vector<BigInt>;
 
     static V dft(const W& f, const BigInt& raiz, const BigInt& k, const V& a) {
-        return elems_out(f.K, alcp::fast::dft(f.K, elem_in(f.K, raiz), a_maquina<unsigned long>(k, "k"), elems_in(f.K, a)));
+        return en(f, [&](const auto& K) {
+            return elems_out(K, alcp::fast::dft(K, elem_in(K, raiz), a_maquina<unsigned long>(k, "k"), elems_in(K, a)));
+        });
     }
     static V idft(const W& f, const BigInt& raiz, const BigInt& k, const V& a) {
-        return elems_out(f.K, alcp::fast::idft(f.K, elem_in(f.K, raiz), a_maquina<unsigned long>(k, "k"), elems_in(f.K, a)));
+        return en(f, [&](const auto& K) {
+            return elems_out(K, alcp::fast::idft(K, elem_in(K, raiz), a_maquina<unsigned long>(k, "k"), elems_in(K, a)));
+        });
     }
     static V lower_vec(const W& f, const BigInt& n, const V& a, const V& b) {
-        return elems_out(f.K, alcp::fast::toeplitz_lower_vec(f.K, a_maquina<std::size_t>(n, "n"), elems_in(f.K, a),
-                                                             elems_in(f.K, b)));
+        return en(f, [&](const auto& K) {
+            return elems_out(K, alcp::fast::toeplitz_lower_vec(K, a_maquina<std::size_t>(n, "n"), elems_in(K, a), elems_in(K, b)));
+        });
     }
     static V upper_vec(const W& f, const BigInt& n, const V& a, const V& b) {
-        return elems_out(f.K, alcp::fast::toeplitz_upper_vec(f.K, a_maquina<std::size_t>(n, "n"), elems_in(f.K, a),
-                                                             elems_in(f.K, b)));
+        return en(f, [&](const auto& K) {
+            return elems_out(K, alcp::fast::toeplitz_upper_vec(K, a_maquina<std::size_t>(n, "n"), elems_in(K, a), elems_in(K, b)));
+        });
     }
     static V vec(const W& f, const BigInt& n, const V& a, const V& b) {
-        return elems_out(f.K, alcp::fast::toeplitz_vec(f.K, a_maquina<std::size_t>(n, "n"), elems_in(f.K, a),
-                                                       elems_in(f.K, b)));
+        return en(f, [&](const auto& K) {
+            return elems_out(K, alcp::fast::toeplitz_vec(K, a_maquina<std::size_t>(n, "n"), elems_in(K, a), elems_in(K, b)));
+        });
     }
     static V lower_inverse(const W& f, const BigInt& n, const V& a) {
-        return elems_out(f.K, alcp::fast::toeplitz_lower_inverse(f.K, a_maquina<std::size_t>(n, "n"), elems_in(f.K, a)));
+        return en(f, [&](const auto& K) {
+            return elems_out(K, alcp::fast::toeplitz_lower_inverse(K, a_maquina<std::size_t>(n, "n"), elems_in(K, a)));
+        });
     }
     static V upper_inverse(const W& f, const BigInt& n, const V& a) {
-        return elems_out(f.K, alcp::fast::toeplitz_upper_inverse(f.K, a_maquina<std::size_t>(n, "n"), elems_in(f.K, a)));
+        return en(f, [&](const auto& K) {
+            return elems_out(K, alcp::fast::toeplitz_upper_inverse(K, a_maquina<std::size_t>(n, "n"), elems_in(K, a)));
+        });
     }
     static py::tuple divmod(const PW& f, const PW& g) {
-        auto [q, r] = alcp::fast::toeplitz_divmod(f.K(), f.p, g.p);
-        return py::make_tuple(f.mismo(std::move(q)), f.mismo(std::move(r)));
+        return f.con([&](const auto& x) {
+            auto [q, r] = alcp::fast::toeplitz_divmod(x.field(), x, PW::par(x, g));
+            return py::make_tuple(f.mismo(std::move(q)), f.mismo(std::move(r)));
+        });
     }
 };
 
@@ -663,6 +855,7 @@ void registrar_cuerpo(py::class_<W, std::shared_ptr<W>>& c) {
     c.def("__eq__", &O::eq, py::is_operator(), py::arg("other"), docs::c_eq);
     c.def("__hash__", &O::hash, docs::c_hash);
     c.def("__repr__", &O::repr, docs::c_repr);
+    c.def_property_readonly("backend", &O::backend, docs::c_backend);
     c.def("__copy__", &O::copia, docs::c_copia);
     c.def("__deepcopy__", &O::copia_profunda, py::arg("memo"), docs::c_copia);
     c.def("fft_capacity", &O::fft_capacity, docs::c_fft_capacity);
@@ -767,6 +960,7 @@ inline void fijar_semilla(const BigInt& s) {
     else alcp::detail::gmp_rng().seed(s);  // semillas que no caben en unsigned long
 }
 
+}  // namespace
 }  // namespace alcp_py
 
 // ---------------------------------------------------------------------------
@@ -783,13 +977,13 @@ PYBIND11_MODULE(alcp_native, m) {
     m.def("set_seed", &fijar_semilla, py::arg("seed"), docs::set_seed);
 
     py::class_<FpW, std::shared_ptr<FpW>> fp(m, "Fp", docs::fp);
-    fp.def(py::init(&OpsFp::crear), py::arg("p"), docs::fp_init);
+    fp.def(py::init(&OpsFp::crear), py::arg("p"), py::kw_only(), py::arg("backend") = "auto", docs::fp_init);
     fp.def_property_readonly("n", &OpsFp::n, docs::fp_n);
     registrar_cuerpo(fp);
 
     py::class_<FqW, std::shared_ptr<FqW>> fq(m, "Fq", docs::fq);
-    fq.def(py::init(&OpsFq::crear_q), py::arg("q"), docs::fq_init_q);
-    fq.def(py::init(&OpsFq::crear_mod), py::arg("p"), py::arg("modulus"), docs::fq_init_mod);
+    fq.def(py::init(&OpsFq::crear_q), py::arg("q"), py::kw_only(), py::arg("backend") = "auto", docs::fq_init_q);
+    fq.def(py::init(&OpsFq::crear_mod), py::arg("p"), py::arg("modulus"), py::kw_only(), py::arg("backend") = "auto", docs::fq_init_mod);
     fq.def_property_readonly("n", &OpsFq::n, docs::fq_n);
     fq.def_property_readonly("modulus", &OpsFq::modulus, docs::fq_modulus);
     fq.def("from_index", &OpsFq::from_index, py::arg("i"), docs::fq_from_index);

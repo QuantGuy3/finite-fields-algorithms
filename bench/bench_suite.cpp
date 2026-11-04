@@ -29,6 +29,14 @@
 //     checksum lleva el prefijo "INVALIDO-".
 #include "alcp/alcp.hpp"
 
+// Backend de 64 bits: solo existe en las cabeceras optimizadas.  Contra las
+// cabeceras originales la suite compila igual y usa siempre GMP.
+#if __has_include(<alcp/fp64.hpp>)
+#define ALCP_BENCH_FP64 1
+#else
+#define ALCP_BENCH_FP64 0
+#endif
+
 #include <algorithm>
 #include <chrono>
 #include <cstdint>
@@ -50,6 +58,19 @@ using namespace alcp;
 namespace {
 
 using Clock = std::chrono::steady_clock;
+
+// --backend: "auto" (por defecto) usa el backend que elegiría el usuario (64
+// bits si p cabe, como el módulo Python); "gmp" fuerza GMP en todos los cuerpos.
+bool g_backend_auto = true;
+
+// ¿Usar el backend de 64 bits para la característica p?
+[[maybe_unused]] bool use_u64([[maybe_unused]] const BigInt& p) {
+#if ALCP_BENCH_FP64
+    return g_backend_auto && Fp64::fits(p);
+#else
+    return false;
+#endif
+}
 
 double seconds_since(Clock::time_point t0) {
     return std::chrono::duration<double>(Clock::now() - t0).count();
@@ -136,6 +157,15 @@ void hash_elem(Hasher& h, const Fq& K, const Fq::Elem& e) { h.big(K.to_index(e))
 
 Fp::Elem rand_elem(const Fp& K, Rng& R) { return K.from_int(R.below(K.characteristic())); }
 Fq::Elem rand_elem(const Fq& K, Rng& R) { return K.from_index(R.below(K.cardinality())); }
+
+#if ALCP_BENCH_FP64
+// Backend de 64 bits (si las cabeceras lo tienen): mismas conversiones, así
+// que las entradas y los checksums son idénticos a los de GMP.
+void hash_elem(Hasher& h, const Fp64& K, const Fp64::Elem& e) { h.big(K.to_bigint(e)); }
+void hash_elem(Hasher& h, const Fq64& K, const Fq64::Elem& e) { h.big(K.to_index(e)); }
+Fp64::Elem rand_elem(const Fp64& K, Rng& R) { return K.from_int(R.below(K.characteristic())); }
+Fq64::Elem rand_elem(const Fq64& K, Rng& R) { return K.from_index(R.below(K.cardinality())); }
+#endif
 
 template <class F>
 typename F::Elem rand_nonzero(const F& K, Rng& R) {
@@ -530,7 +560,8 @@ void poly_factor(const Fam<F>& fam, std::vector<std::pair<int, int>> shape, cons
 // ---------------------------------------------------------------------------
 // Algoritmos rápidos (fast.hpp) sobre F_p con raíz primitiva conocida.
 // ---------------------------------------------------------------------------
-void fast_dft(const Fam<Fp>& fam, unsigned long gen, unsigned long k, bool inverse, long inner) {
+template <class F>
+void fast_dft(const Fam<F>& fam, unsigned long gen, unsigned long k, bool inverse, long inner) {
     auto mk = fam.mk;
     const std::string op = inverse ? "idft" : "dft";
     add(fam.prefix + "." + op + ".k" + S(static_cast<long>(k)), "fast", op,
@@ -542,7 +573,7 @@ void fast_dft(const Fam<Fp>& fam, unsigned long gen, unsigned long k, bool inver
             // Raíz de orden exacto 2^k, FIJA (no aleatoria): gen^((p-1)/2^k).
             const BigInt cof = (K->characteristic() - 1) >> k;
             auto g = K->pow(K->from_int(BigInt(gen)), cof);
-            std::vector<Fp::Elem> a;
+            std::vector<typename F::Elem> a;
             for (std::size_t i = 0; i < (std::size_t(1) << k); ++i) a.push_back(rand_elem(*K, R));
             return runner(
                 [K, g, k, a, inverse, inner] {
@@ -550,7 +581,7 @@ void fast_dft(const Fam<Fp>& fam, unsigned long gen, unsigned long k, bool inver
                     for (long i = 1; i < inner; ++i) r = inverse ? fast::idft(*K, g, k, a) : fast::dft(*K, g, k, a);
                     return r;
                 },
-                [K](const std::vector<Fp::Elem>& v) { return sum_vec(*K, v); });
+                [K](const std::vector<typename F::Elem>& v) { return sum_vec(*K, v); });
         });
 }
 
@@ -611,16 +642,18 @@ void fast_toeplitz_divmod(const Fam<F>& fam, int dnum, int dden) {
 // y elegir otro irreducible igualmente válido): comprueba p, n y que el módulo
 // sea mónico, de grado n e irreducible.
 // ---------------------------------------------------------------------------
+template <class FQ>
 void fq_build(unsigned long p, unsigned long n) {
     const std::string tag = "q" + S(static_cast<long>(p)) + "e" + S(static_cast<long>(n));
     add("fq.build." + tag, "fq.build", "build",
         "construcción de F_" + S(static_cast<long>(p)) + "^" + S(static_cast<long>(n)) +
             " con módulo irreducible aleatorio (Fq(p, n))",
         1, [p, n](std::uint64_t) {
-            return runner([p, n] { return std::make_shared<Fq>(BigInt(p), n); },
-                          [](const std::shared_ptr<Fq>& F) {
+            return runner([p, n] { return std::make_shared<FQ>(BigInt(p), n); },
+                          [](const std::shared_ptr<FQ>& F) {
+                              using B = std::decay_t<decltype(F->base_field())>;
                               const auto& g = F->modulus();
-                              Poly<Fp> gp = Poly<Fp>::from_ints(F->base_field(), g);
+                              Poly<B> gp = Poly<B>::from_ints(F->base_field(), g);
                               const bool ok = gp.degree() == static_cast<int>(F->extension_degree()) &&
                                               gp.field().is_one(gp.lead()) && gp.is_irreducible();
                               Hasher h;
@@ -644,24 +677,45 @@ constexpr const char* P_M127 = "170141183460469231731687303715884105727";  // 2^
 constexpr const char* P_256 =
     "52435875175126190479447740508185965837690552500527637822603658699938581184513";
 
-Fam<Fp> fp_family(const std::string& tag, const char* p, const std::string& fdesc) {
+// Familia F_p / F_q con el backend elegido (--backend).  `reg` es una lambda
+// genérica que registra los escenarios de la familia; recibe Fam<Fp> o
+// Fam<Fp64> (resp. Fam<Fq> o Fam<Fq64>).  Los nombres de escenario no
+// dependen del backend.
+template <class F>
+Fam<F> fp_family_t(const std::string& tag, const char* p, const std::string& fdesc) {
     const std::string ps = p;
-    return {"fp." + tag, fdesc, [ps] { return std::make_shared<const Fp>(BigInt(ps)); }};
+    return {"fp." + tag, fdesc, [ps] { return std::make_shared<const F>(BigInt(ps)); }};
 }
 
-Fam<Fq> fq_family(const std::string& tag, const char* p, std::vector<long> modulus, const std::string& fdesc) {
+template <class F, class B>
+Fam<F> fq_family_t(const std::string& tag, const char* p, std::vector<long> modulus, const std::string& fdesc) {
     const std::string ps = p;
     return {"fq." + tag, fdesc, [ps, modulus] {
                 std::vector<BigInt> g;
                 for (long c : modulus) g.emplace_back(c);
-                return std::make_shared<const Fq>(Fp(BigInt(ps)), std::move(g));
+                return std::make_shared<const F>(B(BigInt(ps)), std::move(g));
             }};
+}
+
+template <class Reg>
+void with_fp(const std::string& tag, const char* p, const std::string& fdesc, Reg reg) {
+#if ALCP_BENCH_FP64
+    if (use_u64(BigInt(p))) return reg(fp_family_t<Fp64>(tag, p, fdesc));
+#endif
+    reg(fp_family_t<Fp>(tag, p, fdesc));
+}
+
+template <class Reg>
+void with_fq(const std::string& tag, const char* p, std::vector<long> modulus, const std::string& fdesc, Reg reg) {
+#if ALCP_BENCH_FP64
+    if (use_u64(BigInt(p))) return reg(fq_family_t<Fq64, Fp64>(tag, p, std::move(modulus), fdesc));
+#endif
+    reg(fq_family_t<Fq, Fp>(tag, p, std::move(modulus), fdesc));
 }
 
 void register_all() {
     // ---------------- F_p, p = 7 ----------------
-    {
-        auto F = fp_family("p7", "7", "F_7");
+    with_fp("p7", "7", "F_7", [&](auto F) {
         elem_muladd(F, 400000);
         elem_inv(F, 100000);
         elem_pow(F, 100000);
@@ -676,10 +730,9 @@ void register_all() {
         poly_pow_mod(F, 128, 48);   // 7^48 ~ 2^135
         poly_is_irreducible(F, 64);
         poly_factor(F, {{1, 2}, {2, 1}, {3, 2}, {5, 1}, {8, 1}, {12, 1}, {13, 1}, {14, 1}});  // grado 62
-    }
+    });
     // ---------------- F_p, p = 101 ----------------
-    {
-        auto F = fp_family("p101", "101", "F_101");
+    with_fp("p101", "101", "F_101", [&](auto F) {
         elem_muladd(F, 400000);
         elem_inv(F, 100000);
         elem_pow(F, 100000);
@@ -694,10 +747,9 @@ void register_all() {
         poly_pow_mod(F, 128, 20);   // 101^20 ~ 2^133
         poly_is_irreducible(F, 48);
         poly_factor(F, {{1, 3}, {2, 2}, {4, 1}, {6, 1}, {9, 1}, {14, 1}, {20, 1}, {40, 1}});  // grado 100
-    }
+    });
     // ---------------- F_p, p = 998244353 (NTT) ----------------
-    {
-        auto F = fp_family("ntt", "998244353", "F_998244353");
+    with_fp("ntt", "998244353", "F_998244353", [&](auto F) {
         elem_muladd(F, 400000);
         elem_inv(F, 100000);
         elem_pow(F, 50000);
@@ -714,10 +766,9 @@ void register_all() {
         poly_pow_mod(F, 128, 5);    // p^5 ~ 2^150
         poly_is_irreducible(F, 32);
         poly_factor(F, {{1, 2}, {2, 1}, {3, 1}, {5, 2}, {8, 1}, {15, 1}});  // grado 40
-    }
+    });
     // ---------------- F_p, p = 2^61 - 1 (sin NTT) ----------------
-    {
-        auto F = fp_family("m61", P_M61, "F_(2^61-1)");
+    with_fp("m61", P_M61, "F_(2^61-1)", [&](auto F) {
         elem_muladd(F, 400000);
         elem_inv(F, 100000);
         elem_pow(F, 20000);
@@ -732,10 +783,9 @@ void register_all() {
         poly_pow_mod(F, 64, 2);     // p^2 ~ 2^122
         poly_is_irreducible(F, 24);
         poly_factor(F, {{1, 2}, {2, 1}, {4, 1}, {6, 1}, {12, 1}});  // grado 26
-    }
+    });
     // ---------------- F_p, p = 2^127 - 1 ----------------
-    {
-        auto F = fp_family("m127", P_M127, "F_(2^127-1)");
+    with_fp("m127", P_M127, "F_(2^127-1)", [&](auto F) {
         elem_muladd(F, 200000);
         elem_inv(F, 50000);
         elem_pow(F, 10000);
@@ -750,10 +800,9 @@ void register_all() {
         poly_pow_mod(F, 64, 1);     // p ~ 2^127
         poly_is_irreducible(F, 16);
         poly_factor(F, {{1, 2}, {2, 1}, {3, 1}, {5, 1}, {7, 1}});  // grado 20
-    }
+    });
     // ---------------- F_p, p de 255 bits (BLS12-381 r, NTT) ----------------
-    {
-        auto F = fp_family("p256", P_256, "F_r (r de 255 bits, BLS12-381)");
+    with_fp("p256", P_256, "F_r (r de 255 bits, BLS12-381)", [&](auto F) {
         elem_muladd(F, 200000);
         elem_inv(F, 50000);
         elem_pow(F, 2000);
@@ -770,44 +819,40 @@ void register_all() {
         poly_pow_mod(F, 64, 1);     // p ~ 2^255
         poly_is_irreducible(F, 12);
         poly_factor(F, {{1, 2}, {2, 1}, {3, 1}, {5, 1}});  // grado 12
-    }
+    });
 
     // ---------------- F_q, q = 3^30 (escenario histórico) ----------------
-    {
-        // Módulo irreducible fijo de grado 30 sobre F_3 (calculado con la versión original).
-        auto F = fq_family("q3e30", "3",
+    with_fq("q3e30", "3",
                            {2, 0, 2, 0, 1, 0, 1, 1, 1, 1, 0, 0, 2, 1, 1, 0, 2, 2, 1, 0, 1, 1, 0, 1, 0, 2, 1, 0, 1, 0, 1},
-                           "F_(3^30)");
+                           "F_(3^30)", [&](auto F) {
+        // Módulo irreducible fijo de grado 30 sobre F_3 (calculado con la versión original).
         elem_muladd(F, 4000);
         elem_inv(F, 100);
         poly_mul(F, MulAlgo::Schoolbook, 32);
         poly_mul(F, MulAlgo::Karatsuba, 128);
         poly_divmod(F, 64, 32);
         poly_factor(F, {{5, 1}}, " (histórico: aleatorio de grado 5)");
-    }
+    });
     // ---------------- F_q, q = 2^8 (módulo AES) ----------------
-    {
-        auto F = fq_family("q2e8", "2", {1, 1, 0, 1, 1, 0, 0, 0, 1}, "F_(2^8) (x^8+x^4+x^3+x+1)");
+    with_fq("q2e8", "2", {1, 1, 0, 1, 1, 0, 0, 0, 1}, "F_(2^8) (x^8+x^4+x^3+x+1)", [&](auto F) {
         elem_muladd(F, 50000);
         elem_inv(F, 5000);
         poly_mul(F, MulAlgo::Schoolbook, 128);
         poly_mul(F, MulAlgo::Karatsuba, 512);
         poly_is_irreducible(F, 16);
         poly_factor(F, {{1, 2}, {2, 1}, {3, 1}, {4, 2}, {6, 1}, {7, 1}});  // grado 30
-    }
+    });
     // ---------------- F_q, q = 7^4 ----------------
-    {
-        auto F = fq_family("q7e4", "7", {3, 4, 1, 2, 1}, "F_(7^4)");
+    with_fq("q7e4", "7", {3, 4, 1, 2, 1}, "F_(7^4)", [&](auto F) {
         elem_muladd(F, 50000);
         elem_inv(F, 5000);
         poly_mul(F, MulAlgo::Schoolbook, 128);
         poly_mul(F, MulAlgo::Karatsuba, 512);
         poly_gcd(F, 200);
         poly_factor(F, {{1, 1}, {2, 2}, {3, 1}, {5, 1}, {7, 1}});  // grado 20
-    }
+    });
     // ---------------- F_q, q = p^2, p = 2^61 - 1 (x^2 + 1; admite FFT) ----------------
-    {
-        auto F = fq_family("m61e2", P_M61, {1, 0, 1}, "F_((2^61-1)^2) (x^2+1)");
+    with_fq("m61e2", P_M61, {1, 0, 1}, "F_((2^61-1)^2) (x^2+1)", [&](auto F) {
         elem_muladd(F, 100000);
         elem_inv(F, 1000);
         poly_mul(F, MulAlgo::Schoolbook, 128);
@@ -818,14 +863,21 @@ void register_all() {
         poly_divmod(F, 500, 250);
         poly_gcd(F, 150);
         poly_factor(F, {{1, 2}, {2, 1}, {3, 1}});  // grado 7
-    }
+    });
     // ---------------- Construcción de F_q con módulo aleatorio ----------------
-    fq_build(3, 30);
-    fq_build(7, 20);
+#if ALCP_BENCH_FP64
+    if (use_u64(BigInt(3))) {
+        fq_build<Fq64>(3, 30);
+        fq_build<Fq64>(7, 20);
+    } else
+#endif
+    {
+        fq_build<Fq>(3, 30);
+        fq_build<Fq>(7, 20);
+    }
 
     // ---------------- Algoritmos rápidos (fast.hpp) ----------------
-    {
-        auto F = fp_family("ntt", "998244353", "F_998244353");
+    with_fp("ntt", "998244353", "F_998244353", [&](auto F) {
         F.prefix = "fast.ntt";
         // 3 es raíz primitiva de 998244353.
         fast_dft(F, 3, 10, false, 8);
@@ -836,13 +888,12 @@ void register_all() {
         fast_toeplitz_inverse(F, 8192);
         fast_toeplitz_vec(F, 4096);
         fast_toeplitz_divmod(F, 2000, 1000);
-    }
-    {
-        auto F = fp_family("p7", "7", "F_7");
+    });
+    with_fp("p7", "7", "F_7", [&](auto F) {
         F.prefix = "fast.p7";
         fast_toeplitz_inverse(F, 1024);
         fast_toeplitz_divmod(F, 2000, 1000);
-    }
+    });
 }
 
 // ===========================================================================
@@ -856,6 +907,7 @@ struct Options {
     long warmup = 1;
     long max_reps = 10000;
     std::string json;
+    std::string backend = "auto";
 };
 
 struct Result {
@@ -936,6 +988,8 @@ bool write_json(const std::string& path, const Options& o, const std::vector<Res
     s += "  \"min_time_s\": " + json_num(o.min_time) + ",\n";
     s += "  \"warmup\": " + std::to_string(o.warmup) + ",\n";
     s += "  \"filter\": " + json_str(o.filter) + ",\n";
+    s += "  \"backend\": " + json_str(o.backend) + ",\n";
+    s += "  \"fp64_available\": " + std::string(ALCP_BENCH_FP64 ? "true" : "false") + ",\n";
     s += "  \"total_s\": " + json_num(total_s) + ",\n";
     s += "  \"scenarios\": [\n";
     for (std::size_t i = 0; i < rs.size(); ++i) {
@@ -965,7 +1019,9 @@ void usage() {
         "  --min-time S   tiempo acumulado mínimo por escenario en segundos (por defecto 0.3)\n"
         "  --warmup N     ejecuciones de calentamiento no medidas (por defecto 1)\n"
         "  --max-reps N   tope de repeticiones por escenario (por defecto 10000)\n"
-        "  --json RUTA    guarda todas las muestras y checksums en JSON");
+        "  --json RUTA    guarda todas las muestras y checksums en JSON\n"
+        "  --backend B    auto (por defecto: 64 bits si p < 2^62, si las cabeceras lo\n"
+        "                 tienen) o gmp (GMP en todos los cuerpos)");
 }
 
 bool parse(int argc, char** argv, Options& o) {
@@ -985,6 +1041,13 @@ bool parse(int argc, char** argv, Options& o) {
         else if (a == "--warmup") o.warmup = std::max(0L, std::atol(need("--warmup")));
         else if (a == "--max-reps") o.max_reps = std::max(1L, std::atol(need("--max-reps")));
         else if (a == "--json") o.json = need("--json");
+        else if (a == "--backend") {
+            o.backend = need("--backend");
+            if (o.backend != "auto" && o.backend != "gmp") {
+                std::fprintf(stderr, "--backend debe ser auto o gmp\n");
+                return false;
+            }
+        }
         else if (a == "-h" || a == "--help") { usage(); std::exit(0); }
         else {
             std::fprintf(stderr, "argumento desconocido: %s\n", a.c_str());
@@ -1000,6 +1063,7 @@ bool parse(int argc, char** argv, Options& o) {
 int main(int argc, char** argv) {
     Options opt;
     if (!parse(argc, argv, opt)) return 2;
+    g_backend_auto = (opt.backend == "auto");
     register_all();
 
     std::regex re;
@@ -1023,8 +1087,9 @@ int main(int argc, char** argv) {
         return 2;
     }
 
-    std::printf("# alcp bench_suite | %s | GMP %s | %zu escenarios | reps>=%ld, min-time %.2f s\n",
-                compiler_string().c_str(), gmp_version, sel.size(), opt.reps, opt.min_time);
+    std::printf("# alcp bench_suite | %s | GMP %s | backend %s%s | %zu escenarios | reps>=%ld, min-time %.2f s\n",
+                compiler_string().c_str(), gmp_version, opt.backend.c_str(),
+                ALCP_BENCH_FP64 ? "" : " (sin fp64.hpp: GMP)", sel.size(), opt.reps, opt.min_time);
     std::fflush(stdout);
 
     const auto t_all = Clock::now();
