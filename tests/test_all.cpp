@@ -267,6 +267,13 @@ static void test_mul_algos(const Field& F, int da, int db) {
         P viafft = a.mul(b, MulAlgo::FFT);
         CHECK(school == viafft);
     }
+    // Cuadrado con el MISMO objeto como operando (camino a*a: una sola
+    // transformada directa en la FFT).
+    P sq = a.mul_school(a);
+    CHECK(sq == a * a);
+    CHECK(sq == a.mul(a, MulAlgo::Karatsuba));
+    if (fft::fft_exponent(F, 2 * a.coeffs().size() - 1) >= 0)
+        CHECK(sq == a.mul(a, MulAlgo::FFT));
 }
 
 // ----------------------------------------------------------------------------
@@ -594,6 +601,16 @@ int main() {
     test_mul_algos(F9, 40, 30);
     test_mul_algos(Fbig, 600, 500);   // exercises the FFT path
     test_mul_algos(Fbig, 50, 3);
+    {
+        // NTT en palabras de máquina con p > 2^32 (29·2^57 + 1, 62 bits: el
+        // producto punto a punto usa 128 bits) y, como contraste, el camino
+        // genérico BigInt con el r de 255 bits de BLS12-381 (2^32 | r - 1).
+        Fp F62(BigInt("4179340454199820289"));
+        test_mul_algos(F62, 300, 200);
+        test_mul_algos(F62, 70, 1);
+        Fp F255(BigInt("0x73eda753299d7d483339d80809a1d80553bda402fffe5bfeffffffff00000001"));
+        test_mul_algos(F255, 100, 90);
+    }
 
     // Toeplitz over both kinds of field
     test_toeplitz(F7, 9);

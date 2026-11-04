@@ -37,8 +37,10 @@
 #include "field.hpp"
 
 #include <algorithm>
+#include <future>
 #include <stdexcept>
 #include <string>
+#include <type_traits>
 #include <utility>
 #include <vector>
 
@@ -55,6 +57,11 @@ public:
 
     // Below this many coefficients in the smaller operand, schoolbook wins.
     static constexpr std::size_t kKaratsubaCutoff = 32;
+    // Karatsuba reparte sus tres subproductos entre hilos solo si ambos
+    // operandos tienen al menos tantos coeficientes (coste de crear hilos):
+    // 256 si el elemento es un entero (F_p, productos baratos) y 64 si es un
+    // vector (F_q: cada producto de elementos ya cuesta O(n^2) operaciones).
+    static constexpr std::size_t kParKaratsubaMin = std::is_same_v<Elem, BigInt> ? 256 : 64;
 
     // Número máximo de intentos aleatorios de equal_degree_split antes de
     // concluir que la entrada no cumple la precondición (ver equal_degree).
@@ -170,7 +177,22 @@ public:
         if (algo == MulAlgo::Auto) {
             const std::size_t L = na + nb - 1;
             const std::size_t small = std::min(na, nb);
-            if (fft::fft_exponent(*K_, L) >= 0 && L >= 64)
+            const bool can_fft = fft::fft_exponent(*K_, L) >= 0;
+            // Regla original: FFT si cabe y L >= 64.  Se conserva solo para
+            // reproducir el consumo del generador aleatorio (ver abajo).
+            const bool old_fft = can_fft && L >= 64;
+            bool use_fft = can_fft && prefer_fft(*K_, small, std::max(na, nb), L);
+            // La primera transformada de un cuerpo calcula su raíz base con el
+            // RNG.  Para que la secuencia aleatoria (y por tanto factor(),
+            // Fq(p, n), etc.) sea idéntica a la original, la raíz se calcula
+            // exactamente cuando la regla original habría usado la FFT: no se
+            // adelanta (FFT nueva solo si la caché ya tiene tablas, es decir,
+            // si la raíz ya existe) ni se omite (se pide aunque no se use).
+            if (use_fft && !old_fft && K_->fft_cache_.empty()) use_fft = false;
+            // (Se construyen las tablas, que piden la raíz: así la caché deja
+            // de estar vacía y los productos siguientes pueden usar la FFT.)
+            if (old_fft && !use_fft) (void)fft::tables(*K_, fft::ceil_log2(L));
+            if (use_fft)
                 algo = MulAlgo::FFT;
             else if (small >= kKaratsubaCutoff)
                 algo = MulAlgo::Karatsuba;
@@ -202,21 +224,22 @@ public:
     }
 
     // Recursive Karatsuba (port of fp_x_mult_karatsuba / fq_x_mult_karatsuba).
+    // Implementación sobre vistas (puntero + longitud) en karatsuba_rec: la
+    // recursión y los subproductos son exactamente los del original
+    // (aL·bL, aH·bH, (aL+aH)·(bL+bH), con las mismas mitades recortadas), pero
+    // sin copiar las mitades a polinomios nuevos (slice) ni desplazar copiando
+    // (shift): z1 se corrige en sitio y la recombinación acumula en el vector
+    // resultado.
     Poly mul_karatsuba(const Poly& o) const {
         require_same_field(o);
         if (is_zero() || o.is_zero()) return zero(*K_);
         if (c_.size() <= kKaratsubaCutoff || o.c_.size() <= kKaratsubaCutoff)
             return mul_school(o);
-
-        std::size_t m = std::max(c_.size(), o.c_.size()) / 2;
-        Poly aL = slice(0, m), aH = slice(m, c_.size());
-        Poly bL = o.slice(0, m), bH = o.slice(m, o.c_.size());
-
-        Poly z0 = aL.mul_karatsuba(bL);
-        Poly z2 = aH.mul_karatsuba(bH);
-        Poly z1 = (aL + aH).mul_karatsuba(bL + bH) - z0 - z2;
-
-        return z0 + z1.shift(m) + z2.shift(2 * m);
+        // Profundidad paralela: 2 niveles (hasta 9 ramas) si hay >= 9 hilos,
+        // 1 nivel (3 ramas) si hay >= 3, ninguno en otro caso.
+        const unsigned T = par::max_threads();
+        const int depth = (T >= 9) ? 2 : (T >= 3 ? 1 : 0);
+        return Poly(*K_, karatsuba_rec(*K_, c_.data(), c_.size(), o.c_.data(), o.c_.size(), depth));
     }
 
     // ---- Euclidean division ------------------------------------------------
@@ -610,17 +633,129 @@ private:
     }
 
     // coefficients [lo, hi) as a polynomial (drops the x^lo..x^{hi-1} window down to x^0).
-    Poly slice(std::size_t lo, std::size_t hi) const {
-        if (lo >= c_.size()) return zero(*K_);
-        hi = std::min(hi, c_.size());
-        return Poly(*K_, std::vector<Elem>(c_.begin() + lo, c_.begin() + hi));
+    // ---- Umbrales de despacho Auto ------------------------------------------
+    // ¿Conviene la FFT (supuesto que cabe) para un producto de operandos con
+    // `small` y `large` coeficientes (L = small + large - 1)?  Depende de la
+    // implementación de la NTT del cuerpo y, sobre todo, del operando MENOR:
+    // con uno diminuto (p. ej. q·x1 en gcd_ext, con q de grado 1) el escolar
+    // cuesta O(large) y la FFT O(L log L).  Calibrado con medidas en Zen 3
+    // (g++ 15.2 -O3, GMP 6.3) de escolar/Karatsuba/FFT en una rejilla de
+    // tamaños sobre F_998244353, el r de 255 bits de BLS12-381 y
+    // F_((2^61-1)^2):
+    //   * Word (F_p, p < 2^62): la FFT gana desde L = 2-4 en todos los casos.
+    //   * Limb (F_p, p >= 2^62): FFT si small >= 16, o small >= 8 y L <= 128.
+    //   * Generic (F_q y resto): FFT si small >= 64, o small >= 32 y
+    //     large <= 2·small; con small <= 16 la FFT era hasta 10-20x más lenta.
+    static bool prefer_fft(const Field& K, std::size_t small, std::size_t large, std::size_t L) {
+        switch (fft::backend(K)) {
+            case fft::Backend::Word: return L >= 4;
+            case fft::Backend::Limb: return small >= 16 || (small >= 8 && L <= 128);
+            case fft::Backend::Generic:
+            default: return small >= 64 || (small >= 32 && large <= 2 * small);
+        }
     }
-    // multiply by x^s
-    Poly shift(std::size_t s) const {
-        if (is_zero()) return *this;
-        std::vector<Elem> r(c_.size() + s, K_->zero());
-        for (std::size_t i = 0; i < c_.size(); ++i) r[i + s] = c_[i];
-        return Poly(*K_, std::move(r));
+
+    // ---- Karatsuba sobre vistas -------------------------------------------
+    // Longitud de la vista a[0..n) sin ceros finales (lo que haría trim()).
+    static std::size_t trimmed_len(const Field& K, const Elem* a, std::size_t n) {
+        while (n > 0 && K.is_zero(a[n - 1])) --n;
+        return n;
+    }
+
+    // x[0..nx) + y[0..ny), recortado (como operator+ sobre las mitades).
+    static std::vector<Elem> add_views(const Field& K, const Elem* x, std::size_t nx,
+                                       const Elem* y, std::size_t ny) {
+        std::vector<Elem> r;
+        r.reserve(std::max(nx, ny));
+        const std::size_t nmin = std::min(nx, ny);
+        for (std::size_t i = 0; i < nmin; ++i) r.push_back(K.add(x[i], y[i]));
+        for (std::size_t i = nmin; i < nx; ++i) r.push_back(x[i]);
+        for (std::size_t i = nmin; i < ny; ++i) r.push_back(y[i]);
+        r.resize(trimmed_len(K, r.data(), r.size()));
+        return r;
+    }
+
+    // Producto Karatsuba de las vistas a[0..na) y b[0..nb), ambas no vacías y
+    // recortadas (último coeficiente no nulo).  Reproduce la recursión de la
+    // versión con Poly: m = max(na, nb)/2; aL = a[0..m) y aH = a[m..na)
+    // recortadas (vacías si m >= na), ídem para b; z0 = aL·bL, z2 = aH·bH,
+    // z1 = (aL+aH)·(bL+bH) - z0 - z2; resultado z0 + z1·x^m + z2·x^{2m}.  El
+    // resultado tiene longitud exacta na + nb - 1 (coeficiente principal
+    // lead(a)·lead(b) != 0).
+    // Si a y b son la misma vista (cuadrado), aL+aH y bL+bH coinciden: la suma
+    // se calcula una vez (trabajo redundante idéntico).
+    // Paralelismo: con par_depth > 0 y ambos operandos de al menos
+    // kParKaratsubaMin coeficientes, z0 y z2 se calculan en otros dos hilos
+    // mientras este calcula z1 (los tres subproductos son independientes y las
+    // operaciones de cuerpo son puras); los hijos reciben par_depth - 1.
+    static std::vector<Elem> karatsuba_rec(const Field& K, const Elem* a, std::size_t na,
+                                           const Elem* b, std::size_t nb, int par_depth = 0) {
+        const bool same = (a == b && na == nb);
+        if (na <= kKaratsubaCutoff || nb <= kKaratsubaCutoff) {
+            // Caso base: exactamente mul_school (se reutiliza para heredar
+            // cualquier mejora de su bucle).  La copia de las vistas cuesta
+            // O(na + nb), despreciable frente a los na·nb productos.
+            Poly pa(K, std::vector<Elem>(a, a + na));
+            if (same) return std::move(pa.mul_school(pa).c_);
+            Poly pb(K, std::vector<Elem>(b, b + nb));
+            return std::move(pa.mul_school(pb).c_);
+        }
+
+        const std::size_t m = std::max(na, nb) / 2;
+        const std::size_t naL = trimmed_len(K, a, std::min(m, na));
+        const std::size_t naH = (m < na) ? na - m : 0;  // ya recortada (a lo está)
+        const std::size_t nbL = same ? naL : trimmed_len(K, b, std::min(m, nb));
+        const std::size_t nbH = (m < nb) ? nb - m : 0;
+
+        const bool par = par_depth > 0 && std::min(na, nb) >= kParKaratsubaMin;
+        const int child = par ? par_depth - 1 : 0;
+        auto calc_z0 = [&]() -> std::vector<Elem> {
+            if (naL > 0 && nbL > 0) return karatsuba_rec(K, a, naL, b, nbL, child);
+            return {};
+        };
+        auto calc_z2 = [&]() -> std::vector<Elem> {
+            if (naH > 0 && nbH > 0) return karatsuba_rec(K, a + m, naH, b + m, nbH, child);
+            return {};
+        };
+        auto calc_z1 = [&]() -> std::vector<Elem> {
+            std::vector<Elem> sa = (naH > 0) ? add_views(K, a, naL, a + m, naH)
+                                             : std::vector<Elem>(a, a + naL);
+            if (same) {
+                if (!sa.empty()) return karatsuba_rec(K, sa.data(), sa.size(), sa.data(), sa.size(), child);
+                return {};
+            }
+            std::vector<Elem> sb = (nbH > 0) ? add_views(K, b, nbL, b + m, nbH)
+                                             : std::vector<Elem>(b, b + nbL);
+            if (!sa.empty() && !sb.empty())
+                return karatsuba_rec(K, sa.data(), sa.size(), sb.data(), sb.size(), child);
+            return {};
+        };
+
+        std::vector<Elem> z0, z2, z1;
+        if (par) {
+            auto f0 = std::async(std::launch::async, calc_z0);
+            auto f2 = std::async(std::launch::async, calc_z2);
+            z1 = calc_z1();
+            z0 = f0.get();
+            z2 = f2.get();
+        } else {
+            z0 = calc_z0();
+            z2 = calc_z2();
+            z1 = calc_z1();
+        }
+        // z1 -= z0; z1 -= z2 (en sitio) y recorte.
+        const std::size_t n1 = std::max({z1.size(), z0.size(), z2.size()});
+        z1.resize(n1, K.zero());
+        for (std::size_t i = 0; i < z0.size(); ++i) z1[i] = K.sub(z1[i], z0[i]);
+        for (std::size_t i = 0; i < z2.size(); ++i) z1[i] = K.sub(z1[i], z2[i]);
+        z1.resize(trimmed_len(K, z1.data(), z1.size()));
+
+        // Recombinación en el vector resultado (se reutiliza el de z0).
+        std::vector<Elem> r = std::move(z0);
+        r.resize(na + nb - 1, K.zero());
+        for (std::size_t i = 0; i < z1.size(); ++i) r[m + i] = K.add(r[m + i], z1[i]);
+        for (std::size_t i = 0; i < z2.size(); ++i) r[2 * m + i] = K.add(r[2 * m + i], z2[i]);
+        return r;
     }
 
     // One Cantor-Zassenhaus splitting step: given g (product of distinct
