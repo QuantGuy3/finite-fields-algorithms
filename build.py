@@ -359,6 +359,10 @@ def comprobar_compilador() -> str:
 #   v3        x86-64-v3 (AVX2, BMI2, FMA, MOVBE; Intel Haswell 2013+, AMD
 #             Zen 1+).  Falla con «illegal instruction» en CPU más antiguas.
 #   nativo    -march=native: solo para la CPU de la máquina que compila.
+# Decisión (fase 3, docs/optimizacion/README.md §6): el perfil por defecto es
+# «portable» porque en la medición final -march=native solo dio +0,9 % de media
+# geométrica (24,57x frente a 24,36x sobre baseline-original, dentro del ruido)
+# y el binario dejaría de funcionar en otras CPU.  LTO tampoco aportó (±2 %).
 PERFILES: dict[str, list[str]] = {
     "portable": [],
     "v3": ["-march=x86-64-v3"],
