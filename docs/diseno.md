@@ -133,3 +133,7 @@ Sin tocar la lógica de los algoritmos. Cada experimento se mide contra la líne
 base (código original, `-O3`) con `bench/run_bench.py` (mediana de varias
 repeticiones, ejecuciones intercaladas, metadatos de máquina). Se documenta lo
 que funcionó, lo que no y cuánto, en `docs/` y en el informe final.
+
+Resultado: ver [optimizacion/README.md](optimizacion/README.md) (informe final de la fase 3,
+suite C++ 24,4x frente a la línea base) y [optimizacion/mediciones.md](optimizacion/mediciones.md)
+(medición técnica a técnica).

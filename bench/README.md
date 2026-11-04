@@ -10,7 +10,9 @@ original** (etiqueta git `baseline-original`).
 | `run_bench.py` | Orquestador: `build`, `run`, `interleave`, `compare` y `module`. |
 | `bench_python.py` | Benchmarks a nivel Python del módulo `alcp_native`, usando solo la API del binding original. |
 | `bench.cpp` | Benchmark histórico original (se conserva tal cual). |
-| `results/` | Resultados JSON versionados. Por ahora solo hay un ejemplo pequeño `smoke-*`, que **no es una medición**. |
+| `bench_historico.cpp` | Los casos de `bench.cpp` (factor en F_(3^30), producto de grado 4000) con repeticiones, mediana y los dos backends (`Fp`/`Fq` y `Fp64`/`Fq64` si existen). Compila contra las cabeceras originales. |
+| `bench_alcp.py` | Sobrecoste de la capa Python `alcp` frente al módulo nativo. |
+| `results/` | Resultados JSON versionados: `smoke-*` (ejemplo, **no es una medición**) y `fase3/` (mediciones de la fase 3; la final en `fase3/final-*.json`, ver `docs/optimizacion/README.md`). |
 
 Los ejecutables y módulos compilados van a `build/bench/<etiqueta>/`, que git ignora.
 
