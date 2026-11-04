@@ -16,6 +16,7 @@
 #include "fp.hpp"
 
 #include <algorithm>
+#include <concepts>
 #include <cstdint>
 #include <cstdlib>
 #include <future>
@@ -110,6 +111,11 @@ inline void set_word(BigInt& r, u64 v) {
     d[0] = static_cast<mp_limb_t>(v);
     mpz_limbs_finish(r.get_mpz_t(), 1);
 }
+
+// Mismas operaciones para cuerpos cuyo elemento ya es una palabra canónica
+// en [0, p) (Fp64): la conversión es la identidad.
+inline u64 to_word(u64 x) { return x; }
+inline void set_word(u64& r, u64 v) { r = v; }
 
 // Cociente de Shoup de w: floor(w·2^64 / p), con 0 <= w < p.
 inline u64 shoup(u64 w, u64 p) { return static_cast<u64>((static_cast<u128>(w) << 64) / p); }
@@ -309,10 +315,23 @@ void transform(const FFTTables<Elem>& t, Ctx& C, u64* a, std::size_t n, bool inv
 
 }  // namespace limb
 
-// ¿Admite el cuerpo la NTT en palabras?  F_p con limbs de 64 bits y p < 2^62.
+// Cuerpo primo cuyo elemento ya es una palabra de máquina canónica en [0, p)
+// con p < 2^62 (Fp64, fp64.hpp).  Para él la NTT en palabras no necesita
+// conversiones: es el mismo camino que para Fp con p < 2^62.
+template <class Field>
+concept NativeWordField = std::is_same_v<typename Field::Elem, std::uint64_t> &&
+                          requires(const Field& K) {
+                              { K.modulus64() } -> std::same_as<std::uint64_t>;
+                          };
+
+// ¿Admite el cuerpo la NTT en palabras?  F_p con limbs de 64 bits y p < 2^62
+// (Fp con p pequeño, o Fp64, que siempre cumple p < 2^62).
 template <class Field>
 bool word_ntt_eligible(const Field& K) {
-    if constexpr (std::is_same_v<Field, Fp> && word::kLimbs64) {
+    if constexpr (NativeWordField<Field>) {
+        (void)K;
+        return true;
+    } else if constexpr (std::is_same_v<Field, Fp> && word::kLimbs64) {
         return mpz_sizeinbase(K.characteristic().get_mpz_t(), 2) <= word::kMaxBits;
     } else {
         (void)K;
@@ -422,6 +441,8 @@ const FFTTables<typename Field::Elem>& tables(const Field& K, unsigned long k) {
             word::build_tables(*t, word::to_word(K.characteristic()));
         else if (limb_ntt_eligible(K))
             limb::build_tables(*t, K.characteristic());
+    } else if constexpr (NativeWordField<Field>) {
+        word::build_tables(*t, K.modulus64());
     }
 
     if (K.fft_cache_.size() <= k) K.fft_cache_.resize(k + 1);
@@ -441,8 +462,12 @@ namespace detail {
 // (cada una toca un par distinto); se reparten por bloques entre hilos y se
 // espera a todos antes de la etapa siguiente.  Bloque mínimo: kParChunk
 // mariposas (más grande si el elemento es un entero barato).
+// Con elementos de F_q sobre Fp64 (vector de palabras) cada operación es
+// barata y está dominada por la reserva de memoria del vector resultado, que
+// escala mal con muchos hilos: se usa el mismo bloque que con BigInt.
 template <class Elem>
-inline constexpr std::size_t kParChunk = std::is_same_v<Elem, BigInt> ? 1024 : 32;
+inline constexpr std::size_t kParChunk =
+    (std::is_same_v<Elem, BigInt> || std::is_same_v<Elem, std::vector<std::uint64_t>>) ? 1024 : 32;
 
 template <class Field>
 void butterflies(const Field& K, typename Field::Elem* a, std::size_t n,
@@ -489,7 +514,12 @@ void transform(const Field& K, std::vector<typename Field::Elem>& a, bool invers
     // cambia el resultado (ni el consumo del generador aleatorio).
     const auto& t = tables(K, k);
 
-    if constexpr (std::is_same_v<Field, Fp>) {
+    if constexpr (NativeWordField<Field>) {
+        // Fp64: los elementos ya son palabras canónicas; misma transformada
+        // en palabras de máquina, en sitio y sin conversiones.
+        word::transform(t, a.data(), n, inverse);
+        return;
+    } else if constexpr (std::is_same_v<Field, Fp>) {
         if (t.word.p != 0) {  // misma transformada, en palabras de máquina
             std::vector<word::u64> w(n);
             for (std::size_t i = 0; i < n; ++i) w[i] = word::to_word(a[i]);
@@ -536,6 +566,47 @@ long fft_exponent(const Field& K, std::size_t result_len) {
 inline constexpr std::size_t kParWordMin = std::size_t(1) << 13;
 inline constexpr std::size_t kParLimbMin = std::size_t(1) << 9;
 
+namespace detail {
+
+// Convolución por el camino en palabras de máquina (tablas t con t.word.p != 0;
+// A y B no vacíos; n = 2^k >= L = |A| + |B| - 1).  Mismo esquema que el camino
+// genérico: transformar A y B, producto punto a punto, transformada inversa.
+// Se convierte una vez a la entrada y una vez a la salida (identidad si el
+// elemento ya es una palabra, Fp64).
+template <class Elem>
+std::vector<Elem> convolve_word(const FFTTables<Elem>& t, const std::vector<Elem>& A,
+                                const std::vector<Elem>& B, std::size_t n, std::size_t L) {
+    using word::u64;
+    const u64 p = t.word.p;
+    std::vector<u64> wa(n, 0);
+    for (std::size_t i = 0; i < A.size(); ++i) wa[i] = word::to_word(A[i]);
+    if (&A == &B) {  // cuadrado: una sola transformada directa
+        word::transform(t, wa.data(), n, false);
+        for (std::size_t i = 0; i < n; ++i) wa[i] = word::mul_mod(wa[i], wa[i], p);
+    } else {
+        std::vector<u64> wb(n, 0);
+        for (std::size_t i = 0; i < B.size(); ++i) wb[i] = word::to_word(B[i]);
+        // Las dos transformadas directas son independientes: con n
+        // grande, la de B va en otro hilo (las tablas ya existen).
+        if (n >= kParWordMin && par::max_threads() > 1) {
+            auto fb = std::async(std::launch::async,
+                                 [&] { word::transform(t, wb.data(), n, false); });
+            word::transform(t, wa.data(), n, false);
+            fb.get();
+        } else {
+            word::transform(t, wa.data(), n, false);
+            word::transform(t, wb.data(), n, false);
+        }
+        for (std::size_t i = 0; i < n; ++i) wa[i] = word::mul_mod(wa[i], wb[i], p);
+    }
+    word::transform(t, wa.data(), n, true);
+    std::vector<Elem> out(L);
+    for (std::size_t i = 0; i < L; ++i) word::set_word(out[i], wa[i]);
+    return out;
+}
+
+}  // namespace detail
+
 // Linear convolution of coefficient vectors A and B via FFT.  Caller must have
 // checked fft_exponent(K, A.size()+B.size()-1) >= 0.
 // Si A y B son el MISMO vector (mismo objeto), el producto es un cuadrado y
@@ -550,41 +621,18 @@ std::vector<typename Field::Elem> convolve(const Field& K,
     const unsigned long k = ceil_log2(L);
     const std::size_t n = std::size_t(1) << k;
 
-    if constexpr (std::is_same_v<Field, Fp>) {
+    if constexpr (NativeWordField<Field>) {
+        // Fp64: siempre por el camino en palabras (p < 2^62).  tables() se
+        // llama en el mismo punto que en el camino genérico (mismo consumo
+        // del RNG).
+        return detail::convolve_word(tables(K, k), A, B, n, L);
+    } else if constexpr (std::is_same_v<Field, Fp>) {
         // Mismo esquema (transformar A y B, producto punto a punto,
         // transformada inversa) en palabras de máquina: se convierte una vez
         // a la entrada y una vez a la salida.  tables() se llama en el mismo
         // punto que en el camino genérico (mismo consumo del RNG).
         const auto& t = tables(K, k);
-        if (t.word.p != 0) {
-            using word::u64;
-            const u64 p = t.word.p;
-            std::vector<u64> wa(n, 0);
-            for (std::size_t i = 0; i < A.size(); ++i) wa[i] = word::to_word(A[i]);
-            if (&A == &B) {  // cuadrado: una sola transformada directa
-                word::transform(t, wa.data(), n, false);
-                for (std::size_t i = 0; i < n; ++i) wa[i] = word::mul_mod(wa[i], wa[i], p);
-            } else {
-                std::vector<u64> wb(n, 0);
-                for (std::size_t i = 0; i < B.size(); ++i) wb[i] = word::to_word(B[i]);
-                // Las dos transformadas directas son independientes: con n
-                // grande, la de B va en otro hilo (las tablas ya existen).
-                if (n >= kParWordMin && par::max_threads() > 1) {
-                    auto fb = std::async(std::launch::async,
-                                         [&] { word::transform(t, wb.data(), n, false); });
-                    word::transform(t, wa.data(), n, false);
-                    fb.get();
-                } else {
-                    word::transform(t, wa.data(), n, false);
-                    word::transform(t, wb.data(), n, false);
-                }
-                for (std::size_t i = 0; i < n; ++i) wa[i] = word::mul_mod(wa[i], wb[i], p);
-            }
-            word::transform(t, wa.data(), n, true);
-            std::vector<Elem> out(L);
-            for (std::size_t i = 0; i < L; ++i) word::set_word(out[i], wa[i]);
-            return out;
-        }
+        if (t.word.p != 0) return detail::convolve_word(t, A, B, n, L);
         if (t.limb.N != 0) {  // ídem, multi-limb
             using limb::u64;
             const std::size_t N = t.limb.N;

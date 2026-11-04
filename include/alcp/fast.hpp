@@ -132,12 +132,13 @@ inline std::vector<std::uint64_t> dft_rec_word(std::uint64_t g, unsigned long k,
     return A;
 }
 
-// dft_rec por el camino en palabras si el cuerpo lo admite (devuelve true y
-// deja el resultado en out); si no, devuelve false sin tocar nada.
+// dft_rec por el camino en palabras si el cuerpo lo admite (Fp con p < 2^62 o
+// Fp64): devuelve true y deja el resultado en out; si no, devuelve false sin
+// tocar nada.
 template <class Field>
 bool dft_word(const Field& K, const typename Field::Elem& g, unsigned long k,
               const std::vector<typename Field::Elem>& a, std::vector<typename Field::Elem>& out) {
-    if constexpr (std::is_same_v<Field, Fp>) {
+    if constexpr (std::is_same_v<Field, Fp> || alcp::fft::NativeWordField<Field>) {
         if (!alcp::fft::word_ntt_eligible(K)) return false;
         namespace w = alcp::fft::word;
         const std::uint64_t p = w::to_word(K.characteristic());

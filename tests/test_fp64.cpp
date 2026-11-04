@@ -19,6 +19,8 @@
 //      to_string, construcción aleatoria Fq64(q) == Fq(q) con la misma semilla,
 //      factorización.
 //   6. Excepciones y validación: p no primo, p demasiado grande, invertir 0.
+//   7. NTT en palabras de Fp64 (mul Auto/FFT, cuadrado, fast::dft/idft) y
+//      regiones paralelas con Fq64 (mariposas genéricas y Karatsuba).
 #include "alcp/alcp.hpp"
 #include "check.hpp"
 
@@ -366,6 +368,82 @@ double ms_desde(std::chrono::steady_clock::time_point t0) {
     return std::chrono::duration<double, std::milli>(std::chrono::steady_clock::now() - t0).count();
 }
 
+// ---------------------------------------------------------------------------
+// 7. Integración con la NTT en palabras y las regiones paralelas
+// ---------------------------------------------------------------------------
+// Fp64 usa la NTT en palabras de máquina (fft.hpp) y su propio umbral de
+// despacho Auto; Fq64 pasa por la NTT genérica, cuyas mariposas se reparten
+// entre hilos a partir de cierto tamaño, y por Karatsuba en paralelo.  Los
+// productos deben coincidir con los de GMP.  Además, estos tamaños hacen que
+// FqT::mul se ejecute en varios hilos a la vez (búfer compartido ocupado):
+// con el búfer thread_local anterior el proceso abortaba (0xC0000374) al
+// terminar los hilos con MinGW.
+void test_ntt_y_paralelismo() {
+    const BigInt p(998244353);
+    Fp G(p);
+    Fp64 F(p);
+    Rng R{77};
+    using PG = Poly<Fp>;
+    using PF = Poly<Fp64>;
+    // Tamaños alrededor del umbral Auto de Fp64 (small 48/128) y uno grande
+    // (n = 8192: transformadas directas de A y B en hilos distintos).
+    const std::pair<std::size_t, std::size_t> tam[] = {
+        {1, 200}, {47, 188}, {48, 192}, {48, 200}, {127, 1000}, {128, 1000}, {3000, 3000}};
+    for (auto [na, nb] : tam) {
+        const auto ai = rand_ints(R, p, na), bi = rand_ints(R, p, nb);
+        PG a = PG::from_ints(G, ai), b = PG::from_ints(G, bi);
+        PF fa = PF::from_ints(F, ai), fb = PF::from_ints(F, bi);
+        const auto ref = big(a.mul(b, MulAlgo::Schoolbook));
+        CHECK_MSG(big(fa * fb) == ref, ("Fp64 mul Auto " + std::to_string(na) + "x" + std::to_string(nb)).c_str());
+        CHECK_MSG(big(fa.mul(fb, MulAlgo::FFT)) == ref, ("Fp64 mul FFT " + std::to_string(na)).c_str());
+        CHECK_MSG(big(fa.mul(fa, MulAlgo::FFT)) == big(a.mul(a, MulAlgo::Schoolbook)),
+                  ("Fp64 cuadrado FFT " + std::to_string(na)).c_str());
+    }
+    // fast::dft / idft por el camino en palabras.
+    const unsigned long k = 10;
+    // (Las raíces base de G y F se calcularon con estados distintos del
+    // generador: se usa la misma raíz de orden 2^k en los dos.)
+    const auto gg = G.pow(G.fft_base_root(), BigInt(1) << (G.fft_capacity() - k));
+    const auto g = F.from_int(gg);
+    const auto vi = rand_ints(R, p, std::size_t(1) << k);
+    std::vector<Fp64::Elem> v64;
+    std::vector<BigInt> vg;
+    for (const auto& x : vi) { v64.push_back(F.from_int(x)); vg.push_back(G.from_int(x)); }
+    const auto d64 = fast::dft(F, g, k, v64);
+    const auto dg = fast::dft(G, gg, k, vg);
+    bool ok = d64.size() == dg.size();
+    for (std::size_t i = 0; ok && i < d64.size(); ++i) ok = F.to_bigint(d64[i]) == dg[i];
+    CHECK_MSG(ok, "fast::dft Fp64 == Fp");
+    const auto i64 = fast::idft(F, g, k, d64);
+    ok = i64 == v64;
+    CHECK_MSG(ok, "fast::idft(dft(v)) == v en Fp64");
+
+    // Fq64 sobre F_(2^61-1): NTT genérica con mariposas en paralelo
+    // (n = 8192) y Karatsuba en paralelo.
+    const BigInt m61 = (BigInt(1) << 61) - 1;
+    Fq Q(Fp(m61), {1, 0, 1});
+    Fq64 Q64(Fp64(m61), {1, 0, 1});
+    using PQ = Poly<Fq>;
+    using PQ64 = Poly<Fq64>;
+    for (std::size_t n : {std::size_t(600), std::size_t(2500)}) {
+        std::vector<Fq::Elem> ca, cb;
+        std::vector<Fq64::Elem> ca64, cb64;
+        for (std::size_t i = 0; i < n; ++i) {
+            const auto x = R.big_below(Q.cardinality()), y = R.big_below(Q.cardinality());
+            ca.push_back(Q.from_index(x));
+            cb.push_back(Q.from_index(y));
+            ca64.push_back(Q64.from_index(x));
+            cb64.push_back(Q64.from_index(y));
+        }
+        PQ a(Q, ca), b(Q, cb);
+        PQ64 a64(Q64, ca64), b64(Q64, cb64);
+        const auto ref = big(a.mul(b, MulAlgo::Karatsuba));
+        CHECK_MSG(big(a64.mul(b64, MulAlgo::Karatsuba)) == ref, ("Fq64 Karatsuba " + std::to_string(n)).c_str());
+        CHECK_MSG(big(a64.mul(b64, MulAlgo::FFT)) == ref, ("Fq64 FFT " + std::to_string(n)).c_str());
+        CHECK_MSG(big(a.mul(b, MulAlgo::FFT)) == ref, ("Fq FFT " + std::to_string(n)).c_str());
+    }
+}
+
 int main() {
     set_seed(1);
     auto t0 = std::chrono::steady_clock::now();
@@ -390,6 +468,8 @@ int main() {
     std::printf("  extensiones: %.0f ms\n", ms_desde(t0));
     test_construccion_aleatoria();
     test_validacion();
+    test_ntt_y_paralelismo();
+    std::printf("  ntt y paralelismo: %.0f ms\n", ms_desde(t0));
     std::printf("test_fp64: %.0f ms\n", ms_desde(t0));
     return check::summary("fp64");
 }
