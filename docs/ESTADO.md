@@ -33,9 +33,9 @@ Cobertura C++ (tests C++ + pytest), tras la fase 3: 94,4 % de líneas, 98,4 % de
 
 ## Pendiente
 
-- Comprobar si la NTT en palabras sufre fallos de predicción de saltos (3x más lenta con entradas variadas que con una repetida) y, si es así, escribir sus restas condicionales sin saltos.
+- Fase 5, propuesta en [optimizacion/investigacion-fase5.md](optimizacion/investigacion-fase5.md): confirmado que la NTT en palabras sufre fallos de predicción de saltos (14 ns por mariposa; 4,0 ns con la mariposa perezosa de Harvey) y que el Euclides clásico es 2,4–3,6x más lento de lo necesario.
 - Investigar el `gcd` de grado 500 en Fp64, a 0,78x en la suite, que no se reproduce aislado.
-- DDF de Kaltofen–Shoup (paso pequeño y paso gigante) para reducir los MCD de la factorización.
+- DDF de Kaltofen–Shoup (paso pequeño y paso gigante) para reducir los MCD de la factorización (propuesta 3 de la fase 5).
 - Volver a medir la cobertura C++ (`build.py cov-cpp`) tras el nivel B.
 
 - Terminar y probar el asignador rápido de la rama `exp/toolchain-wip` (1,23-1,25x preliminar).

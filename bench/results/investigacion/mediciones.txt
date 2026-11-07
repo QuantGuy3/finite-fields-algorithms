@@ -1,0 +1,56 @@
+Investigación de la fase 5 — salidas de los experimentos (Zen 3, Windows, g++ 15.2 -O3 -march=native, 7 de noviembre de 2026)
+Rama mejoras-cpp-pybind en 7880a88 (fase 4, nivel B). Entradas variadas (rotando 8), mejor de 3 tandas.
+
+== bench/experimentos/perfil_factor.cpp
+F_998244353: primitivas (us)
+     n        mul        sqr  divmod 2n/n      gcd n    pow_mod q
+   100       14.4        9.6         25.5      222.9       2015.2
+   300       64.7       43.2        179.7     1261.1       6048.1
+  1000      297.1      203.9       1567.6    11643.4      28459.4
+  2000     1135.2      734.7       4321.3    32944.2          -
+F_101: primitivas (us)
+   100        6.7        5.4         24.0      156.6        191.4
+   300       23.8       18.1        122.5     1095.7        662.4
+  1000      111.3       77.3        539.6     7617.9       3020.9
+  2000      256.7      194.0       1155.2    16233.8          -
+F_998244353 factor grado 300 (ms): total 379.85 | radical 1.41 | DDF 378.01 (Frobenius 278.31, MCD 98.74 en 103 MCD) | EDF 0.16 | multiplicidad 0.27
+F_101 factor grado 100 (ms):       total  10.01 | radical 0.21 | DDF   9.65 (Frobenius   4.73, MCD  4.86 en  35 MCD) | EDF 0.09 | multiplicidad 0.05
+F_101 factor grado 300 (ms):       total 141.21 | radical 1.26 | DDF 139.70 (Frobenius  46.18, MCD 93.11 en 104 MCD) | EDF 0.03 | multiplicidad 0.21
+
+== bench/experimentos/perfil_mul.cpp (us; 1 hilo, ALCP_THREADS=1; "rem" = a % b de grados n y n)
+p=998244353       n    auto     fft    kron   karat   rem
+                100    14.4    14.3    14.4    21.6   1.9
+                300    59.2   188.2    61.2   177.6   4.6
+               1000   302.6   485.0   284.2  1176.6  21.2
+               2000  1038.7  1025.1   886.0  3304.0
+               8000  5250.6  5172.4  4967.7
+p=101           100     6.7       -     7.0    23.1   2.0
+                300    25.2       -    25.4   185.4   4.6
+               1000   107.5       -   110.5  1192.0  19.7
+               2000   253.5       -   269.5  3572.6
+               8000  2080.0       -  1895.9
+p=2^61-1        100    22.6       -    30.0    23.6   2.0
+                300   137.7       -   138.4   270.4   6.3
+               1000   883.0       -   858.0  1144.2  16.4
+               2000  1676.3       -  1536.0  3495.5
+               8000  7354.1       -  7095.1
+
+== bench/experimentos/perfil_ntt.cpp (NTT en palabras actual, p = 998244353)
+n = 2^10:     74.4 us por transformada, 14.52 ns por mariposa
+n = 2^11:    159.8 us por transformada, 14.19 ns por mariposa
+n = 2^12:    357.0 us por transformada, 14.53 ns por mariposa
+n = 2^13:    744.0 us por transformada, 13.97 ns por mariposa
+n = 2^16:   8465.4 us por transformada, 16.15 ns por mariposa
+
+== bench/experimentos/ntt_sin_saltos.cpp (ns por mariposa; resultados idénticos en los tres casos)
+n = 2^11  iguales=1  actual 14.00  sin saltos 5.21  perezosa 3.99
+n = 2^13  iguales=1  actual 14.17  sin saltos 5.48  perezosa 4.41
+n = 2^16  iguales=1  actual 14.85  sin saltos 6.09  perezosa 5.30
+
+== bench/experimentos/euclides_en_sitio.cpp (mcd idéntico al de gcd_classic)
+p=998244353 n=300   librería 1318 us   en sitio  367 us  (3.6x)
+p=998244353 n=1000  librería 11632 us  en sitio 3455 us  (3.4x)
+p=101 n=300         librería 1184 us   en sitio  342 us  (3.5x)
+p=101 n=1000        librería 10754 us  en sitio 3318 us  (3.2x)
+p=2^61-1 n=300      librería 1044 us   en sitio  426 us  (2.4x)
+p=2^61-1 n=1000     librería 9791 us   en sitio 3615 us  (2.7x)
