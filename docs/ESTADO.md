@@ -28,7 +28,15 @@ Sin tocar los `.py` originales de `python/`, trabajar sobre el port C++ y pybind
 
 Cobertura C++ (tests C++ + pytest), tras la fase 3: 94,4 % de líneas, 98,4 % de funciones y `bindings.cpp` al 100 %. Antes de la fase 3 era el 98,3 % de líneas; la diferencia está en instanciaciones de los ayudantes paralelos y multi-limb que los tests no recorren.
 
+| 4. Nivel A | División de Newton (`divmod`, `Reducer` en `pow_mod`/`is_irreducible`/`distinct_degree`) con umbrales calibrados, inverso en F_q por Euclides extendido, Ben-Or sin la comprobación final redundante. Informe en [optimizacion/fase4.md](optimizacion/fase4.md) | Suite 1,19x sobre la fase 3 (27,7x frente al original, 128 checksums iguales); `test_fase4` 610 comprobaciones; distancia a FLINT 7,2x → 5,9x |
+| 4. Nivel B | Kronecker sobre Z (`kronecker.hpp`), half-GCD en `gcd`/`gcd_ext`, Frobenius por composición modular; umbrales de Newton recalibrados. Informe en [optimizacion/fase4.md](optimizacion/fase4.md) | Suite 1,25x sobre el nivel A (36,8x frente al original, 128 checksums iguales); `test_nivel_b` 31 bloques; distancia a FLINT 5,9x → 2,7x |
+
 ## Pendiente
+
+- Comprobar si la NTT en palabras sufre fallos de predicción de saltos (3x más lenta con entradas variadas que con una repetida) y, si es así, escribir sus restas condicionales sin saltos.
+- Investigar el `gcd` de grado 500 en Fp64, a 0,78x en la suite, que no se reproduce aislado.
+- DDF de Kaltofen–Shoup (paso pequeño y paso gigante) para reducir los MCD de la factorización.
+- Volver a medir la cobertura C++ (`build.py cov-cpp`) tras el nivel B.
 
 - Terminar y probar el asignador rápido de la rama `exp/toolchain-wip` (1,23-1,25x preliminar).
 - Recalibrar en otra máquina y en reposo los umbrales de despacho y de paralelismo.

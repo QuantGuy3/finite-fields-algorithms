@@ -606,7 +606,7 @@ def test_poly_potencia_negativa(K):
         K.poly([1, 1]) ** -1
 
 
-@pytest.mark.parametrize("algo", ["auto", "school", "schoolbook", "karatsuba", "fft"])
+@pytest.mark.parametrize("algo", ["auto", "school", "schoolbook", "karatsuba", "fft", "kronecker"])
 def test_poly_mul_algoritmos(algo, rng):
     F = al.Fp(P_NTT)  # admite FFT de cualquier tamaño de prueba
     a = poli_aleatorio(F, rng, 80, P_NTT)

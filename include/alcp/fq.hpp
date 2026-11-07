@@ -216,9 +216,49 @@ public:
         return result;
     }
     // Invertir 0 (también pow(0, k) con k < 0) lanza alcp::division_by_zero.
+    // Fase 4: algoritmo de Euclides extendido en F_p[t] sobre (g, a).  Como g
+    // es irreducible y a != 0 (mod g), mcd(g, a) es una constante c y la
+    // identidad de Bézout s·a + u·g = c da a^{-1} = s·c^{-1} (mod g).  Cuesta
+    // O(n^2) operaciones de F_p, frente a las ~2·log2(q) multiplicaciones de
+    // F_q (cada una O(n^2)) de Fermat.  El inverso es único: el resultado es
+    // el mismo que el de inv_fermat.
     Elem inv(const Elem& a) const {
         if (is_zero(a)) throw division_by_zero("0 is not invertible in F_q");
-        return pow(a, q_ - 2);  // Fermat: a^{q-2} = a^{-1}
+        // Restos r0 = g, r1 = a y coeficientes de Bézout de a: s0 = 0, s1 = 1
+        // (vectores de coeficientes en F_p, orden creciente, sin ceros finales).
+        std::vector<BaseElem> r0 = g_base_, r1 = recortado(a);
+        std::vector<BaseElem> s0, s1{base_.one()};
+        while (r1.size() > 1) {
+            // División escolar de r0 entre r1 en F_p[t], acumulando el cociente
+            // directamente en s0 -= cociente·s1.
+            const BaseElem inv_lead = base_.inv(r1.back());
+            const std::size_t nb = r1.size();
+            while (r0.size() >= nb) {
+                const BaseElem f = base_.mul(r0.back(), inv_lead);
+                const std::size_t pos = r0.size() - nb;
+                for (std::size_t j = 0; j < nb; ++j)
+                    r0[pos + j] = base_.sub(r0[pos + j], base_.mul(f, r1[j]));
+                // s0 -= f·t^pos·s1
+                if (s0.size() < pos + s1.size()) s0.resize(pos + s1.size(), base_.zero());
+                for (std::size_t j = 0; j < s1.size(); ++j)
+                    s0[pos + j] = base_.sub(s0[pos + j], base_.mul(f, s1[j]));
+                recortar(r0);
+            }
+            recortar(s0);
+            std::swap(r0, r1);  // (r0, r1) <- (r1, r0 mod r1)
+            std::swap(s0, s1);
+        }
+        // r1 es la constante c != 0; a^{-1} = s1·c^{-1}, con deg s1 < n.
+        const BaseElem ci = base_.inv(r1[0]);
+        Elem r(n_, base_.zero());
+        for (std::size_t i = 0; i < s1.size(); ++i) r[i] = base_.mul(s1[i], ci);
+        return r;
+    }
+    // Inverso por el pequeño teorema de Fermat, a^{q-2} (el algoritmo
+    // original; se conserva para los tests de equivalencia y las medidas).
+    Elem inv_fermat(const Elem& a) const {
+        if (is_zero(a)) throw division_by_zero("0 is not invertible in F_q");
+        return pow(a, q_ - 2);
     }
     Elem div(const Elem& a, const Elem& b) const { return mul(a, inv(b)); }
 
@@ -323,10 +363,21 @@ private:
     BigInt q_;
     std::vector<BigInt> g_;           // length n+1, monic (forma canónica, API pública)
     std::vector<BaseElem> neg_g_;     // -g_0, ..., -g_{n-1} en Base (para la reducción)
+    std::vector<BaseElem> g_base_;    // g_0, ..., g_n en Base (para el inverso por Euclides)
     mutable bool base_root_ready_ = false;
     mutable Elem base_root_{};
 
     std::size_t conv_len() const { return 2 * static_cast<std::size_t>(n_) - 1; }
+
+    // Quita los coeficientes nulos finales (forma recortada de un polinomio de F_p[t]).
+    void recortar(std::vector<BaseElem>& v) const {
+        while (!v.empty() && base_.is_zero(v.back())) v.pop_back();
+    }
+    std::vector<BaseElem> recortado(const Elem& a) const {
+        std::vector<BaseElem> v(a.begin(), a.end());
+        recortar(v);
+        return v;
+    }
 
     // Búfer de la convolución de mul(), compartido por todos los cuerpos
     // FqT<Base> del proceso y protegido por un indicador atómico (mul no es
@@ -387,6 +438,8 @@ private:
             throw std::invalid_argument("F_q: modulus is not irreducible of degree n");
         neg_g_.reserve(n_);
         for (unsigned long t = 0; t < n_; ++t) neg_g_.push_back(base_.neg(base_.from_int(g_[t])));
+        g_base_.reserve(n_ + 1);
+        for (unsigned long t = 0; t <= n_; ++t) g_base_.push_back(base_.from_int(g_[t]));
     }
 
     static std::pair<Base, std::vector<BigInt>> decompose(const BigInt& q) {

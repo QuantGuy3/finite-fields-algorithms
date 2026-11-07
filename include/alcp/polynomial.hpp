@@ -35,10 +35,12 @@
 #include "errors.hpp"
 #include "fft.hpp"
 #include "field.hpp"
+#include "kronecker.hpp"
 
 #include <algorithm>
 #include <cstddef>
 #include <future>
+#include <optional>
 #include <stdexcept>
 #include <string>
 #include <type_traits>
@@ -49,7 +51,13 @@ namespace alcp {
 
 // Which multiplication algorithm to use.  Auto picks by operand size; the
 // explicit modes exist so tests can cross-check them against each other.
-enum class MulAlgo { Auto, Schoolbook, Karatsuba, FFT };
+enum class MulAlgo { Auto, Schoolbook, Karatsuba, FFT, Kronecker };
+
+// Cómo calcular la sucesión de Frobenius H_i = x^{q^i} mod f en is_irreducible
+// y distinct_degree (fase 4, nivel B): Potencia = H_i = H_{i-1}^q (el original);
+// Composicion = H_i = H_{i-1}(H_1) por composición modular de Brent-Kung con
+// las potencias de H_1 precalculadas; Auto elige (ver Frobenius).
+enum class FrobeniusAlgo { Auto, Potencia, Composicion };
 
 template <class Field>
 class Poly {
@@ -204,7 +212,11 @@ public:
             // (Se construyen las tablas, que piden la raíz: así la caché deja
             // de estar vacía y los productos siguientes pueden usar la FFT.)
             if (old_fft && !use_fft) (void)fft::tables(*K_, fft::ceil_log2(L));
-            if (use_fft)
+            // Fase 4 (nivel B): Kronecker sobre Z cuando es más rápido.  Va después
+            // de la línea anterior, así que el consumo del generador no cambia.
+            if (prefer_kronecker(*K_, small, can_fft))
+                algo = MulAlgo::Kronecker;
+            else if (use_fft)
                 algo = MulAlgo::FFT;
             else if (small >= kKaratsubaCutoff)
                 algo = MulAlgo::Karatsuba;
@@ -218,9 +230,23 @@ public:
                 return Poly(*K_, fft::convolve(*K_, c_, o.c_));
             }
             case MulAlgo::Karatsuba: return mul_karatsuba(o);
+            case MulAlgo::Kronecker: return mul_kronecker(o);
             case MulAlgo::Schoolbook:
             default: return mul_school(o);
         }
+    }
+
+    // Producto por sustitución de Kronecker sobre Z con GMP (kronecker.hpp,
+    // fase 4, nivel B): los coeficientes se empaquetan en un entero, se
+    // multiplica con mpn_mul y se desempaqueta reduciendo módulo p (y módulo g
+    // en F_q).  No usa raíces de la unidad ni el generador aleatorio.
+    Poly mul_kronecker(const Poly& o) const {
+        require_same_field(o);
+        if (is_zero() || o.is_zero()) return zero(*K_);
+        if constexpr (ks::Extension<Field>)
+            return Poly(*K_, ks::mul_extension(*K_, c_.data(), c_.size(), o.c_.data(), o.c_.size()));
+        else
+            return Poly(*K_, ks::mul_primo(*K_, c_.data(), c_.size(), o.c_.data(), o.c_.size()));
     }
 
     Poly mul_school(const Poly& o) const {
@@ -274,7 +300,22 @@ public:
     // ---- Euclidean division ------------------------------------------------
     // Returns (q, r) with *this = q*o + r and (r == 0 or deg r < deg o).
     // Dividir por el polinomio cero lanza alcp::division_by_zero.
+    // Despacho (fase 4): con divisor y cociente grandes (prefer_newton) se usa
+    // la división por inversión de Newton (divmod_newton); si no, la división
+    // escolar de siempre (divmod_school).  El cociente y el resto son únicos,
+    // así que el resultado es idéntico por los dos caminos.
     std::pair<Poly, Poly> divmod(const Poly& o) const {
+        require_same_field(o);
+        if (o.is_zero()) throw division_by_zero("division by zero polynomial");
+        if (degree() < o.degree()) return {zero(*K_), *this};
+        if (prefer_newton(*K_, static_cast<std::size_t>(o.degree()),
+                          static_cast<std::size_t>(degree() - o.degree()) + 1))
+            return divmod_newton(o);
+        return divmod_school(o);
+    }
+
+    // División escolar (el algoritmo original, port de divmod de cuerpos_finitos.py).
+    std::pair<Poly, Poly> divmod_school(const Poly& o) const {
         require_same_field(o);
         if (o.is_zero()) throw division_by_zero("division by zero polynomial");
         if (degree() < o.degree()) return {zero(*K_), *this};
@@ -321,6 +362,60 @@ public:
             --dr;
         }
         return {Poly(*K_, std::move(q)), Poly(*K_, std::move(r))};
+    }
+
+    // División por inversión de Newton (fase 4), con las piezas de la
+    // Práctica 3 (algoritmos_rapidos.py): con m = deg f, n = deg g y
+    // d = m - n, los coeficientes invertidos cumplen
+    //     rev(q) = rev(f) · rev(g)^{-1}   (mod x^{d+1}),
+    // donde rev(g)^{-1} es el inverso de una serie de potencias, que se calcula
+    // con la iteración de Newton de fp_toep_inf_inv (inverse_series).  Después,
+    // r = f - g·q.  Coste O(M(d) + M(n, d)) en lugar de O(n·d).
+    std::pair<Poly, Poly> divmod_newton(const Poly& o) const {
+        require_same_field(o);
+        if (o.is_zero()) throw division_by_zero("division by zero polynomial");
+        if (degree() < o.degree()) return {zero(*K_), *this};
+        const std::size_t d1 = static_cast<std::size_t>(degree() - o.degree()) + 1;
+        return divmod_with_inverse(o, inverse_series(*K_, reversed_head(o, d1), d1));
+    }
+
+    // Inverso de la serie de potencias a módulo x^n (a[0] != 0): la iteración
+    // de Newton de fp_toep_inf_inv / fq_toep_inf_inv (Práctica 3) con la misma
+    // recursión, k = ceil(n/2) y x_n = x_k·(2 - a·x_k) mod x^n.  Solo se usan
+    // los n primeros coeficientes de a (los demás no influyen módulo x^n).
+    // Los productos internos no adelantan el cálculo de la raíz de la FFT
+    // (mul_no_rng), para conservar la secuencia del generador aleatorio.
+    static std::vector<Elem> inverse_series(const Field& K, const std::vector<Elem>& a, std::size_t n) {
+        if (n == 0) return {};
+        if (a.empty() || K.is_zero(a[0]))
+            throw division_by_zero("inverse_series: a[0] es cero (serie no invertible)");
+        if (n == 1) return {K.inv(a[0])};
+        const std::size_t k = (n + 1) / 2;
+        std::vector<Elem> xk = inverse_series(K, a, k);
+        Poly X(K, xk);
+        Poly A(K, std::vector<Elem>(a.begin(), a.begin() + static_cast<std::ptrdiff_t>(std::min(n, a.size()))));
+        Poly T(K, head(K, A.mul_no_rng(X), n));
+        Poly R = constant(K, K.add(K.one(), K.one())) - T;   // 2 - T
+        return head(K, R.mul_no_rng(X), n);
+    }
+
+    // División de *this entre o dado ginv = rev(o)^{-1} mod x^{d1}, con
+    // d1 = deg(*this) - deg(o) + 1 (deg(*this) >= deg(o)): sirve para dividir
+    // muchas veces entre el mismo o calculando el inverso una sola vez (lo
+    // que hace Reducer).  Precondición: ginv.size() == d1 exactamente.
+    std::pair<Poly, Poly> divmod_with_inverse(const Poly& o, const std::vector<Elem>& ginv) const {
+        const Field& K = *K_;
+        const std::size_t m1 = c_.size(), d1 = ginv.size();
+        std::vector<Elem> frev;
+        frev.reserve(d1);
+        for (std::size_t i = 0; i < d1; ++i) frev.push_back(c_[m1 - 1 - i]);
+        const Poly F(K, std::move(frev)), G(K, ginv);
+        const Poly FG = F.mul_no_rng(G);
+        std::vector<Elem> qrev = head(K, FG, d1);
+        std::reverse(qrev.begin(), qrev.end());
+        Poly q(K, std::move(qrev));
+        Poly r = *this - o.mul_no_rng(q);
+        return {std::move(q), std::move(r)};
     }
     Poly operator/(const Poly& o) const { return divmod(o).first; }
     Poly operator%(const Poly& o) const { return divmod(o).second; }
@@ -393,7 +488,29 @@ public:
     }
 
     // ---- gcd family --------------------------------------------------------
+    // Fase 4 (nivel B): con grados grandes, gcd y gcd_ext usan el algoritmo
+    // half-GCD (Thull-Yap), que obtiene la misma sucesión de cocientes que el
+    // algoritmo de Euclides clásico en O(M(n) log n) en lugar de O(n^2).  Como
+    // los cocientes son los mismos, el mcd y los coeficientes de Bézout son
+    // idénticos a los de gcd_classic / gcd_ext_classic (los originales).
     static Poly gcd(Poly a, Poly b) {
+        a.require_same_field(b);
+        const int umbral = static_cast<int>(umbral_hgcd(a.field(), false));
+        while (!b.is_zero()) {
+            if (a.degree() > b.degree() && a.degree() >= umbral) {
+                const Mat2 R = hgcd(a, b);
+                aplicar(R, a, b);
+                if (b.is_zero()) break;
+            }
+            Poly r = a % b;
+            a = std::move(b);
+            b = std::move(r);
+        }
+        return a.is_zero() ? a : a.monic();
+    }
+
+    // Algoritmo de Euclides clásico (el original).
+    static Poly gcd_classic(Poly a, Poly b) {
         a.require_same_field(b);
         while (!b.is_zero()) {
             Poly r = a % b;
@@ -405,6 +522,35 @@ public:
 
     struct ExtGcd { Poly g, x, y; };  // g = x*a + y*b, g monic
     static ExtGcd gcd_ext(const Poly& a, const Poly& b) {
+        a.require_same_field(b);
+        const Field& K = a.field();
+        const int umbral = static_cast<int>(umbral_hgcd(K, true));
+        if (std::max(a.degree(), b.degree()) < umbral) return gcd_ext_classic(a, b);
+        // El gcd_ext original multiplica q·x1 y q·y1 con la regla Auto, que puede
+        // calcular la raíz de la FFT (consumiendo el generador) a mitad del
+        // algoritmo.  Para que la secuencia aleatoria no cambie, el camino rápido
+        // solo se usa si esa raíz ya existe o si el cuerpo no admite una FFT de
+        // tamaño 64 (entonces el original nunca la pediría).
+        if (K.fft_cache_.empty() && fft::fft_exponent(K, 64) >= 0) return gcd_ext_classic(a, b);
+        // M acumula la matriz de cocientes: (r0, r1) = M·(a, b) en todo momento.
+        Poly r0 = a, r1 = b;
+        Mat2 M = identidad(K);
+        while (!r1.is_zero()) {
+            if (r0.degree() > r1.degree() && r0.degree() >= umbral) {
+                const Mat2 R = hgcd(r0, r1);
+                aplicar(R, r0, r1);
+                M = mul_mat(R, M);
+                if (r1.is_zero()) break;
+            }
+            paso(r0, r1, M);
+        }
+        if (r0.is_zero()) return {zero(K), zero(K), zero(K)};
+        Elem inv = K.inv(r0.lead());
+        return {r0.scalar_mul(inv), M.m00.scalar_mul(inv), M.m01.scalar_mul(inv)};
+    }
+
+    // Algoritmo de Euclides extendido clásico (el original).
+    static ExtGcd gcd_ext_classic(const Poly& a, const Poly& b) {
         a.require_same_field(b);
         const Field& K = a.field();
         Poly x0 = one(K), x1 = zero(K), y0 = zero(K), y1 = one(K), r0 = a, r1 = b;
@@ -428,16 +574,184 @@ public:
     }
 
     // a^k mod m.
+    // Fase 4: las reducciones módulo m de los productos (grado <= 2·deg m - 2)
+    // usan un Reducer, que precalcula UNA vez el inverso de rev(m) si conviene
+    // la división de Newton; si no, es el % de siempre.  Los productos y la
+    // cadena de cuadrados no cambian.
     static Poly pow_mod(Poly a, BigInt k, const Poly& m) {
+        a.require_same_field(m);
+        if (m.is_zero()) throw division_by_zero("division by zero polynomial");
+        return pow_mod(std::move(a), std::move(k), Reducer(m));
+    }
+
+    // Reducción repetida módulo un m fijo (ver pow_mod).  La primera vez que
+    // prefer_newton lo aconseja (con el inverso amortizado), calcula y guarda
+    // rev(m)^{-1} mod x^{deg m}; desde entonces reduce(a) divide con ese
+    // inverso (a de grado <= 2·deg m - 1, el caso de los productos de
+    // pow_mod).  El cálculo es perezoso porque la decisión depende de que el
+    // cuerpo ya tenga tablas FFT, que los productos de pow_mod construyen.
+    class Reducer {
+    public:
+        explicit Reducer(const Poly& m) : m_(m) {}
+        const Poly& modulus() const { return m_; }
+        Poly reduce(const Poly& a) const {
+            const int n = m_.degree();
+            if (a.degree() < n) return a;
+            const std::size_t nn = static_cast<std::size_t>(n);
+            const std::size_t d1 = static_cast<std::size_t>(a.degree() - n) + 1;
+            if (d1 <= nn && prefer_newton(m_.field(), nn, d1, true)) {
+                if (inv_.empty()) inv_ = inverse_series(m_.field(), reversed_head(m_, nn), nn);
+                return a.divmod_with_inverse(
+                            m_, std::vector<Elem>(inv_.begin(), inv_.begin() + static_cast<std::ptrdiff_t>(d1)))
+                    .second;
+            }
+            return a.divmod_school(m_).second;
+        }
+    private:
+        Poly m_;
+        mutable std::vector<Elem> inv_;  // rev(m)^{-1} mod x^{deg m}, o vacío si aún no hace falta
+    };
+
+    // Composición modular de Brent-Kung con h fijo: precalcula h^0..h^{k-1}
+    // mod f (pasos pequeños) y G = h^k mod f (paso gigante).  Para g de grado
+    // < deg f, g(h) mod f = Σ_j B_j·G^j con B_j = Σ_{i<k} g_{jk+i}·h^i, que se
+    // evalúa por Horner en G.  Cada B_j es una combinación lineal de las
+    // potencias precalculadas (acumulación perezosa, ~k·n operaciones de
+    // cuerpo); los pasos gigantes cuestan ceil(deg g / k) productos modulares.
+    class Composer {
+    public:
+        Composer(const Poly& h, const Reducer& red, std::size_t k) : red_(red) {
+            const Field& K = h.field();
+            const std::size_t n = static_cast<std::size_t>(red_.modulus().degree());
+            k_ = std::max<std::size_t>(1, std::min(k, n));
+            Poly hr = red_.reduce(h.degree() >= 2 * static_cast<int>(n) - 1 ? h % red_.modulus() : h);
+            pot_.reserve(k_);
+            pot_.push_back(red_.reduce(one(K)));
+            for (std::size_t i = 1; i < k_; ++i) pot_.push_back(red_.reduce(pot_.back().mul_no_rng(hr)));
+            gigante_ = red_.reduce(pot_.back().mul_no_rng(hr));
+        }
+        std::size_t k() const { return k_; }
+        // g(h) mod f
+        Poly compose(const Poly& g) const {
+            const Field& K = red_.modulus().field();
+            if (g.is_zero()) return zero(K);
+            const std::size_t L = g.c_.size();
+            const std::size_t bloques = (L + k_ - 1) / k_;
+            Poly acc = zero(K);
+            for (std::size_t j = bloques; j-- > 0;) {
+                Poly B = combina(g, j * k_, std::min(k_, L - j * k_));
+                acc = (j + 1 == bloques) ? std::move(B) : red_.reduce(acc.mul_no_rng(gigante_)) + B;
+            }
+            return acc;
+        }
+
+    private:
+        Reducer red_;
+        std::size_t k_ = 1;
+        std::vector<Poly> pot_;  // h^0..h^{k-1} mod f
+        Poly gigante_{red_.modulus().field()};  // h^k mod f
+
+        // Σ_{i<cnt} g_{ini+i}·h^i
+        Poly combina(const Poly& g, std::size_t ini, std::size_t cnt) const {
+            const Field& K = red_.modulus().field();
+            std::size_t n = 0;
+            for (std::size_t i = 0; i < cnt; ++i) n = std::max(n, pot_[i].c_.size());
+            if constexpr (LazyAccumulation<Field>) {
+                std::vector<typename Field::Acc> s(n);
+                for (auto& a : s) K.acc_clear(a);
+                for (std::size_t i = 0; i < cnt; ++i) {
+                    const Elem& c = g.c_[ini + i];
+                    if (K.is_zero(c)) continue;
+                    const auto& P = pot_[i].c_;
+                    for (std::size_t t = 0; t < P.size(); ++t) K.acc_fma(s[t], c, P[t]);
+                }
+                std::vector<Elem> r;
+                r.reserve(n);
+                for (auto& a : s) r.push_back(K.acc_reduce(a));
+                return Poly(K, std::move(r));
+            } else {
+                std::vector<Elem> r(n, K.zero());
+                for (std::size_t i = 0; i < cnt; ++i) {
+                    const Elem& c = g.c_[ini + i];
+                    if (K.is_zero(c)) continue;
+                    const auto& P = pot_[i].c_;
+                    for (std::size_t t = 0; t < P.size(); ++t) r[t] = K.add(r[t], K.mul(c, P[t]));
+                }
+                return Poly(K, std::move(r));
+            }
+        }
+    };
+
+    // Sucesión de Frobenius H_i = x^{q^i} mod f, paso a paso (is_irreducible,
+    // distinct_degree).  Empieza con H_i = H_{i-1}^q (pow_mod, el original) y
+    // pasa a la composición modular (Composer con h = H_1) cuando lo gastado en
+    // potencias iguala el coste estimado de precalcular las potencias de H_1
+    // (regla de alquilar o comprar: nunca más del doble de lo óptimo, y nada si
+    // el bucle termina pronto, como con casi todos los reducibles).  Las
+    // potencias guardadas se limitan a kFrobPresupuesto coeficientes; con menos
+    // potencias hacen falta pasos gigantes, y no se compone si serían más que
+    // los productos de un pow_mod.
+    class Frobenius {
+    public:
+        Frobenius(const Poly& f, FrobeniusAlgo algo = FrobeniusAlgo::Auto)
+            : red_(f), q_(f.field().cardinality()), algo_(algo) {
+            productos_q_ = mpz_sizeinbase(q_.get_mpz_t(), 2) + mpz_popcount(q_.get_mpz_t()) - 1;
+            const std::size_t n = static_cast<std::size_t>(std::max(1, f.degree()));
+            k_ = std::max<std::size_t>(1, std::min(n, kFrobPresupuesto / n));
+        }
+        const Reducer& reducer() const { return red_; }
+        // Siguiente término: de H = H_{i-1} a H_i.
+        Poly siguiente(const Poly& H) {
+            if (comp_) return comp_->compose(H);
+            Poly r = pow_mod(H, q_, red_);
+            ++pasos_;
+            if (!h1_) h1_ = r;  // el primer término es H_1 = x^q mod f (se empieza en H_0 = x)
+            if (h1_ && quiere_componer()) comp_.emplace(*h1_, red_, k_);
+            return r;
+        }
+        // f cambia por un divisor g (distinct_degree): H_1 mod g sigue siendo x^q mod g.
+        void cambiar_modulo(const Poly& g) {
+            red_ = Reducer(g);
+            const std::size_t n = static_cast<std::size_t>(std::max(1, g.degree()));
+            k_ = std::max<std::size_t>(1, std::min(n, kFrobPresupuesto / n));
+            if (h1_) h1_ = *h1_ % g;
+            comp_.reset();
+            pasos_ = 0;
+        }
+
+    private:
+        Reducer red_;
+        BigInt q_;
+        FrobeniusAlgo algo_;
+        std::size_t productos_q_ = 1, k_ = 1, pasos_ = 0;
+        std::optional<Poly> h1_;
+        std::optional<Composer> comp_;
+
+        bool quiere_componer() const {
+            if (algo_ == FrobeniusAlgo::Potencia) return false;
+            if (algo_ == FrobeniusAlgo::Composicion) return true;
+            if (productos_q_ < kFrobMinProductos) return false;
+            // Coste de precalcular: k productos modulares (+ el paso gigante).
+            const std::size_t n = static_cast<std::size_t>(std::max(1, red_.modulus().degree()));
+            const std::size_t gigantes = (n + k_ - 1) / k_;
+            if (gigantes > productos_q_) return false;  // cada paso no ahorraría productos
+            return pasos_ * productos_q_ >= k_ + 1;
+        }
+    };
+
+    // pow_mod con un Reducer ya construido (is_irreducible y distinct_degree
+    // reducen muchas veces módulo el mismo polinomio).
+    static Poly pow_mod(Poly a, BigInt k, const Reducer& red) {
+        const Poly& m = red.modulus();
         a.require_same_field(m);
         const Field& K = a.field();
         if (k < 0) { a = inv_mod(a, m); k = -k; }
-        Poly result = one(K) % m;
+        Poly result = red.reduce(one(K));
         a = a % m;
         while (k > 0) {
-            if (mpz_odd_p(k.get_mpz_t())) result = (result * a) % m;
+            if (mpz_odd_p(k.get_mpz_t())) result = red.reduce(result * a);
             k >>= 1;
-            if (k > 0) a = (a * a) % m;
+            if (k > 0) a = red.reduce(a * a);
         }
         return result;
     }
@@ -446,23 +760,27 @@ public:
     // f de grado n es irreducible sobre F_q  <=>  no tiene ningún factor
     // irreducible de grado i <= n/2  <=>  gcd(f, x^{q^i} - x) = 1 para todo
     // i = 1..floor(n/2) (x^{q^i} - x es el producto de todos los irreducibles
-    // mónicos de grado divisor de i).  Tras el bucle se comprueba además que
-    // x^{q^n} == x (mod f), condición necesaria que con lo anterior es
-    // redundante pero inofensiva.  (No es el test de Rabin, que usa los
+    // mónicos de grado divisor de i).  (No es el test de Rabin, que usa los
     // divisores primos de n.)
-    bool is_irreducible() const {
+    // Fase 4: el original (y la práctica de Python) comprobaba además, tras el
+    // bucle, que x^{q^n} == x (mod f) calculando esa potencia desde cero.  Con
+    // el bucle completo esa condición es redundante (lo anterior ya prueba la
+    // irreducibilidad) y costaba unos dos tercios del tiempo con entradas
+    // irreducibles: se suprime.  Las reducciones usan un Reducer (pow_mod).
+    // Fase 4 (nivel B): la sucesión H_i se calcula con Frobenius (pow_mod o
+    // composición modular, según convenga); los H_i son los mismos.
+    bool is_irreducible(FrobeniusAlgo algo = FrobeniusAlgo::Auto) const {
         const int n = degree();
         if (n <= 0) return false;
-        const BigInt q = K_->cardinality();
         Poly f = *this;
         Poly x = variable(*K_);
+        Frobenius frob(f, algo);
         Poly H = x % f;                       // H = x^{q^0}
         for (int i = 1; i <= n / 2; ++i) {
-            H = pow_mod(H, q, f);             // H = x^{q^i} (mod f)
+            H = frob.siguiente(H);            // H = x^{q^i} (mod f)
             if (gcd(f, H - x).degree() != 0) return false;
         }
-        Poly Hn = pow_mod(x, ipow(q, static_cast<unsigned long>(n)), f);
-        return (Hn - x) % f == zero(*K_);
+        return true;
     }
 
     // ---- factorization (Cantor-Zassenhaus) ---------------------------------
@@ -524,19 +842,20 @@ public:
         if (degree() < 1)
             throw std::invalid_argument("distinct_degree: se requiere un polinomio de grado >= 1");
         const Field& K = *K_;
-        const BigInt q = K.cardinality();
         std::vector<std::pair<int, Poly>> out;
         Poly g = monic();
         Poly x = variable(K);
         Poly H = x % g;  // x^{q^0}
+        Frobenius frob(g);  // fase 4: pow_mod o composición modular (ver Frobenius)
         int d = 1;
         while (g.degree() >= 2 * d) {
-            H = pow_mod(H, q, g);            // H = x^{q^d} (mod g)
+            H = frob.siguiente(H);           // H = x^{q^d} (mod g)
             Poly hd = gcd(H - x, g);
             if (hd.degree() > 0) {
                 out.emplace_back(d, hd.monic());
                 g = g / hd;
                 H = H % g;
+                frob.cambiar_modulo(g);
             }
             ++d;
         }
@@ -715,6 +1034,212 @@ private:
             case fft::Backend::Generic:
             default: return small >= 64 || (small >= 32 && large <= 2 * small);
         }
+    }
+
+    // ---- Frobenius (fase 4, nivel B) ----------------------------------------
+    // Productos modulares por paso de pow_mod a partir de los cuales Auto
+    // considera la composición modular, y número máximo de coeficientes
+    // guardados en las potencias de H_1 (k·n); calibrado con
+    // bench/calibra_frobenius.cpp.
+    // La composición ganó en todos los cuerpos medidos con entradas irreducibles
+    // (de 1,2x con q = 2 a 19x con q = 2^61 - 1), así que el mínimo es 2.
+    static constexpr std::size_t kFrobMinProductos = 2;
+    static constexpr std::size_t kFrobPresupuesto = std::is_arithmetic_v<Elem> ? (std::size_t{1} << 22)
+                                                                             : (std::size_t{1} << 18);
+
+    // ---- Half-GCD (fase 4, nivel B) ------------------------------------------
+    // Por debajo de este grado, la recursión de hgcd usa los pasos clásicos.
+    static constexpr std::size_t kHgcdMin = 128;
+    // Grado a partir del cual gcd (ext = false) o gcd_ext (ext = true) usan
+    // half-GCD.  Medido con bench/calibra_hgcd.cpp (Zen 3, entradas variadas):
+    // gcd_ext gana antes porque el clásico también arrastra los cofactores.
+    //   * Fp64: depende del tamaño de p (cuánto gana Kronecker en los productos):
+    //     p < 2^16: 384 / 128;  p < 2^32: 1024 / 384;  si no: 2048 / 512.
+    //   * Fp con GMP: 384 / 128.   * F_q: 384 / 192.
+    static std::size_t umbral_hgcd(const Field& K, bool ext) {
+        if constexpr (fft::NativeWordField<Field>) {
+            const std::size_t bits = mpz_sizeinbase(K.characteristic().get_mpz_t(), 2);
+            if (bits <= 16) return ext ? 128 : 384;
+            if (bits <= 32) return ext ? 384 : 1024;
+            return ext ? 512 : 2048;
+        } else if constexpr (std::is_same_v<Elem, BigInt>) {
+            (void)K;
+            return ext ? 128 : 384;
+        } else {
+            (void)K;
+            return ext ? 192 : 384;
+        }
+    }
+
+    // Matriz 2x2 de polinomios [[m00, m01], [m10, m11]].
+    struct Mat2 { Poly m00, m01, m10, m11; };
+    static Mat2 identidad(const Field& K) { return {one(K), zero(K), zero(K), one(K)}; }
+    // A·B.  Los productos no calculan la raíz de la FFT (mul_no_rng): el gcd
+    // original no multiplicaba y no debe consumir el generador aleatorio.
+    static Mat2 mul_mat(const Mat2& A, const Mat2& B) {
+        return {A.m00.mul_no_rng(B.m00) + A.m01.mul_no_rng(B.m10), A.m00.mul_no_rng(B.m01) + A.m01.mul_no_rng(B.m11),
+                A.m10.mul_no_rng(B.m00) + A.m11.mul_no_rng(B.m10), A.m10.mul_no_rng(B.m01) + A.m11.mul_no_rng(B.m11)};
+    }
+    // (a, b) <- M·(a, b)
+    static void aplicar(const Mat2& M, Poly& a, Poly& b) {
+        Poly na = M.m00.mul_no_rng(a) + M.m01.mul_no_rng(b);
+        Poly nb = M.m10.mul_no_rng(a) + M.m11.mul_no_rng(b);
+        a = std::move(na);
+        b = std::move(nb);
+    }
+    // Paso de Euclides (a, b) <- (b, a mod b) acumulado en M: M <- [[0, 1], [1, -q]]·M,
+    // es decir, M' = [[M10, M11], [M00 - q·M10, M01 - q·M11]] (2 productos por q,
+    // que suele ser de grado 1, en lugar de un producto de matrices completo).
+    static void paso(Poly& a, Poly& b, Mat2& M) {
+        auto [q, r] = a.divmod(b);
+        a = std::move(b);
+        b = std::move(r);
+        Poly n10 = M.m00 - q.mul_no_rng(M.m10);
+        Poly n11 = M.m01 - q.mul_no_rng(M.m11);
+        M.m00 = std::move(M.m10);
+        M.m01 = std::move(M.m11);
+        M.m10 = std::move(n10);
+        M.m11 = std::move(n11);
+    }
+    // p div x^k (los coeficientes de grado >= k, desplazados).
+    static Poly div_xk(const Poly& p, std::size_t k) {
+        if (p.c_.size() <= k) return zero(p.field());
+        return Poly(p.field(), std::vector<Elem>(p.c_.begin() + static_cast<std::ptrdiff_t>(k), p.c_.end()));
+    }
+
+    // HGCD (Thull-Yap): con deg a = n > deg b, devuelve la matriz M de los
+    // cocientes de Euclides tales que (r_j, r_{j+1}) = M·(a, b) cumple
+    // deg r_j >= m > deg r_{j+1}, con m = ceil(n/2).  Los cocientes de esa
+    // parte de la sucesión dependen solo de los coeficientes altos, por eso se
+    // obtienen recursivamente de a div x^m y b div x^m.
+    static Mat2 hgcd(const Poly& a, const Poly& b) {
+        const Field& K = a.field();
+        const int n = a.degree();
+        const int m = (n + 1) / 2;
+        if (b.is_zero() || b.degree() < m) return identidad(K);
+        if (n < static_cast<int>(kHgcdMin)) {
+            // Caso base: pasos clásicos hasta bajar de grado m.
+            Mat2 M = identidad(K);
+            Poly A = a, B = b;
+            while (!B.is_zero() && B.degree() >= m) paso(A, B, M);
+            return M;
+        }
+        const Mat2 R = hgcd(div_xk(a, static_cast<std::size_t>(m)), div_xk(b, static_cast<std::size_t>(m)));
+        Poly A = a, B = b;
+        aplicar(R, A, B);
+        if (B.is_zero() || B.degree() < m) return R;
+        Mat2 QR = R;
+        paso(A, B, QR);
+        if (B.is_zero() || B.degree() < m) return QR;
+        const int k = 2 * m - A.degree();
+        if (k < 0) {
+            // No debería ocurrir (Thull-Yap); por seguridad, pasos clásicos.
+            while (!B.is_zero() && B.degree() >= m) paso(A, B, QR);
+            return QR;
+        }
+        const Mat2 S = hgcd(div_xk(A, static_cast<std::size_t>(k)), div_xk(B, static_cast<std::size_t>(k)));
+        return mul_mat(S, QR);
+    }
+
+    // ---- Kronecker (fase 4, nivel B) ----------------------------------------
+    // ¿Conviene el producto de Kronecker sobre Z (kronecker.hpp) para un
+    // operando menor de `small` coeficientes?  Calibrado con
+    // bench/calibra_kronecker.cpp (entradas variadas, con y sin hilos, Zen 3):
+    //   * F_q (FqT) y F_p con GMP: gana desde 16-32 coeficientes (1,5x a 25x;
+    //     a Karatsuba sobre elementos caros y a la NTT multi-limb).
+    //   * Fp64 sin NTT: desde 32 si p < 2^32 (hasta 20x con p = 101); con p
+    //     mayor los huecos son de ~2·62 bits y gana desde 256.
+    //   * Fp64 con NTT: solo entre 128 y 1024 (1,5x a 2,5x); por debajo gana
+    //     el escolar y por encima la NTT en palabras (con hilos) empata o gana.
+    static bool prefer_kronecker(const Field& K, std::size_t small, bool can_fft) {
+        if (small < 32) return false;
+        if constexpr (ks::Extension<Field>) {
+            (void)K; (void)can_fft;
+            return true;
+        } else if constexpr (std::is_same_v<Elem, BigInt>) {
+            (void)K; (void)can_fft;
+            return true;
+        } else if constexpr (fft::NativeWordField<Field>) {
+            if (can_fft) return small >= 128 && small <= 1024;
+            return mpz_sizeinbase(K.characteristic().get_mpz_t(), 2) <= 32 || small >= 256;
+        } else {
+            (void)K; (void)can_fft;
+            return false;
+        }
+    }
+
+    // ---- División de Newton (fase 4) ----------------------------------------
+    // ¿Conviene la división de Newton para un divisor de grado n y un cociente
+    // de d1 coeficientes?  La escolar (con acumulación perezosa) cuesta ~n·d1
+    // productos de elementos; Newton, unos pocos productos de polinomios de
+    // tamaño max(n, d1): 2 con el inverso ya calculado (`amortizado`, Reducer)
+    // y unos 6 si cada división lo calcula (divmod).  Solo compensa con
+    // productos subcuadráticos rápidos, y el punto de corte depende de si hay
+    // FFT y de lo que cueste cada producto de elementos.  Umbrales medidos con
+    // bench/calibra_newton.cpp en Zen 3 CON ENTRADAS VARIADAS (con una entrada
+    // repetida el predictor de saltos acelera la NTT hasta 3 veces y Newton
+    // parece mejor de lo que es; ver docs/optimizacion/fase4.md).
+    // Nivel B: los productos usan Kronecker (prefer_kronecker), mucho más rápido
+    // con p pequeño, y los umbrales bajan (bench/results/fase4/calibra_newton.txt;
+    // la medida del nivel A, sin Kronecker, está en calibra_newton_nivel_a.txt):
+    //   * Fp64: p < 2^16: 64 amortizado / 192 aislada; p < 2^32: 192 / 768;
+    //     p mayor (huecos de Kronecker de ~2·62 bits): 768 / 1536.
+    //   * Fp (GMP): 96 / 256.
+    //   * F_q de grado e: con p < 2^32, max(32, 192/e) / max(64, 1024/e)
+    //     (F_9: 96 / 512; F_256: 32 / 128; F_(3^30): 32 / 64); con p mayor
+    //     (F_((2^61-1)^2)): 384 / 1024.
+    static constexpr std::size_t kNunca = static_cast<std::size_t>(-1);
+    static bool prefer_newton(const Field& K, std::size_t n, std::size_t d1, bool amortizado = false) {
+        const std::size_t small = std::min(n, d1);
+        if (small < 32) return false;  // por debajo, la escolar gana en todos los cuerpos medidos
+        const std::size_t bits = mpz_sizeinbase(K.characteristic().get_mpz_t(), 2);
+        std::size_t umbral = kNunca;
+        if constexpr (fft::NativeWordField<Field>) {
+            if (bits <= 16) umbral = amortizado ? 64 : 192;
+            else if (bits <= 32) umbral = amortizado ? 192 : 768;
+            else umbral = amortizado ? 768 : 1536;
+        } else if constexpr (std::is_same_v<Elem, BigInt>) {
+            umbral = amortizado ? 96 : 256;
+        } else if constexpr (requires { K.extension_degree(); }) {
+            const std::size_t e = std::max<std::size_t>(1, K.extension_degree());
+            if (bits <= 32) umbral = amortizado ? std::max<std::size_t>(32, 192 / e) : std::max<std::size_t>(64, 1024 / e);
+            else umbral = amortizado ? 384 : 1024;
+        }
+        return small >= umbral;
+    }
+
+    // Los d1 primeros coeficientes de rev(g) (de mayor a menor grado de g),
+    // rellenando con ceros si d1 > deg g + 1.
+    static std::vector<Elem> reversed_head(const Poly& g, std::size_t d1) {
+        const Field& K = g.field();
+        std::vector<Elem> r;
+        r.reserve(d1);
+        const std::size_t n1 = g.c_.size();
+        for (std::size_t j = 0; j < d1; ++j) r.push_back(j < n1 ? g.c_[n1 - 1 - j] : K.zero());
+        return r;
+    }
+
+    // Los n primeros coeficientes de P (rellenando con ceros).
+    static std::vector<Elem> head(const Field& K, const Poly& P, std::size_t n) {
+        std::vector<Elem> r(P.c_.begin(), P.c_.begin() + static_cast<std::ptrdiff_t>(std::min(n, P.c_.size())));
+        r.resize(n, K.zero());
+        return r;
+    }
+
+    // Producto con la regla Auto pero SIN adelantar el cálculo de la raíz de la
+    // FFT: solo usa la FFT si las tablas del cuerpo ya existen.  Los productos
+    // de la división de Newton no estaban en el original y no deben consumir el
+    // generador aleatorio en otro momento (ver mul).
+    Poly mul_no_rng(const Poly& o) const {
+        if (is_zero() || o.is_zero()) return zero(*K_);
+        const std::size_t na = c_.size(), nb = o.c_.size();
+        const std::size_t L = na + nb - 1, small = std::min(na, nb);
+        const bool can_fft = fft::fft_exponent(*K_, L) >= 0;
+        if (prefer_kronecker(*K_, small, can_fft)) return mul_kronecker(o);
+        const bool use_fft = !K_->fft_cache_.empty() && can_fft && prefer_fft(*K_, small, std::max(na, nb), L);
+        if (use_fft) return Poly(*K_, fft::convolve(*K_, c_, o.c_));
+        if (small >= kKaratsubaCutoff) return mul_karatsuba(o);
+        return mul_school(o);
     }
 
     // ---- Karatsuba sobre vistas -------------------------------------------
