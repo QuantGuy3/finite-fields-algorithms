@@ -406,8 +406,9 @@ inline alcp::MulAlgo algoritmo(const std::string& s) {
     if (s == "school" || s == "schoolbook") return alcp::MulAlgo::Schoolbook;
     if (s == "karatsuba") return alcp::MulAlgo::Karatsuba;
     if (s == "fft") return alcp::MulAlgo::FFT;
+    if (s == "kronecker") return alcp::MulAlgo::Kronecker;
     throw std::invalid_argument("algoritmo de multiplicación desconocido: '" + s +
-                                "' (válidos: 'auto', 'school', 'karatsuba', 'fft')");
+                                "' (válidos: 'auto', 'school', 'karatsuba', 'fft', 'kronecker')");
 }
 
 // ---------------------------------------------------------------------------
@@ -527,8 +528,9 @@ constexpr const char* p_divmod =
     "(cociente, resto) con a = q·b + r y grado(r) < grado(b). ZeroDivisionError si b = 0.";
 constexpr const char* p_pow = "Potencia a^k (k >= 0; ValueError si k < 0).";
 constexpr const char* p_mul =
-    "Producto con el algoritmo indicado: 'auto' (por defecto), 'school' (o 'schoolbook'), 'karatsuba' "
-    "o 'fft' (si el cuerpo no admite ese tamaño de FFT, Karatsuba). Otro nombre: ValueError.";
+    "Producto con el algoritmo indicado: 'auto' (por defecto), 'school' (o 'schoolbook'), 'karatsuba', "
+    "'fft' (si el cuerpo no admite ese tamaño de FFT, Karatsuba) o 'kronecker' (sustitución de Kronecker "
+    "sobre Z con GMP). Otro nombre: ValueError.";
 constexpr const char* p_scalar_mul = "Producto por el escalar c ({E}).";
 constexpr const char* p_derivative = "Derivada formal.";
 constexpr const char* p_monic = "Polinomio mónico asociado (el cero se devuelve tal cual).";

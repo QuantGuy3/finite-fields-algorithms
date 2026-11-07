@@ -569,14 +569,15 @@ class Polynomial(_pretty.Imprimible):
                              f"{S._envolver(b):ascii}") from None
 
     def mul(self, otro, algorithm: str = "auto") -> "Polynomial":
-        """Producto con el algoritmo indicado: "auto", "school", "karatsuba" o "fft".
+        """Producto con el algoritmo indicado: "auto", "school", "karatsuba", "fft" o "kronecker".
 
         "fft" recurre a Karatsuba si el cuerpo no tiene raíces de la unidad del
-        tamaño necesario.  Todos dan el mismo resultado.
+        tamaño necesario; "kronecker" empaqueta los coeficientes en un entero y
+        multiplica con GMP.  Todos dan el mismo resultado.
         """
         if not isinstance(algorithm, str):
             raise TypeError("algorithm debe ser una cadena: 'auto', 'school', "
-                            "'karatsuba' o 'fft'")
+                            "'karatsuba', 'fft' o 'kronecker'")
         S, a, b = self._otro(otro)
         return S._envolver(a.mul(b, algorithm))
 

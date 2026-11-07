@@ -311,7 +311,7 @@ def test_multiplicacion_por_algoritmos(q):
     R = GF(q)["x"]
     f, g = R.random(70), R.random(65)
     h = f * g
-    for algo in ("auto", "school", "schoolbook", "karatsuba", "fft"):
+    for algo in ("auto", "school", "schoolbook", "karatsuba", "fft", "kronecker"):
         assert f.mul(g, algo) == h
     assert f.mul("x") == f * R.x
     with pytest.raises(ValueError, match="algoritmo de multiplicación desconocido: 'rapido'"):

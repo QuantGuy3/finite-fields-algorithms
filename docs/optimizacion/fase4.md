@@ -145,3 +145,135 @@ como el MCD, varían hasta un ±20 %. Solo las tres primeras filas son mejoras c
   `pow_mod`, la factorización y Newton, sin cambiar ningún algoritmo.
 - Lo que queda frente a FLINT es sobre todo algorítmico: half-GCD, Kronecker en F_q,
   composición modular para Frobenius y NTT con varios primos. Es el nivel B.
+
+---
+
+# Fase 4, nivel B: algoritmos nuevos
+
+Rama `fase4-nivel-b`, construida sobre el nivel A. Añade tres algoritmos que no estaban en
+la librería. Cada uno da **exactamente el mismo resultado** que el original, que se conserva:
+
+| Algoritmo | Sustituye a | Original disponible como |
+|---|---|---|
+| **Producto por sustitución de Kronecker sobre Z** (`include/alcp/kronecker.hpp`, `MulAlgo::Kronecker`, `"kronecker"` en Python): los coeficientes se empaquetan en huecos de b bits de un entero, se multiplica con `mpn_mul` de GMP (Toom-Cook y Schönhage–Strassen) y se desempaqueta reduciendo módulo p. En F_q es Kronecker en dos niveles: cada elemento ocupa un bloque de 2e − 1 huecos y cada bloque se reduce módulo g | Escolar, Karatsuba o NTT, según el cuerpo | `MulAlgo::Schoolbook`, `Karatsuba`, `FFT` |
+| **Half-GCD** (Thull–Yap) en `gcd` y `gcd_ext`: la recursión sobre la mitad alta de los coeficientes devuelve la matriz 2×2 de cocientes. Los cocientes son los del Euclides clásico, así que el mcd **y los coeficientes de Bézout** son idénticos | Euclides clásico, O(n²) | `gcd_classic`, `gcd_ext_classic` |
+| **Frobenius por composición modular** (Brent–Kung): H_i = H_{i−1}(H_1) mod f con las potencias de H_1 precalculadas, en `is_irreducible` y `distinct_degree` | H_i = H_{i−1}^q con `pow_mod` | `FrobeniusAlgo::Potencia` |
+
+Se descartó la **NTT con varios primos y CRT** que se había propuesto. Kronecker con GMP
+cubre el mismo objetivo, productos rápidos para cualquier p, también p ≥ 2^62 y
+extensiones, con un único mecanismo y sin raíces de la unidad.
+
+**Generador aleatorio.** Ni Kronecker ni las matrices de half-GCD ni la composición
+calculan la raíz de la FFT. Cuando el despacho elige Kronecker, la raíz se sigue pidiendo
+exactamente cuando la habría pedido el original. El camino rápido de `gcd_ext` solo se usa
+si esa raíz ya existe, porque el `gcd_ext` original la podía pedir a mitad del algoritmo.
+`test_fp64` y `test_nivel_b` lo comprueban.
+
+## Calibración (entradas variadas, Zen 3)
+
+Los ficheros completos están en `bench/results/fase4/`:
+
+- **Kronecker** (`calibra_kronecker_hilos.txt` y `calibra_kronecker_1hilo.txt`, frente al
+  despacho anterior). En F_q y en F_p con GMP gana desde 32 coeficientes, de 1,5x a 25x y
+  hasta 59x en F_9 con 4096 coeficientes. En Fp64 sin NTT gana desde 32 si p < 2^32 (hasta
+  20x con p = 101) y desde 256 si p es mayor. En Fp64 con NTT solo gana entre 128 y 1024
+  coeficientes (1,5x a 2,5x); fuera de ese rango, la NTT en palabras con hilos empata o gana.
+  **Nota:** en esas tablas, las filas de p = 2^61 − 1 se midieron antes de corregir un fallo
+  que truncaba p, porque `mpz_get_ui` es de 32 bits en Windows. El trabajo medido es el
+  mismo, pero esos productos daban un resultado erróneo, que los tests detectaron.
+- **Half-GCD** (`calibra_hgcd.txt`). `gcd_ext` gana desde grado 128-512 según el cuerpo, con
+  hasta 8,7x a grado 4096. `gcd` gana desde 384 (F_p con GMP, F_q y p < 2^16), desde 1024
+  (Fp64 con p < 2^32) y desde 2048 (p mayor). Acumular cada paso clásico con 2 productos en
+  lugar de un producto de matrices completo adelantó estos puntos de corte.
+- **Frobenius** (`calibra_frobenius.txt`, con entradas irreducibles). La composición gana
+  siempre, de 1,2x con q = 2 a 18x con q = 2^127 − 1. `Auto` aplica la regla de alquilar o
+  comprar: cambia a composición cuando lo gastado en potencias iguala el coste de
+  precalcular, de modo que los reducibles, que salen pronto del bucle, no pagan nada.
+- **Newton, otra vez** (`calibra_newton.txt`; la del nivel A está en
+  `calibra_newton_nivel_a.txt`). Con productos de Kronecker los umbrales bajan mucho. Con
+  el inverso amortizado: F_101 desde 64, F_(2^127−1) desde 96, F_(3^30) desde 32.
+
+## Resultados
+
+### Suite C++ (128 escenarios, 4 rondas intercaladas, enchufado)
+
+| | Media geométrica |
+|---|---:|
+| Nivel B frente al nivel A | **1,25x** |
+| Nivel A frente al original | 29,4x |
+| Nivel B frente al original | **36,8x** |
+
+Los 128 checksums son iguales en las tres versiones (`bench/results/fase4b/`). Por
+operación, frente al nivel A:
+
+| Operación | Speedup |
+|---|---:|
+| `mul_auto` | 3,73x |
+| `is_irreducible` | 3,41x |
+| `toeplitz_lower_inverse` | 2,45x |
+| `divmod` | 1,87x |
+| `pow_mod` | 1,59x |
+| `gcd_ext` | 1,31x |
+| `factor` | 1,04x |
+| `gcd` | 0,93x |
+
+Por cuerpo: F_(2^127−1) 1,54x, F_101 1,49x, F_7 1,47x, `fast` 1,29x, F_((2^61−1)^2) 1,23x.
+
+**Anomalía sin resolver.** En la suite, el `gcd` de grado 500 en Fp64 sale a 0,78x en
+F_998244353 y a 0,80x en F_(2^61−1), de forma constante en las 4 rondas. A ese grado
+half-GCD no se activa y se ejecuta el mismo Euclides clásico. Aislado, con las mismas
+entradas (factor común de grado n/8) y las cabeceras de los dos niveles, tarda lo mismo:
+1211 µs con el nivel A y 1200 µs con el B. Puede ser un efecto del binario completo de la
+suite, como la disposición del código, pero no está confirmado. También bajan
+`fq.build.q3e30` (0,86x) y `fast.ntt.toeplitz_lower_vec` (0,86x), con medianas por ronda
+que se solapan.
+
+### Comparativa con python-flint (16 operaciones, un hilo, una misma tanda)
+
+Distancia media a FLINT (media geométrica): **fase 3 6,9x → nivel A 5,9x → nivel B 2,7x**.
+Las 16 operaciones dan el mismo resultado en todas las librerías.
+
+| Operación | Fase 3 | Nivel A | Nivel B | FLINT | Distancia a FLINT |
+|---|---:|---:|---:|---:|---:|
+| Producto grado 500, F_(2^127−1) | 3,0 ms | 3,1 ms | **0,30 ms** | 0,33 ms | 9,2x → 9,5x → **0,92x** |
+| Producto grado 1000, F_256 | 15,0 ms | 15,1 ms | **1,0 ms** | 0,76 ms | 19,7x → 19,8x → 1,3x |
+| Producto grado 200, F_(3^30) | 11,9 ms | 11,9 ms | **0,95 ms** | 0,52 ms | 22,8x → 22,8x → 1,8x |
+| Irreducibilidad grado 400, F_998244353 | 5,06 s | 1,52 s | **269 ms** | 216 ms | 23,4x → 7,0x → 1,2x |
+| Irreducibilidad grado 200, F_101 | 201 ms | 77,5 ms | **27,5 ms** | 7,6 ms | 26,3x → 10,2x → 3,6x |
+| Factorizar grado 300, F_998244353 | 344 ms | 345 ms | **133 ms** | 23,5 ms | 14,6x → 14,7x → 5,7x |
+| Factorizar grado 100, F_101 | 6,6 ms | 6,7 ms | 4,4 ms | 0,45 ms | 14,6x → 14,9x → 9,7x |
+| Factorizar grado 20, F_(2^127−1) | 29,6 ms | 29,5 ms | 17,5 ms | 2,6 ms | 11,5x → 11,5x → 6,8x |
+| Factorizar grado 30, F_256 | 13,6 ms | 12,6 ms | 8,0 ms | 8,3 ms | 1,6x → 1,5x → 1,0x |
+| División 4000/2000, F_998244353 | 3,2 ms | 3,3 ms | 3,4 ms | 0,71 ms | 4,5x → 4,6x → 4,7x |
+| MCD grado 1000, F_998244353 | 4,5 ms | 4,7 ms | 4,7 ms | 0,59 ms | 7,6x → 7,9x → 8,0x |
+
+Los dos últimos no cambian: a esos tamaños, en F_998244353, Newton y half-GCD quedan por
+debajo de sus umbrales.
+
+## Verificación del nivel B
+
+- `build.py all`: 8 tests C++, oráculo, módulo y 710 tests de pytest con un 100 % de
+  cobertura del paquete. `tests/test_nivel_b.cpp` comprueba:
+  - Kronecker frente al escolar en 11 cuerpos, incluidos el peor caso de huecos con
+    coeficientes p − 1, p = 2^62 − 57 y p = 2^521 − 1;
+  - half-GCD frente al clásico (mcd y Bézout idénticos) en 6 cuerpos, con F_2, mcd grandes,
+    ceros y grados iguales;
+  - el generador aleatorio;
+  - la composición frente a `compose` seguido de `%`;
+  - Frobenius e `is_irreducible` / `distinct_degree` frente al algoritmo original.
+- Suite C++: 128/128 checksums iguales al original.
+- `python/` intacto.
+- No se ha vuelto a medir la cobertura de líneas C++ (`build.py cov-cpp`).
+
+## Conclusiones del nivel B
+
+- Kronecker con GMP es la pieza de más impacto: lleva los productos de F_q y de p grande al
+  nivel de FLINT, e incluso por delante con p = 2^127 − 1. Además arrastra a Newton,
+  half-GCD y `pow_mod`.
+- La irreducibilidad queda a 1,2x de FLINT en F_998244353. La factorización sigue a 3-10x:
+  la fase por grados iguales (Cantor–Zassenhaus) y el número de MCD siguen siendo los del
+  algoritmo original.
+- **Siguientes pasos posibles:**
+  - restas sin saltos en la NTT en palabras (el sesgo de 3x del predictor de saltos);
+  - DDF de Kaltofen–Shoup (paso pequeño y paso gigante) para reducir el número de MCD;
+  - una calibración de los umbrales en otra máquina.

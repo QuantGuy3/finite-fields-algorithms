@@ -13,6 +13,7 @@ Librerías (las que no estén instaladas se omiten y se indica):
 
 * ``alcp_original``: el binding del código ORIGINAL (etiqueta ``baseline-original``),
   para ver cuánto ha avanzado la fase 3.
+* ``alcp_nivel_a``: el binding de la fase 4, nivel A (rama ``fase4-nivel-a``), con un hilo.
 * ``alcp_fase3``: el binding de la fase 3 (rama ``mejoras-cpp-pybind`` antes de la
   fase 4), con un hilo, para medir lo que aporta la fase 4 frente a ``alcp_native_1h``.
 * ``alcp_native``: el binding pybind11 directo del núcleo C++ de este repositorio.
@@ -53,9 +54,11 @@ sys.path.insert(0, str(REPO / "python-bindings"))
 # Módulos de versiones anteriores, compilados con ``run_bench.py module``:
 #   final-mod-ref: cabeceras y bindings.cpp de baseline-original (bench/results/fase3/scripts/final.sh)
 #   fase3-mod:     cabeceras y bindings.cpp de mejoras-cpp-pybind antes de la fase 4
+#   nivelA-mod:    cabeceras y bindings.cpp de la rama fase4-nivel-a
 MODULOS_EXTERNOS = {
     "alcp_original": (REPO / "build" / "bench" / "final-mod-ref" / "module").resolve(),
     "alcp_fase3": (REPO / "build" / "bench" / "fase3-mod" / "module").resolve(),
+    "alcp_nivel_a": (REPO / "build" / "bench" / "nivelA-mod" / "module").resolve(),
 }
 P_NTT = 998244353
 P_M127 = 2**127 - 1
@@ -63,10 +66,11 @@ P_M127 = 2**127 - 1
 MOD_2_8 = [1, 1, 0, 1, 1, 0, 0, 0, 1]
 MOD_3_30 = [2, 0, 2, 0, 1, 0, 1, 1, 1, 1, 0, 0, 2, 1, 1, 0, 2, 2, 1, 0, 1, 1, 0, 1, 0, 2, 1, 0, 1, 0, 1]
 
-LIBRERIAS = ["alcp_original", "alcp_fase3", "alcp_native", "alcp_native_1h", "alcp", "flint", "galois", "sympy", "sympy_flint"]
+LIBRERIAS = ["alcp_original", "alcp_fase3", "alcp_nivel_a", "alcp_native", "alcp_native_1h", "alcp", "flint", "galois", "sympy", "sympy_flint"]
 NOMBRES = {
     "alcp_original": "alcp original (antes de la fase 3)",
     "alcp_fase3": "alcp fase 3, 1 hilo",
+    "alcp_nivel_a": "alcp fase 4 nivel A, 1 hilo",
     "alcp_native": "alcp (binding C++)",
     "alcp_native_1h": "alcp (binding C++, 1 hilo)",
     "alcp": "alcp (paquete Python)",
@@ -325,6 +329,7 @@ def adaptador_sympy(sc: Escenario, args):
 ADAPTADORES = {
     "alcp_original": adaptador_externo("alcp_original"),
     "alcp_fase3": adaptador_externo("alcp_fase3"),
+    "alcp_nivel_a": adaptador_externo("alcp_nivel_a"),
     "alcp_native": adaptador_alcp_native,
     "alcp_native_1h": adaptador_alcp_native,
     "alcp": adaptador_alcp,
@@ -398,6 +403,8 @@ def version(lib: str) -> str:
             return "baseline-original (67331a2)"
         if lib == "alcp_fase3":
             return "mejoras-cpp-pybind antes de la fase 4 (ALCP_THREADS=1)"
+        if lib == "alcp_nivel_a":
+            return "fase4-nivel-a (ALCP_THREADS=1)"
         if lib.startswith("alcp"):
             return "rama local" + (" (ALCP_THREADS=1)" if lib.endswith("_1h") else "")
         mod = {"flint": "flint", "galois": "galois", "sympy": "sympy", "sympy_flint": "sympy"}[lib]
@@ -417,7 +424,7 @@ def entorno(lib: str) -> dict:
     env["SYMPY_GROUND_TYPES"] = "flint" if lib == "sympy_flint" else "python"
     env["PYTHONIOENCODING"] = "utf-8"
     # alcp paraleliza Karatsuba y la NTT; las demás librerías usan un solo hilo.
-    if lib in ("alcp_native_1h", "alcp_fase3"):
+    if lib in ("alcp_native_1h", "alcp_fase3", "alcp_nivel_a"):
         env["ALCP_THREADS"] = "1"
     else:
         env.pop("ALCP_THREADS", None)

@@ -25,7 +25,8 @@
   "flint": "0.9.0",
   "galois": "0.4.11",
   "sympy": "1.14.0",
-  "sympy_flint": "1.14.0 + python-flint 0.9.0"
+  "sympy_flint": "1.14.0 + python-flint 0.9.0",
+  "alcp_nivel_a": "fase4-nivel-a (ALCP_THREADS=1)"
  },
  "parametros": {
   "reps": 5,
@@ -49,42 +50,42 @@
     },
     "alcp_fase3": {
      "estado": "ok",
-     "min_s": 7.3999399319291115e-06,
-     "mediana_s": 7.6000578701496124e-06,
+     "min_s": 5.999929271638393e-06,
+     "mediana_s": 6.100046448409557e-06,
      "reps": 500,
-     "preparacion_s": 0.005599700030870736,
+     "preparacion_s": 0.015175300068221986,
      "checksum": "b114213b41a4315b"
     },
     "alcp_native": {
      "estado": "ok",
-     "min_s": 6.8999361246824265e-06,
-     "mediana_s": 6.9999368861317635e-06,
+     "min_s": 6.3999323174357414e-06,
+     "mediana_s": 6.500049494206905e-06,
      "reps": 500,
-     "preparacion_s": 0.04247330001089722,
+     "preparacion_s": 0.03664910001680255,
      "checksum": "b114213b41a4315b"
     },
     "alcp_native_1h": {
      "estado": "ok",
-     "min_s": 6.800051778554916e-06,
-     "mediana_s": 7.00005330145359e-06,
+     "min_s": 6.09993003308773e-06,
+     "mediana_s": 6.199930794537067e-06,
      "reps": 500,
-     "preparacion_s": 0.03885180002544075,
+     "preparacion_s": 0.03506819996982813,
      "checksum": "b114213b41a4315b"
     },
     "alcp": {
      "estado": "ok",
-     "min_s": 7.0999376475811005e-06,
-     "mediana_s": 7.2999391704797745e-06,
+     "min_s": 6.6999346017837524e-06,
+     "mediana_s": 6.800051778554916e-06,
      "reps": 500,
-     "preparacion_s": 0.037834699964150786,
+     "preparacion_s": 0.03632000007200986,
      "checksum": "b114213b41a4315b"
     },
     "flint": {
      "estado": "ok",
-     "min_s": 3.999914042651653e-06,
-     "mediana_s": 4.100031219422817e-06,
+     "min_s": 3.6999117583036423e-06,
+     "mediana_s": 4.00003045797348e-06,
      "reps": 500,
-     "preparacion_s": 0.08678389992564917,
+     "preparacion_s": 0.07158089999575168,
      "checksum": "b114213b41a4315b"
     },
     "galois": {
@@ -105,10 +106,18 @@
     },
     "sympy_flint": {
      "estado": "ok",
-     "min_s": 7.3999399319291115e-06,
-     "mediana_s": 7.599999662488699e-06,
+     "min_s": 6.8999361246824265e-06,
+     "mediana_s": 7.100054062902927e-06,
      "reps": 500,
-     "preparacion_s": 0.0011612999951466918,
+     "preparacion_s": 0.0008790000574663281,
+     "checksum": "b114213b41a4315b"
+    },
+    "alcp_nivel_a": {
+     "estado": "ok",
+     "min_s": 6.00004568696022e-06,
+     "mediana_s": 6.200047209858894e-06,
+     "reps": 500,
+     "preparacion_s": 0.005330700078047812,
      "checksum": "b114213b41a4315b"
     }
    }
@@ -129,42 +138,42 @@
     },
     "alcp_fase3": {
      "estado": "ok",
-     "min_s": 0.0001439000479876995,
-     "mediana_s": 0.0001474000746384263,
+     "min_s": 0.00012229999992996454,
+     "mediana_s": 0.00012474996037781239,
      "reps": 500,
-     "preparacion_s": 0.0051256000297144055,
+     "preparacion_s": 0.0055327999871224165,
      "checksum": "9ac84640941f412d"
     },
     "alcp_native": {
      "estado": "ok",
-     "min_s": 0.0001351999817416072,
-     "mediana_s": 0.00014145002933219075,
+     "min_s": 0.00010790000669658184,
+     "mediana_s": 0.00011010002344846725,
      "reps": 500,
-     "preparacion_s": 0.043599899974651635,
+     "preparacion_s": 0.03927030006889254,
      "checksum": "9ac84640941f412d"
     },
     "alcp_native_1h": {
      "estado": "ok",
-     "min_s": 0.00013930001296103,
-     "mediana_s": 0.0001517999917268753,
+     "min_s": 0.00010800000745803118,
+     "mediana_s": 0.0001097000204026699,
      "reps": 500,
-     "preparacion_s": 0.04510139999911189,
+     "preparacion_s": 0.03713369998149574,
      "checksum": "9ac84640941f412d"
     },
     "alcp": {
      "estado": "ok",
-     "min_s": 0.00013449997641146183,
-     "mediana_s": 0.00014359998749569058,
+     "min_s": 0.00010880001354962587,
+     "mediana_s": 0.00011124997399747372,
      "reps": 500,
-     "preparacion_s": 0.0444497000426054,
+     "preparacion_s": 0.04077369999140501,
      "checksum": "9ac84640941f412d"
     },
     "flint": {
      "estado": "ok",
-     "min_s": 8.300004992634058e-05,
-     "mediana_s": 8.560006972402334e-05,
+     "min_s": 7.060007192194462e-05,
+     "mediana_s": 7.159996312111616e-05,
      "reps": 500,
-     "preparacion_s": 0.09008039999753237,
+     "preparacion_s": 0.06822769995778799,
      "checksum": "9ac84640941f412d"
     },
     "galois": {
@@ -185,10 +194,18 @@
     },
     "sympy_flint": {
      "estado": "ok",
-     "min_s": 8.129992056638002e-05,
-     "mediana_s": 8.41999426484108e-05,
+     "min_s": 7.409998215734959e-05,
+     "mediana_s": 7.509998977184296e-05,
      "reps": 500,
-     "preparacion_s": 0.005248400033451617,
+     "preparacion_s": 0.004422400030307472,
+     "checksum": "9ac84640941f412d"
+    },
+    "alcp_nivel_a": {
+     "estado": "ok",
+     "min_s": 0.00012280000373721123,
+     "mediana_s": 0.00012590002734214067,
+     "reps": 500,
+     "preparacion_s": 0.0055571000557392836,
      "checksum": "9ac84640941f412d"
     }
    }
@@ -209,42 +226,42 @@
     },
     "alcp_fase3": {
      "estado": "ok",
-     "min_s": 0.004322900087572634,
-     "mediana_s": 0.004932000010740012,
-     "reps": 98,
-     "preparacion_s": 0.006288200034759939,
+     "min_s": 0.004255100036971271,
+     "mediana_s": 0.004546400043182075,
+     "reps": 109,
+     "preparacion_s": 0.005397900007665157,
      "checksum": "c15ad70226e92353"
     },
     "alcp_native": {
      "estado": "ok",
-     "min_s": 0.003431999939493835,
-     "mediana_s": 0.0039786999695934355,
-     "reps": 126,
-     "preparacion_s": 0.05109580000862479,
+     "min_s": 0.0032094999914988875,
+     "mediana_s": 0.003634599968791008,
+     "reps": 134,
+     "preparacion_s": 0.038261599955148995,
      "checksum": "c15ad70226e92353"
     },
     "alcp_native_1h": {
      "estado": "ok",
-     "min_s": 0.0046091999392956495,
-     "mediana_s": 0.005146600014995784,
-     "reps": 92,
-     "preparacion_s": 0.048419700004160404,
+     "min_s": 0.00433080003131181,
+     "mediana_s": 0.004672100010793656,
+     "reps": 106,
+     "preparacion_s": 0.039807100081816316,
      "checksum": "c15ad70226e92353"
     },
     "alcp": {
      "estado": "ok",
-     "min_s": 0.0032919999212026596,
-     "mediana_s": 0.003914500004611909,
-     "reps": 128,
-     "preparacion_s": 0.05451689998153597,
+     "min_s": 0.0032088999869301915,
+     "mediana_s": 0.0036308999988250434,
+     "reps": 136,
+     "preparacion_s": 0.04968429997097701,
      "checksum": "c15ad70226e92353"
     },
     "flint": {
      "estado": "ok",
-     "min_s": 0.0019455000292509794,
-     "mediana_s": 0.0023207999765872955,
-     "reps": 213,
-     "preparacion_s": 0.08588080003391951,
+     "min_s": 0.0018172001000493765,
+     "mediana_s": 0.0020592499640770257,
+     "reps": 238,
+     "preparacion_s": 0.0759771999437362,
      "checksum": "c15ad70226e92353"
     },
     "galois": {
@@ -265,10 +282,18 @@
     },
     "sympy_flint": {
      "estado": "ok",
-     "min_s": 0.0017343000508844852,
-     "mediana_s": 0.0019605999696068466,
-     "reps": 248,
-     "preparacion_s": 0.04718220001086593,
+     "min_s": 0.0016187999863177538,
+     "mediana_s": 0.002141200006008148,
+     "reps": 219,
+     "preparacion_s": 0.043752699973993,
+     "checksum": "c15ad70226e92353"
+    },
+    "alcp_nivel_a": {
+     "estado": "ok",
+     "min_s": 0.004225699929520488,
+     "mediana_s": 0.004291999968700111,
+     "reps": 116,
+     "preparacion_s": 0.006699899910017848,
      "checksum": "c15ad70226e92353"
     }
    }
@@ -289,42 +314,42 @@
     },
     "alcp_fase3": {
      "estado": "ok",
-     "min_s": 0.0038687000051140785,
-     "mediana_s": 0.0041746500064618886,
-     "reps": 120,
-     "preparacion_s": 0.006210200022906065,
+     "min_s": 0.003211399889551103,
+     "mediana_s": 0.0033986999187618494,
+     "reps": 148,
+     "preparacion_s": 0.005416399915702641,
      "checksum": "56f1631511a58669"
     },
     "alcp_native": {
      "estado": "ok",
-     "min_s": 0.003375299973413348,
-     "mediana_s": 0.0038067999994382262,
-     "reps": 131,
-     "preparacion_s": 0.04342280002310872,
+     "min_s": 0.002195199951529503,
+     "mediana_s": 0.0026560999685898423,
+     "reps": 185,
+     "preparacion_s": 0.041451600030995905,
      "checksum": "56f1631511a58669"
     },
     "alcp_native_1h": {
      "estado": "ok",
-     "min_s": 0.003231900045648217,
-     "mediana_s": 0.0036577999126166105,
-     "reps": 135,
-     "preparacion_s": 0.04309659998398274,
+     "min_s": 0.0033526000333949924,
+     "mediana_s": 0.003832349961157888,
+     "reps": 132,
+     "preparacion_s": 0.040974500006996095,
      "checksum": "56f1631511a58669"
     },
     "alcp": {
      "estado": "ok",
-     "min_s": 0.0034172000596299767,
-     "mediana_s": 0.0036829999880865216,
-     "reps": 133,
-     "preparacion_s": 0.05422029993496835,
+     "min_s": 0.0022090000566095114,
+     "mediana_s": 0.002627250098157674,
+     "reps": 188,
+     "preparacion_s": 0.04693840001709759,
      "checksum": "56f1631511a58669"
     },
     "flint": {
      "estado": "ok",
-     "min_s": 0.0007298999698832631,
-     "mediana_s": 0.0008113000076264143,
+     "min_s": 0.0007060000207275152,
+     "mediana_s": 0.0007517500198446214,
      "reps": 500,
-     "preparacion_s": 0.07303810003213584,
+     "preparacion_s": 0.07578620000276715,
      "checksum": "56f1631511a58669"
     },
     "galois": {
@@ -345,10 +370,18 @@
     },
     "sympy_flint": {
      "estado": "ok",
-     "min_s": 0.0007656000088900328,
-     "mediana_s": 0.0008510499610565603,
+     "min_s": 0.0007087999256327748,
+     "mediana_s": 0.0007321000448428094,
      "reps": 500,
-     "preparacion_s": 0.014497300027869642,
+     "preparacion_s": 0.012998899910598993,
+     "checksum": "56f1631511a58669"
+    },
+    "alcp_nivel_a": {
+     "estado": "ok",
+     "min_s": 0.0032655999530106783,
+     "mediana_s": 0.0035764999920502305,
+     "reps": 140,
+     "preparacion_s": 0.005812200019136071,
      "checksum": "56f1631511a58669"
     }
    }
@@ -369,42 +402,42 @@
     },
     "alcp_fase3": {
      "estado": "ok",
-     "min_s": 0.005835800082422793,
-     "mediana_s": 0.006328000104986131,
-     "reps": 79,
-     "preparacion_s": 0.006230599945411086,
+     "min_s": 0.004529399913735688,
+     "mediana_s": 0.004865500028245151,
+     "reps": 103,
+     "preparacion_s": 0.005651200073771179,
      "checksum": "080a9ed428559ef6"
     },
     "alcp_native": {
      "estado": "ok",
-     "min_s": 0.004828699980862439,
-     "mediana_s": 0.005262900027446449,
-     "reps": 95,
-     "preparacion_s": 0.04572140006348491,
+     "min_s": 0.004752300097607076,
+     "mediana_s": 0.005359150061849505,
+     "reps": 92,
+     "preparacion_s": 0.040412599919363856,
      "checksum": "080a9ed428559ef6"
     },
     "alcp_native_1h": {
      "estado": "ok",
-     "min_s": 0.004886799957603216,
-     "mediana_s": 0.005487349990289658,
-     "reps": 90,
-     "preparacion_s": 0.04152610001619905,
+     "min_s": 0.004740500007756054,
+     "mediana_s": 0.005270899971947074,
+     "reps": 95,
+     "preparacion_s": 0.04310190002433956,
      "checksum": "080a9ed428559ef6"
     },
     "alcp": {
      "estado": "ok",
-     "min_s": 0.004734499962069094,
-     "mediana_s": 0.005254700081422925,
-     "reps": 95,
-     "preparacion_s": 0.04452420002780855,
+     "min_s": 0.00465509993955493,
+     "mediana_s": 0.00487225002143532,
+     "reps": 102,
+     "preparacion_s": 0.03783919999841601,
      "checksum": "080a9ed428559ef6"
     },
     "flint": {
      "estado": "ok",
-     "min_s": 0.00073490000795573,
-     "mediana_s": 0.0009235000470653176,
+     "min_s": 0.0005941999843344092,
+     "mediana_s": 0.0006314500351436436,
      "reps": 500,
-     "preparacion_s": 0.09994459990411997,
+     "preparacion_s": 0.07615939993411303,
      "checksum": "080a9ed428559ef6"
     },
     "galois": {
@@ -425,10 +458,18 @@
     },
     "sympy_flint": {
      "estado": "ok",
-     "min_s": 0.000611600000411272,
-     "mediana_s": 0.0006720999954268336,
+     "min_s": 0.0006060999585315585,
+     "mediana_s": 0.000660700025036931,
      "reps": 500,
-     "preparacion_s": 0.00540929997805506,
+     "preparacion_s": 0.005196799989789724,
+     "checksum": "080a9ed428559ef6"
+    },
+    "alcp_nivel_a": {
+     "estado": "ok",
+     "min_s": 0.004704199964180589,
+     "mediana_s": 0.005281899939291179,
+     "reps": 96,
+     "preparacion_s": 0.00587620004080236,
      "checksum": "080a9ed428559ef6"
     }
    }
@@ -445,42 +486,42 @@
     },
     "alcp_fase3": {
      "estado": "ok",
-     "min_s": 5.336681499960832,
-     "mediana_s": 5.43020639999304,
+     "min_s": 5.0599806000245735,
+     "mediana_s": 5.224436899996363,
      "reps": 5,
-     "preparacion_s": 0.004091099952347577,
+     "preparacion_s": 0.004693599999882281,
      "checksum": "3cbc87c7681f34db"
     },
     "alcp_native": {
      "estado": "ok",
-     "min_s": 1.7484333999454975,
-     "mediana_s": 1.790272800019011,
+     "min_s": 0.2728390999836847,
+     "mediana_s": 0.29026110004633665,
      "reps": 5,
-     "preparacion_s": 9.620003402233124e-05,
+     "preparacion_s": 0.0001743000466376543,
      "checksum": "3cbc87c7681f34db"
     },
     "alcp_native_1h": {
      "estado": "ok",
-     "min_s": 1.6613367999671027,
-     "mediana_s": 1.6766147000016645,
+     "min_s": 0.2693965999642387,
+     "mediana_s": 0.2810027999803424,
      "reps": 5,
-     "preparacion_s": 0.00014779996126890182,
+     "preparacion_s": 8.929998148232698e-05,
      "checksum": "3cbc87c7681f34db"
     },
     "alcp": {
      "estado": "ok",
-     "min_s": 1.6528119000140578,
-     "mediana_s": 1.6926100000273436,
+     "min_s": 0.25941019994206727,
+     "mediana_s": 0.2775510000064969,
      "reps": 5,
-     "preparacion_s": 0.00025949999690055847,
+     "preparacion_s": 0.00023070001043379307,
      "checksum": "3cbc87c7681f34db"
     },
     "flint": {
      "estado": "ok",
-     "min_s": 0.24733739998191595,
-     "mediana_s": 0.260648800060153,
+     "min_s": 0.21615349990315735,
+     "mediana_s": 0.2267686000559479,
      "reps": 5,
-     "preparacion_s": 0.07583180000074208,
+     "preparacion_s": 0.05205759999807924,
      "checksum": "3cbc87c7681f34db"
     },
     "galois": {
@@ -501,10 +542,18 @@
     },
     "sympy_flint": {
      "estado": "ok",
-     "min_s": 0.06254730001091957,
-     "mediana_s": 0.06311950000235811,
-     "reps": 8,
-     "preparacion_s": 0.0012070999946445227,
+     "min_s": 0.05808900005649775,
+     "mediana_s": 0.058282199897803366,
+     "reps": 9,
+     "preparacion_s": 0.0012318999506533146,
+     "checksum": "3cbc87c7681f34db"
+    },
+    "alcp_nivel_a": {
+     "estado": "ok",
+     "min_s": 1.5209554000757635,
+     "mediana_s": 1.5275331999873742,
+     "reps": 5,
+     "preparacion_s": 0.003990700002759695,
      "checksum": "3cbc87c7681f34db"
     }
    }
@@ -525,42 +574,42 @@
     },
     "alcp_fase3": {
      "estado": "ok",
-     "min_s": 0.4510152000002563,
-     "mediana_s": 0.46238839998841286,
+     "min_s": 0.3438469000393525,
+     "mediana_s": 0.34507509996183217,
      "reps": 5,
-     "preparacion_s": 0.005377199966460466,
+     "preparacion_s": 0.004406999913044274,
      "checksum": "2a631a3edb0cf14d"
     },
     "alcp_native": {
      "estado": "ok",
-     "min_s": 0.3973910000640899,
-     "mediana_s": 0.40271020005457103,
+     "min_s": 0.13330319989472628,
+     "mediana_s": 0.1338242000201717,
      "reps": 5,
-     "preparacion_s": 0.03551199997309595,
+     "preparacion_s": 0.03077730000950396,
      "checksum": "2a631a3edb0cf14d"
     },
     "alcp_native_1h": {
      "estado": "ok",
-     "min_s": 0.39097700000274926,
-     "mediana_s": 0.3918257000623271,
+     "min_s": 0.13293429999612272,
+     "mediana_s": 0.13337749999482185,
      "reps": 5,
-     "preparacion_s": 0.03919879999011755,
+     "preparacion_s": 0.029885799973271787,
      "checksum": "2a631a3edb0cf14d"
     },
     "alcp": {
      "estado": "ok",
-     "min_s": 0.39162669994402677,
-     "mediana_s": 0.3965832000831142,
+     "min_s": 0.1337014000164345,
+     "mediana_s": 0.1346604999853298,
      "reps": 5,
-     "preparacion_s": 0.0421882999362424,
+     "preparacion_s": 0.030561499996110797,
      "checksum": "2a631a3edb0cf14d"
     },
     "flint": {
      "estado": "ok",
-     "min_s": 0.0250214000698179,
-     "mediana_s": 0.0255221999832429,
-     "reps": 20,
-     "preparacion_s": 0.06700519996229559,
+     "min_s": 0.023508099955506623,
+     "mediana_s": 0.02368295006453991,
+     "reps": 22,
+     "preparacion_s": 0.05538500007241964,
      "checksum": "2a631a3edb0cf14d"
     },
     "galois": {
@@ -581,10 +630,18 @@
     },
     "sympy_flint": {
      "estado": "ok",
-     "min_s": 0.02594170009251684,
-     "mediana_s": 0.026499100029468536,
-     "reps": 19,
-     "preparacion_s": 0.0010411000112071633,
+     "min_s": 0.023558499990031123,
+     "mediana_s": 0.023757449991535395,
+     "reps": 22,
+     "preparacion_s": 0.000784900039434433,
+     "checksum": "2a631a3edb0cf14d"
+    },
+    "alcp_nivel_a": {
+     "estado": "ok",
+     "min_s": 0.3452075000386685,
+     "mediana_s": 0.3461964000016451,
+     "reps": 5,
+     "preparacion_s": 0.004451100016012788,
      "checksum": "2a631a3edb0cf14d"
     }
    }
@@ -605,42 +662,42 @@
     },
     "alcp_fase3": {
      "estado": "ok",
-     "min_s": 0.00019699998665601015,
-     "mediana_s": 0.0002108500339090824,
+     "min_s": 0.00017989997286349535,
+     "mediana_s": 0.00019225000869482756,
      "reps": 500,
-     "preparacion_s": 0.002720799995586276,
+     "preparacion_s": 0.0028207000577822328,
      "checksum": "beac702719576ae9"
     },
     "alcp_native": {
      "estado": "ok",
-     "min_s": 0.00020070001482963562,
-     "mediana_s": 0.00022535002790391445,
+     "min_s": 0.00020889996085315943,
+     "mediana_s": 0.00022235000506043434,
      "reps": 500,
-     "preparacion_s": 1.750001683831215e-05,
+     "preparacion_s": 1.5099998563528061e-05,
      "checksum": "beac702719576ae9"
     },
     "alcp_native_1h": {
      "estado": "ok",
-     "min_s": 0.00020530004985630512,
-     "mediana_s": 0.00023619993589818478,
+     "min_s": 0.00020979996770620346,
+     "mediana_s": 0.00022555002942681313,
      "reps": 500,
-     "preparacion_s": 1.580000389367342e-05,
+     "preparacion_s": 1.3100099749863148e-05,
      "checksum": "beac702719576ae9"
     },
     "alcp": {
      "estado": "ok",
-     "min_s": 0.0002169000217691064,
-     "mediana_s": 0.0002473000204190612,
+     "min_s": 0.00021410000044852495,
+     "mediana_s": 0.00023090001195669174,
      "reps": 500,
-     "preparacion_s": 8.969998452812433e-05,
+     "preparacion_s": 4.979991354048252e-05,
      "checksum": "beac702719576ae9"
     },
     "flint": {
      "estado": "ok",
-     "min_s": 7.690000347793102e-05,
-     "mediana_s": 8.099997648969293e-05,
+     "min_s": 6.919994484633207e-05,
+     "mediana_s": 7.109995931386948e-05,
      "reps": 500,
-     "preparacion_s": 0.06408469995949417,
+     "preparacion_s": 0.05031500000040978,
      "checksum": "beac702719576ae9"
     },
     "galois": {
@@ -661,10 +718,18 @@
     },
     "sympy_flint": {
      "estado": "ok",
-     "min_s": 0.00011770008131861687,
-     "mediana_s": 0.0001275999820791185,
+     "min_s": 0.00010379997547715902,
+     "mediana_s": 0.00010620005195960402,
      "reps": 500,
-     "preparacion_s": 0.0004422999918460846,
+     "preparacion_s": 0.0003103999188169837,
+     "checksum": "beac702719576ae9"
+    },
+    "alcp_nivel_a": {
+     "estado": "ok",
+     "min_s": 0.00018390000332146883,
+     "mediana_s": 0.00019779999274760485,
+     "reps": 500,
+     "preparacion_s": 0.0030064000748097897,
      "checksum": "beac702719576ae9"
     }
    }
@@ -685,42 +750,42 @@
     },
     "alcp_fase3": {
      "estado": "ok",
-     "min_s": 0.008607600000686944,
-     "mediana_s": 0.009119100053794682,
-     "reps": 55,
-     "preparacion_s": 0.00652220007032156,
+     "min_s": 0.006562099908478558,
+     "mediana_s": 0.006732400041073561,
+     "reps": 75,
+     "preparacion_s": 0.004132900037802756,
      "checksum": "424a0ca9965fddc2"
     },
     "alcp_native": {
      "estado": "ok",
-     "min_s": 0.007863999926485121,
-     "mediana_s": 0.008402899955399334,
-     "reps": 60,
-     "preparacion_s": 0.04029459995217621,
+     "min_s": 0.004460400086827576,
+     "mediana_s": 0.00455010001314804,
+     "reps": 110,
+     "preparacion_s": 0.030141299939714372,
      "checksum": "424a0ca9965fddc2"
     },
     "alcp_native_1h": {
      "estado": "ok",
-     "min_s": 0.007912599947303534,
-     "mediana_s": 0.008375349978450686,
-     "reps": 60,
-     "preparacion_s": 0.04296079999767244,
+     "min_s": 0.0043784999288618565,
+     "mediana_s": 0.004456099995877594,
+     "reps": 112,
+     "preparacion_s": 0.03213880001567304,
      "checksum": "424a0ca9965fddc2"
     },
     "alcp": {
      "estado": "ok",
-     "min_s": 0.008089400012977421,
-     "mediana_s": 0.008508600061759353,
-     "reps": 59,
-     "preparacion_s": 0.0408135000616312,
+     "min_s": 0.004382699960842729,
+     "mediana_s": 0.004469900042749941,
+     "reps": 111,
+     "preparacion_s": 0.029800200019963086,
      "checksum": "424a0ca9965fddc2"
     },
     "flint": {
      "estado": "ok",
-     "min_s": 0.0004938000347465277,
-     "mediana_s": 0.0005793499876745045,
+     "min_s": 0.0004499999340623617,
+     "mediana_s": 0.00045679998584091663,
      "reps": 500,
-     "preparacion_s": 0.07915759994648397,
+     "preparacion_s": 0.05682229995727539,
      "checksum": "424a0ca9965fddc2"
     },
     "galois": {
@@ -741,10 +806,18 @@
     },
     "sympy_flint": {
      "estado": "ok",
-     "min_s": 0.0005526000168174505,
-     "mediana_s": 0.0006097499863244593,
+     "min_s": 0.00048109993804246187,
+     "mediana_s": 0.0004891499993391335,
      "reps": 500,
-     "preparacion_s": 0.0005040999967604876,
+     "preparacion_s": 0.00043560005724430084,
+     "checksum": "424a0ca9965fddc2"
+    },
+    "alcp_nivel_a": {
+     "estado": "ok",
+     "min_s": 0.006684400024823844,
+     "mediana_s": 0.006837199907749891,
+     "reps": 73,
+     "preparacion_s": 0.0043209000723436475,
      "checksum": "424a0ca9965fddc2"
     }
    }
@@ -765,42 +838,42 @@
     },
     "alcp_fase3": {
      "estado": "ok",
-     "min_s": 0.22220310010015965,
-     "mediana_s": 0.2293089999584481,
+     "min_s": 0.20098119997419417,
+     "mediana_s": 0.20181580004282296,
      "reps": 5,
-     "preparacion_s": 0.0031972998986020684,
+     "preparacion_s": 0.003572199959307909,
      "checksum": "3cbc87c7681f34db"
     },
     "alcp_native": {
      "estado": "ok",
-     "min_s": 0.09398570004850626,
-     "mediana_s": 0.09531885001342744,
-     "reps": 6,
-     "preparacion_s": 6.630003917962313e-05,
+     "min_s": 0.027699600090272725,
+     "mediana_s": 0.028301550075411797,
+     "reps": 18,
+     "preparacion_s": 3.729993477463722e-05,
      "checksum": "3cbc87c7681f34db"
     },
     "alcp_native_1h": {
      "estado": "ok",
-     "min_s": 0.0943775000050664,
-     "mediana_s": 0.09696024999720976,
-     "reps": 6,
-     "preparacion_s": 6.360001862049103e-05,
+     "min_s": 0.027503599994815886,
+     "mediana_s": 0.02819340000860393,
+     "reps": 17,
+     "preparacion_s": 4.2199972085654736e-05,
      "checksum": "3cbc87c7681f34db"
     },
     "alcp": {
      "estado": "ok",
-     "min_s": 0.08946139994077384,
-     "mediana_s": 0.09284780005691573,
-     "reps": 6,
-     "preparacion_s": 0.00021580001339316368,
+     "min_s": 0.02812070003710687,
+     "mediana_s": 0.028559700003825128,
+     "reps": 18,
+     "preparacion_s": 0.0001547998981550336,
      "checksum": "3cbc87c7681f34db"
     },
     "flint": {
      "estado": "ok",
-     "min_s": 0.008526100078597665,
-     "mediana_s": 0.008885000017471611,
-     "reps": 57,
-     "preparacion_s": 0.06517820002045482,
+     "min_s": 0.007627399987541139,
+     "mediana_s": 0.0077726999297738075,
+     "reps": 65,
+     "preparacion_s": 0.0529196000425145,
      "checksum": "3cbc87c7681f34db"
     },
     "galois": {
@@ -822,10 +895,18 @@
     },
     "sympy_flint": {
      "estado": "ok",
-     "min_s": 0.002601900021545589,
-     "mediana_s": 0.0029060999513603747,
-     "reps": 170,
-     "preparacion_s": 0.0007569000590592623,
+     "min_s": 0.002493900014087558,
+     "mediana_s": 0.002510800026357174,
+     "reps": 199,
+     "preparacion_s": 0.0006924000335857272,
+     "checksum": "3cbc87c7681f34db"
+    },
+    "alcp_nivel_a": {
+     "estado": "ok",
+     "min_s": 0.07747460005339235,
+     "mediana_s": 0.07804819999728352,
+     "reps": 7,
+     "preparacion_s": 0.0033509000204503536,
      "checksum": "3cbc87c7681f34db"
     }
    }
@@ -846,42 +927,42 @@
     },
     "alcp_fase3": {
      "estado": "ok",
-     "min_s": 0.003382700029760599,
-     "mediana_s": 0.0034183000680059195,
-     "reps": 146,
-     "preparacion_s": 0.005037900060415268,
+     "min_s": 0.003046299912966788,
+     "mediana_s": 0.003094300045631826,
+     "reps": 161,
+     "preparacion_s": 0.0050981000531464815,
      "checksum": "6dea94a57c709dd7"
     },
     "alcp_native": {
      "estado": "ok",
-     "min_s": 0.00174990005325526,
-     "mediana_s": 0.0022012999979779124,
-     "reps": 217,
-     "preparacion_s": 0.03941140009555966,
+     "min_s": 0.00030830001924186945,
+     "mediana_s": 0.000311699986923486,
+     "reps": 500,
+     "preparacion_s": 0.03209140000399202,
      "checksum": "6dea94a57c709dd7"
     },
     "alcp_native_1h": {
      "estado": "ok",
-     "min_s": 0.0033070999197661877,
-     "mediana_s": 0.0034853999968618155,
-     "reps": 143,
-     "preparacion_s": 0.03773229999933392,
+     "min_s": 0.00030319998040795326,
+     "mediana_s": 0.0003111000405624509,
+     "reps": 500,
+     "preparacion_s": 0.031208000029437244,
      "checksum": "6dea94a57c709dd7"
     },
     "alcp": {
      "estado": "ok",
-     "min_s": 0.00166379997972399,
-     "mediana_s": 0.0019501500064507127,
-     "reps": 254,
-     "preparacion_s": 0.03696759999729693,
+     "min_s": 0.0003032000968232751,
+     "mediana_s": 0.00031189993023872375,
+     "reps": 500,
+     "preparacion_s": 0.03302400000393391,
      "checksum": "6dea94a57c709dd7"
     },
     "flint": {
      "estado": "ok",
-     "min_s": 0.00034309993498027325,
-     "mediana_s": 0.000361400016117841,
+     "min_s": 0.00033089995849877596,
+     "mediana_s": 0.0003337000380270183,
      "reps": 500,
-     "preparacion_s": 0.0647892999695614,
+     "preparacion_s": 0.05742229998577386,
      "checksum": "6dea94a57c709dd7"
     },
     "galois": {
@@ -902,10 +983,18 @@
     },
     "sympy_flint": {
      "estado": "ok",
-     "min_s": 0.00034689996391534805,
-     "mediana_s": 0.0003630000283010304,
+     "min_s": 0.00032890005968511105,
+     "mediana_s": 0.00033475004602223635,
      "reps": 500,
-     "preparacion_s": 0.004056100035086274,
+     "preparacion_s": 0.007310400018468499,
+     "checksum": "6dea94a57c709dd7"
+    },
+    "alcp_nivel_a": {
+     "estado": "ok",
+     "min_s": 0.0031305999727919698,
+     "mediana_s": 0.003194799995981157,
+     "reps": 156,
+     "preparacion_s": 0.005465200054459274,
      "checksum": "6dea94a57c709dd7"
     }
    }
@@ -926,42 +1015,42 @@
     },
     "alcp_fase3": {
      "estado": "ok",
-     "min_s": 0.03262100007850677,
-     "mediana_s": 0.032883399981074035,
-     "reps": 16,
-     "preparacion_s": 0.004237000015564263,
+     "min_s": 0.029604999930597842,
+     "mediana_s": 0.029862300027161837,
+     "reps": 17,
+     "preparacion_s": 0.004358000005595386,
      "checksum": "73c30342b7641448"
     },
     "alcp_native": {
      "estado": "ok",
-     "min_s": 0.03274679998867214,
-     "mediana_s": 0.03405739995650947,
-     "reps": 15,
-     "preparacion_s": 0.03972660005092621,
+     "min_s": 0.01736719999462366,
+     "mediana_s": 0.017562300083227456,
+     "reps": 29,
+     "preparacion_s": 0.03074620000552386,
      "checksum": "73c30342b7641448"
     },
     "alcp_native_1h": {
      "estado": "ok",
-     "min_s": 0.03174230002332479,
-     "mediana_s": 0.032513650017790496,
-     "reps": 16,
-     "preparacion_s": 0.03605210001114756,
+     "min_s": 0.017525600036606193,
+     "mediana_s": 0.018267699982970953,
+     "reps": 28,
+     "preparacion_s": 0.031336700078099966,
      "checksum": "73c30342b7641448"
     },
     "alcp": {
      "estado": "ok",
-     "min_s": 0.0313746000174433,
-     "mediana_s": 0.032838350045494735,
-     "reps": 16,
-     "preparacion_s": 0.036027499940246344,
+     "min_s": 0.017695200047455728,
+     "mediana_s": 0.01789179997285828,
+     "reps": 28,
+     "preparacion_s": 0.031122899963520467,
      "checksum": "73c30342b7641448"
     },
     "flint": {
      "estado": "ok",
-     "min_s": 0.00268909998703748,
-     "mediana_s": 0.002880200045183301,
-     "reps": 173,
-     "preparacion_s": 0.06931030005216599,
+     "min_s": 0.002575899939984083,
+     "mediana_s": 0.0026436999905854464,
+     "reps": 189,
+     "preparacion_s": 0.06216510001104325,
      "checksum": "73c30342b7641448"
     },
     "galois": {
@@ -983,6 +1072,14 @@
     "sympy_flint": {
      "estado": "error",
      "motivo": "TypeError en flint.fmpz_mod_poly.__cinit__: fallo de compatibilidad SymPy 1.14 / python-flint 0.9 con p de 127 bits"
+    },
+    "alcp_nivel_a": {
+     "estado": "ok",
+     "min_s": 0.02951050002593547,
+     "mediana_s": 0.029997800011187792,
+     "reps": 17,
+     "preparacion_s": 0.004383700084872544,
+     "checksum": "73c30342b7641448"
     }
    }
   },
@@ -1002,42 +1099,42 @@
     },
     "alcp_fase3": {
      "estado": "ok",
-     "min_s": 0.016515800030902028,
-     "mediana_s": 0.017710600048303604,
-     "reps": 29,
-     "preparacion_s": 0.006468500010669231,
+     "min_s": 0.01499260007403791,
+     "mediana_s": 0.015129750012420118,
+     "reps": 34,
+     "preparacion_s": 0.009486200055107474,
      "checksum": "c5bea53df6403519"
     },
     "alcp_native": {
      "estado": "ok",
-     "min_s": 0.005313899950124323,
-     "mediana_s": 0.006380600039847195,
-     "reps": 79,
-     "preparacion_s": 0.045802799984812737,
+     "min_s": 0.0010330999502912164,
+     "mediana_s": 0.0010746000334620476,
+     "reps": 457,
+     "preparacion_s": 0.03396269993390888,
      "checksum": "c5bea53df6403519"
     },
     "alcp_native_1h": {
      "estado": "ok",
-     "min_s": 0.016107599949464202,
-     "mediana_s": 0.017933800001628697,
-     "reps": 29,
-     "preparacion_s": 0.04092480009421706,
+     "min_s": 0.0010221999837085605,
+     "mediana_s": 0.0010485000093467534,
+     "reps": 478,
+     "preparacion_s": 0.03133479994721711,
      "checksum": "c5bea53df6403519"
     },
     "alcp": {
      "estado": "ok",
-     "min_s": 0.00531889998819679,
-     "mediana_s": 0.006311699980869889,
-     "reps": 80,
-     "preparacion_s": 0.04208520008251071,
+     "min_s": 0.001025600009597838,
+     "mediana_s": 0.001052000094205141,
+     "reps": 477,
+     "preparacion_s": 0.0315658999606967,
      "checksum": "c5bea53df6403519"
     },
     "flint": {
      "estado": "ok",
-     "min_s": 0.0008670000825077295,
-     "mediana_s": 0.0009760500397533178,
+     "min_s": 0.000762699986808002,
+     "mediana_s": 0.0008213000255636871,
      "reps": 500,
-     "preparacion_s": 0.07936750003136694,
+     "preparacion_s": 0.06077510002069175,
      "checksum": "c5bea53df6403519"
     },
     "galois": {
@@ -1055,6 +1152,14 @@
     "sympy_flint": {
      "estado": "no_soportado",
      "motivo": "SymPy no tiene polinomios sobre extensiones F_(p^n)"
+    },
+    "alcp_nivel_a": {
+     "estado": "ok",
+     "min_s": 0.015114900073967874,
+     "mediana_s": 0.015211899997666478,
+     "reps": 33,
+     "preparacion_s": 0.005197199992835522,
+     "checksum": "c5bea53df6403519"
     }
    }
   },
@@ -1074,42 +1179,42 @@
     },
     "alcp_fase3": {
      "estado": "ok",
-     "min_s": 0.014900300069712102,
-     "mediana_s": 0.015459500020369887,
-     "reps": 31,
-     "preparacion_s": 0.004636300029233098,
+     "min_s": 0.013597500044852495,
+     "mediana_s": 0.013842300046235323,
+     "reps": 37,
+     "preparacion_s": 0.004292899975553155,
      "checksum": "031d51f4b83860a1"
     },
     "alcp_native": {
      "estado": "ok",
-     "min_s": 0.01352570008020848,
-     "mediana_s": 0.014881900046020746,
-     "reps": 33,
-     "preparacion_s": 0.0402847999939695,
+     "min_s": 0.007842899998649955,
+     "mediana_s": 0.008027100004255772,
+     "reps": 62,
+     "preparacion_s": 0.031949999975040555,
      "checksum": "031d51f4b83860a1"
     },
     "alcp_native_1h": {
      "estado": "ok",
-     "min_s": 0.013406299985945225,
-     "mediana_s": 0.014324599993415177,
-     "reps": 35,
-     "preparacion_s": 0.03919839998707175,
+     "min_s": 0.008022399968467653,
+     "mediana_s": 0.008185549988411367,
+     "reps": 58,
+     "preparacion_s": 0.03717279992997646,
      "checksum": "031d51f4b83860a1"
     },
     "alcp": {
      "estado": "ok",
-     "min_s": 0.01339069998357445,
-     "mediana_s": 0.015022200008388609,
-     "reps": 34,
-     "preparacion_s": 0.03653349995147437,
+     "min_s": 0.007837099954485893,
+     "mediana_s": 0.008083650027401745,
+     "reps": 62,
+     "preparacion_s": 0.03106489998754114,
      "checksum": "031d51f4b83860a1"
     },
     "flint": {
      "estado": "ok",
-     "min_s": 0.008549300022423267,
-     "mediana_s": 0.009854500065557659,
-     "reps": 51,
-     "preparacion_s": 0.07654180005192757,
+     "min_s": 0.008313399972394109,
+     "mediana_s": 0.008511200081557035,
+     "reps": 59,
+     "preparacion_s": 0.055347800021991134,
      "checksum": "031d51f4b83860a1"
     },
     "galois": {
@@ -1127,6 +1232,14 @@
     "sympy_flint": {
      "estado": "no_soportado",
      "motivo": "SymPy no tiene polinomios sobre extensiones F_(p^n)"
+    },
+    "alcp_nivel_a": {
+     "estado": "ok",
+     "min_s": 0.012625200091861188,
+     "mediana_s": 0.012859700014814734,
+     "reps": 39,
+     "preparacion_s": 0.004406700027175248,
+     "checksum": "031d51f4b83860a1"
     }
    }
   },
@@ -1146,42 +1259,42 @@
     },
     "alcp_fase3": {
      "estado": "ok",
-     "min_s": 0.01273129996843636,
-     "mediana_s": 0.012995600001886487,
-     "reps": 37,
-     "preparacion_s": 0.005393299972638488,
+     "min_s": 0.011902300058864057,
+     "mediana_s": 0.012141000013798475,
+     "reps": 41,
+     "preparacion_s": 0.005894200061447918,
      "checksum": "065a5139db7ab635"
     },
     "alcp_native": {
      "estado": "ok",
-     "min_s": 0.0037305000005289912,
-     "mediana_s": 0.004661799990572035,
-     "reps": 107,
-     "preparacion_s": 0.043430499965325,
+     "min_s": 0.0009494000114500523,
+     "mediana_s": 0.0009718999499455094,
+     "reps": 500,
+     "preparacion_s": 0.03406779991928488,
      "checksum": "065a5139db7ab635"
     },
     "alcp_native_1h": {
      "estado": "ok",
-     "min_s": 0.012690700008533895,
-     "mediana_s": 0.01323659997433424,
-     "reps": 38,
-     "preparacion_s": 0.03719069994986057,
+     "min_s": 0.0009450999787077308,
+     "mediana_s": 0.0009678000351414084,
+     "reps": 500,
+     "preparacion_s": 0.030848899972625077,
      "checksum": "065a5139db7ab635"
     },
     "alcp": {
      "estado": "ok",
-     "min_s": 0.003805799991823733,
-     "mediana_s": 0.004757499962579459,
-     "reps": 102,
-     "preparacion_s": 0.044808299979195,
+     "min_s": 0.0009488000068813562,
+     "mediana_s": 0.0009681999799795449,
+     "reps": 500,
+     "preparacion_s": 0.031564899953082204,
      "checksum": "065a5139db7ab635"
     },
     "flint": {
      "estado": "ok",
-     "min_s": 0.0005607999628409743,
-     "mediana_s": 0.00078959995880723,
+     "min_s": 0.0005213000113144517,
+     "mediana_s": 0.0006662000087089837,
      "reps": 500,
-     "preparacion_s": 0.07741969998460263,
+     "preparacion_s": 0.060057700029574335,
      "checksum": "065a5139db7ab635"
     },
     "galois": {
@@ -1199,6 +1312,14 @@
     "sympy_flint": {
      "estado": "no_soportado",
      "motivo": "SymPy no tiene polinomios sobre extensiones F_(p^n)"
+    },
+    "alcp_nivel_a": {
+     "estado": "ok",
+     "min_s": 0.011906999978236854,
+     "mediana_s": 0.012220500037074089,
+     "reps": 41,
+     "preparacion_s": 0.004989600041881204,
+     "checksum": "065a5139db7ab635"
     }
    }
   },
@@ -1218,42 +1339,42 @@
     },
     "alcp_fase3": {
      "estado": "ok",
-     "min_s": 0.009936299989931285,
-     "mediana_s": 0.010292200022377074,
-     "reps": 47,
-     "preparacion_s": 0.005759799969382584,
+     "min_s": 0.009009500034153461,
+     "mediana_s": 0.009185850038193166,
+     "reps": 54,
+     "preparacion_s": 0.004408299922943115,
      "checksum": "e46efbed64da114c"
     },
     "alcp_native": {
      "estado": "ok",
-     "min_s": 0.006443800055421889,
-     "mediana_s": 0.006771900050807744,
-     "reps": 74,
-     "preparacion_s": 0.0432081000180915,
+     "min_s": 0.005807399982586503,
+     "mediana_s": 0.006223399890586734,
+     "reps": 81,
+     "preparacion_s": 0.03316150000318885,
      "checksum": "e46efbed64da114c"
     },
     "alcp_native_1h": {
      "estado": "ok",
-     "min_s": 0.0060053999768570065,
-     "mediana_s": 0.006227699923329055,
+     "min_s": 0.005783799919299781,
+     "mediana_s": 0.006263699964620173,
      "reps": 81,
-     "preparacion_s": 0.03928070003166795,
+     "preparacion_s": 0.03501380002126098,
      "checksum": "e46efbed64da114c"
     },
     "alcp": {
      "estado": "ok",
-     "min_s": 0.005925600067712367,
-     "mediana_s": 0.006235499982722104,
-     "reps": 81,
-     "preparacion_s": 0.03968289995100349,
+     "min_s": 0.005779500002972782,
+     "mediana_s": 0.006287449970841408,
+     "reps": 80,
+     "preparacion_s": 0.03190379997249693,
      "checksum": "e46efbed64da114c"
     },
     "flint": {
      "estado": "ok",
-     "min_s": 0.002212699968367815,
-     "mediana_s": 0.002442500088363886,
-     "reps": 204,
-     "preparacion_s": 0.0683145000366494,
+     "min_s": 0.002114199916832149,
+     "mediana_s": 0.0021778999362140894,
+     "reps": 227,
+     "preparacion_s": 0.062117199995554984,
      "checksum": "e46efbed64da114c"
     },
     "galois": {
@@ -1271,13 +1392,20 @@
     "sympy_flint": {
      "estado": "no_soportado",
      "motivo": "SymPy no tiene polinomios sobre extensiones F_(p^n)"
+    },
+    "alcp_nivel_a": {
+     "estado": "ok",
+     "min_s": 0.005611900007352233,
+     "mediana_s": 0.0059402999468147755,
+     "reps": 85,
+     "preparacion_s": 0.005426699994131923,
+     "checksum": "e46efbed64da114c"
     }
    }
   }
  ],
  "tandas": [
-  "alcp original, alcp fase 3, galois y SymPy puro: primera tanda (fase 4 con umbral provisional; no afecta a esas variantes)",
-  "alcp fase 4 (umbral definitivo), paquete, python-flint y SymPy sobre FLINT: segunda tanda, el mismo día",
-  "galois en fp30.mul.d100: tercera tanda (en la primera falló la importación de numba)"
+  "alcp original, galois y SymPy puro: tanda de la fase 4 nivel A (esas variantes no cambian)",
+  "alcp fase 3, nivel A y nivel B (binding, 1 hilo y paquete), python-flint y SymPy sobre FLINT: una misma tanda tras el nivel B"
  ]
 }
