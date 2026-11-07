@@ -1,5 +1,7 @@
 # Investigación: cómo acelerar más la implementación (propuesta de fase 5)
 
+> **Estado:** las propuestas 1 a 3 están implementadas en la rama `fase5`; resultados en [fase5.md](fase5.md).
+
 Fecha: 7 de noviembre de 2026. Punto de partida: rama `mejoras-cpp-pybind` en `7880a88`, con
 las fases 3 y 4 (niveles A y B) ya fusionadas.
 

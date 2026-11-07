@@ -85,11 +85,13 @@ int main() {
     calibrar(wntt, "Fp64 p = 998244353 (NTT en palabras)");
     calibrar(w101, "Fp64 p = 101 (sin NTT: Karatsuba)");
     calibrar(wm61, "Fp64 p = 2^61 - 1 (NTT pequeña)");
+#ifndef SOLO_FP64  // -DSOLO_FP64: solo los cuerpos Fp64 (fase 5)
     calibrar(g127, "Fp GMP p = 2^127 - 1");
     calibrar(g256, "Fp GMP p de 255 bits (NTT multi-limb)");
     calibrar(w9, "Fq64 F_9");
     calibrar(w256, "Fq64 F_256 (sin FFT)");
     calibrar(w3e30, "Fq64 F_(3^30)");
     calibrar(wm61e2, "Fq64 F_((2^61-1)^2) (con FFT)");
+#endif
     return 0;
 }
