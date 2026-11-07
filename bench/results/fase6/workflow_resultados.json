@@ -1,0 +1,1242 @@
+[
+ {
+  "tema": "fpn",
+  "preliminar": {
+   "tema": "fpn",
+   "resumen": "Comparo un elemento F_p de tamaño fijo para p de 2 palabras (FpN2, prototipo fuera de la librería) con el Fp actual basado en mpz. FpN2 usa el representante canónico, doble REDC de Montgomery con R = 2^128 y un acumulador perezoso de 5 palabras, y no reserva memoria por operación. Implementa los conceptos FiniteField y LazyAccumulation, de modo que Poly<FpN2> ejecuta los algoritmos de la librería sin modificarlos (pow_mod, gcd, factor). Todos los tiempos son PRELIMINARES, medidos con otros agentes en marcha.\n\nLo medido:\n- Producto modular: 6,2x más rápido (69 frente a 11 ns).\n- add/sub: 37-46x (43 frente a 1,2 ns).\n- Núcleo de mul_school (20 acc_fma + acc_reduce): 5,2x.\n- pow_mod de grado 20 con exponente q: 6,5x (6,34 frente a 0,97 ms).\n- factor() en 16 polinomios mónicos aleatorios de grado 20 en F_(2^127-1): 5,8x (16,0 frente a 2,77 ms).\n- La entrada exacta de fp127.factor.d20: 5,98x (18,9 frente a 3,16 ms). FLINT tarda hoy 2,8-3,1 ms en esa entrada, así que la distancia bajaría de unas 6,8x a unas 1,1x.\n\nEn las 3 000 comprobaciones (aprox.) el resultado es idéntico bit a bit (elementos, polinomios y factorizaciones), y el generador aleatorio se consume igual.\n\nPerfil con Fp: el 92 % del tiempo de factor() son los pow_mod de la DDF. De ese tiempo, alrededor del 38 % son reservas de GMP (195 000 por llamada). Otro hallazgo, ajeno al tema pero medido: la DDF clásica vuelve a hacer un pow_mod de 127 bits tras cada factor encontrado. Si compusiera con H_1 mod g, la DDF iría 1,9x más rápida con el mismo resultado.",
+   "archivos": [
+    "C:/Users/ismae/Documents/Archivos/Proyectos/finite-fields-algorithms/bench/experimentos/fase6/fpn/fpn2.hpp",
+    "C:/Users/ismae/Documents/Archivos/Proyectos/finite-fields-algorithms/bench/experimentos/fase6/fpn/fpn_bench.cpp",
+    "C:/Users/ismae/Documents/Archivos/Proyectos/finite-fields-algorithms/bench/experimentos/fase6/fpn/flint_fp127.py",
+    "C:/Users/ismae/Documents/Archivos/Proyectos/finite-fields-algorithms/build/fase6/fpn/fpn_bench.exe",
+    "C:/Users/ismae/Documents/Archivos/Proyectos/finite-fields-algorithms/build/fase6/fpn/fp127_factor_d20.txt",
+    "C:/Users/ismae/Documents/Archivos/Proyectos/finite-fields-algorithms/bench/results/fase6/fpn_preliminar.txt"
+   ],
+   "comandos_medicion": [
+    ".venv/Scripts/python.exe bench/experimentos/fase6/fpn/flint_fp127.py",
+    "ALCP_THREADS=1 ./build/fase6/fpn/fpn_bench.exe",
+    "ALCP_THREADS=1 ./build/fase6/fpn/fpn_bench.exe pool"
+   ],
+   "correcto": true,
+   "comprobacion_correccion": "El programa compara siempre con las funciones de la librería (Fp y Poly<Fp>), nunca con otra copia mía. Termina con \"Comprobaciones fallidas: 0\" en los dos modos (malloc y pool).\n\nComprobaciones de elementos:\n- Para cada uno de 3 primos (2^127-1, nextprime(2^100) y nextprime(2^64), que tiene 65 bits) y 1 024 pares de elementos: mul, add, sub, neg, inv y 20 acc_fma + acc_reduce de FpN2, convertidos a BigInt, coinciden con Fp.\n- Caso extremo del acumulador: 2^20 productos (p-1)^2.\n\nComprobaciones de polinomios (16 entradas de grado 20 en F_(2^127-1)):\n- producto 19x19, resto 38/20, gcd y pow_mod(a, q, m) dan lo mismo en Poly<FpN2> y en Poly<Fp>.\n\nComprobaciones de factor():\n- En 16 polinomios y en la entrada exacta del escenario, Poly<FpN2>::factor() da exactamente la factorización de Poly<Fp>::factor() (coeficientes, multiplicidades y orden canónico), con set_seed idéntico antes de cada llamada.\n- El desglose por fases, que replica factor(), da la misma factorización.\n- La variante de DDF que compone desde el primer paso da la misma salida que distinct_degree() de la librería.\n\nGenerador aleatorio: random() y fft_base_root() de FpN2 hacen las mismas llamadas a rand_below que Fp. Que factor() coincida, incluida la EDF aleatoria con la misma semilla, lo confirma en la práctica.\n\nPython: python-flint da para la entrada del escenario los mismos grados (1, 1, 2, 6, 10).",
+   "hallazgos": [
+    {
+     "titulo": "Perfil de factor() de grado 20 en F_(2^127-1) con Fp: el 92 % es pow_mod de la DDF",
+     "medido": true,
+     "detalle": "Media de 48 llamadas sobre 16 polinomios mónicos aleatorios, en ms por llamada: total 15,4; radical 0,095 (1 %); DDF pow_mod 14,2 (92 %); DDF composición 0,037; DDF MCD 0,39 (3 %, 7 MCD); EDF pow_mod 0,58 (4 %); multiplicidad 0,046. Hay 2,5 pow_mod de 127 bits en la DDF por llamada, cada uno de unos 6,3 ms, frente a 4,6 composiciones casi gratuitas. El grado 20 no llega a Kaltofen-Shoup (umbral 40), así que la DDF es la clásica con Frobenius. Recuento de operaciones por llamada (cuerpo contador FpCont): 427 000 acc_fma, 51 000 acc_reduce, 26 000 acc_set, 12 300 mul, 12 200 add/sub y 1 113 inv (665 de ellos son inv(1) del módulo mónico en Reducer)."
+    },
+    {
+     "titulo": "Con Fp, alrededor del 38 % de factor() son reservas de GMP; el resto es aritmética de mpz",
+     "medido": true,
+     "detalle": "Por llamada hay 195 000 reservas o realloc de GMP: el vector de acumuladores mpz de cada mul_school y divmod_school, y el BigInt nuevo de cada resultado. Además hay 5 290 operator new. Solo con sustituir el asignador de GMP por listas libres (modo pool del binario, sin tocar el algoritmo), factor() pasa de 16,0 a 9,9 ms (1,6x) y pow_mod de 6,34 a 3,90 ms. En modo pool, la estimación de la aritmética (recuento x coste unitario) es 8,7 ms de 9,5 medidos, es decir, aproximadamente el 92 % es aritmética mpz propiamente dicha. En Poly<FpN2> quedan 956 reservas de GMP y los mismos 5 290 new (vectores) por llamada. Su aritmética estimada es de unos 2,4 ms de 2,57, y operator new suma unos 0,14 ms.",
+     "antes": "15,4-16,0 ms (malloc)",
+     "despues": "9,5-9,9 ms (GMP con pool)",
+     "factor": "1,6x"
+    },
+    {
+     "titulo": "Elemento FpN2 (Montgomery doble REDC, canónico, sin reservas) frente a Fp (mpz)",
+     "medido": true,
+     "detalle": "Costes en ns por operación con p = 2^127-1, rotando 1 024 entradas:\n- mul: 69,6 frente a 11,2 (6,2x); en cadena dependiente, 72 frente a 12 (6,0x).\n- add: 43 frente a 1,2 (37x); sub: 46 frente a 1,0 (47x). El coste del mpz es casi todo la reserva del resultado.\n- acc_fma sobre un acumulador ya reservado: 13,1 frente a 3,4 (3,9x).\n- acc_reduce: 57 frente a 10 (5,7x).\n- 20 acc_fma + acc_reduce con acumulador nuevo: 425 frente a 81 (5,2x).\n- inv: 714 frente a 670 (1,1x). Ambos usan mpz_invert; en FpN2 sobre vistas mpz_roinit_n y un mpz de trabajo ya reservado.\n- inv(1): 89 frente a 59.\n- Referencia: malloc+free tarda unos 27 ns.\nCon p de 101 y 65 bits las cifras son parecidas (mul 6,2x y 5,8x; núcleo fma 5,0x y 5,5x).",
+     "antes": "mul 69,6 ns",
+     "despues": "mul 11,2 ns",
+     "factor": "6,2x"
+    },
+    {
+     "titulo": "Polinomios de grado 20 en F_(2^127-1): Poly<FpN2> frente a Poly<Fp>",
+     "medido": true,
+     "detalle": "Mismos algoritmos de la librería; solo cambia el cuerpo. Tiempos en µs:\n- producto 19x19 escolar: 10,9 frente a 1,77 (6,2x)\n- resto 38/20: 13,4 frente a 2,02 (6,6x)\n- gcd de grado 20: 61,9 frente a 18,9 (3,3x). Lo limita inv: cada paso de Euclides invierte un coeficiente aleatorio, unos 650 ns con mpz_invert.\n- pow_mod con exponente q: 6 339 frente a 973 (6,5x)\n- pow_mod con exponente (q-1)/2: 6 260 frente a 979 (6,4x)\nLos resultados son idénticos.",
+     "antes": "pow_mod 6,34 ms",
+     "despues": "pow_mod 0,97 ms",
+     "factor": "6,5x"
+    },
+    {
+     "titulo": "factor() integrado con FpN2: 5,8x de media y 6,0x en la entrada exacta del escenario",
+     "medido": true,
+     "detalle": "En 16 entradas: 16,0 ms con Poly<Fp> frente a 2,77 ms con Poly<FpN2> (5,78x). En el desglose de FpN2 la DDF con pow_mod sigue siendo el 87 %. En la entrada exacta de fp127.factor.d20 (generada con la semilla de compare_libs.py; factores de grados 1, 1, 2, 6 y 10), con la misma entrada repetida porque no se puede rotar: 18,9 frente a 3,16 ms (5,98x). python-flint 0.9.0 en la misma máquina y la misma tanda: 2,78-3,12 ms. La distancia a FLINT bajaría de unas 6,8x a unas 1,0-1,1x (preliminar).",
+     "antes": "18,9 ms (6,8x FLINT)",
+     "despues": "3,16 ms (~1,1x FLINT)",
+     "factor": "6,0x"
+    },
+    {
+     "titulo": "Lateral: la DDF clásica rehace un pow_mod de 127 bits tras cada factor encontrado",
+     "medido": true,
+     "detalle": "Frobenius::cambiar_modulo descarta el Composer, y el siguiente paso vuelve a elevar a q con unos 190 productos modulares, aunque ya tiene H_1 mod g. La variante ddf_compone reconstruye el Composer con H_1 mod g y nunca vuelve a elevar. Da exactamente la salida de distinct_degree() en las 17 entradas.\nDDF de grado 20 en F_(2^127-1): 15,0 frente a 7,7 ms con Fp (1,94x) y 2,37 frente a 1,26 ms con FpN2 (1,89x).\nEn la entrada del escenario: 18,0 frente a 7,9 ms con Fp y 2,89 frente a 1,26 ms con FpN2.\nNo usa el generador aleatorio: Composer usa mul_no_rng y el primer pow_mod, que es el que pediría las tablas FFT, se conserva. Afecta a la DDF clásica (grado < 40) y a cuerpos con q grande. Conviene revisar también is_irreducible y ddf_ks, que no he mirado.",
+     "antes": "DDF 15,0 ms (Fp)",
+     "despues": "7,7 ms (Fp)",
+     "factor": "1,9x"
+    },
+    {
+     "titulo": "Combinación de FpN2 y DDF que compone en el escenario fp127.factor.d20",
+     "medido": false,
+     "detalle": "ESTIMADO a partir de piezas medidas por separado: factor con FpN2 (3,16 ms) − DDF de la librería con FpN2 (2,89) + DDF que compone con FpN2 (1,26) ≈ 1,54 ms. Sería unas 0,5-0,55x del tiempo de FLINT (2,8-3,1 ms), es decir, más rápido que FLINT. Con Fp y solo la DDF que compone, el escenario bajaría de 18,9 a unos 8,8 ms (estimado, unas 3x FLINT)."
+    },
+    {
+     "titulo": "inv sigue siendo caro en FpN2 (mpz_invert), pero pesa poco en factor()",
+     "medido": false,
+     "detalle": "ESTIMADO con los recuentos: en Poly<FpN2> los 448 inversos aleatorios por llamada (MCD y EDF), a unos 670 ns, suman unos 0,30 ms, y los 665 inv(1) unos 0,04 ms. En total, en torno al 13 % de los 2,57 ms. Un inverso de 128 bits a medida (Lehmer o xgcd binario con ctz) o un atajo is_one → one podría ahorrar 0,05-0,2 ms. No lo he prototipado; un xgcd binario simple seguramente no bajaría de 600 ns."
+    }
+   ],
+   "estimacion_integrada": "Escenarios afectados: solo los que tienen p ≥ 2^62. De la lista de distancias a FLINT, únicamente fp127.* (F_101, F_998244353, F_(3^30) y F_256 usan Fp64 o Fq64 y no cambian).\n\n- fp127.factor.d20 (MEDIDO con el prototipo integrado en Poly, fuera de la librería): 5,8-6,0x. alcp pasaría de unas 6,8x FLINT a unas 1,0-1,1x. Sumando la DDF que compone tras cada cambio de módulo (estimado a partir de piezas medidas), unos 1,5 ms frente a 2,8-3,1 ms de FLINT, es decir, unas 0,5x.\n- fp127.mul.d500: ya va por Kronecker y está en 0,92x de FLINT. Con FpN2 solo cambiaría el empaquetado y el desempaquetado (mpz_import + mpz_tdiv_r + reserva por coeficiente, unos 0,1 ms de 0,73). Estimado: 1,1-1,2x, no medido.\n- Otros usos con p grande (estimado, no medido):\n  - divmod/gcd/pow_mod con grados bajo los umbrales de Kronecker y Newton: 3x (gcd, limitado por inv) a 6,5x (pow_mod, producto y resto escolares).\n  - Con N = 4 (p de 256 bits, p. ej. el r de BLS12-381), mpz sigue dominado por las reservas, mientras Montgomery crece en N²: espero unas 2,5-3,5x en el producto de elementos.\n  - Con FFT por limbs (p - 1 con potencia de 2 grande), la ganancia es menor, porque la NTT limb ya trabaja en palabras: solo se ahorran conversiones.\n- Alternativa sin backend nuevo: el modo pool mide que un asignador barato para GMP ya da 1,6x en factor(). Pero cambiar mp_set_memory_functions es estado global del proceso y afecta a otros usuarios de GMP (y a los hilos), así que no lo recomiendo en la librería. Reutilizar acumuladores mpz entre llamadas recuperaría solo una parte.",
+   "esfuerzo": "Medio: unos 2-4 días incluyendo pruebas y recalibración.\n\n1) Nuevo include/alcp/fpn.hpp con FpN<N>, N = 2..4, unas 400-500 líneas, siguiendo el modelo de Fp64. Contenido:\n- Elem = struct con std::array<u64, N> canónico, con operator<, == y un constructor por defecto que deje 0.\n- Toda la interfaz FiniteField: zero/one, from_int(BigInt), random() con rand_below(p), add/sub/neg/mul/inv/div/pow(BigInt) (pow con Montgomery interno, como Fp64), eq/is_zero/is_one, cardinality/characteristic como BigInt, to_string, to_bigint, pth_root, fft_capacity, fft_base_root (mismo procedimiento y mismo consumo del generador que Fp), FFTCache<Elem> fft_cache_, same_field y operator==.\n- Ganchos LazyAccumulation: Acc de 2N+1 palabras, acc_clear/set/fma/reduce.\n- fits(p) con el reparto: Fp64 hasta 62 bits, FpN2 de 63 a 128, FpN4 hasta 256.\n- REDC genérica en N (bucles desenrollados con plantilla) y la doble REDC sobre el canónico.\n- inv con mpz_invert sobre mpz_roinit_n y un mpz de trabajo por hilo (thread_local), o con mpn_gcdext.\n\n2) Ajustes de despacho, unas 100-150 líneas, porque hoy deciden por is_same<Elem, BigInt> o is_same<Field, Fp>:\n- kronecker.hpp: como_limbs para el elemento y un desempaquetado que reduzca con la REDC (o mpn_tdiv_qr) sin crear mpz.\n- polynomial.hpp: prefer_kronecker, prefer_newton, prefer_fft, kParKaratsubaMin y kFrobPresupuesto. Primero como Fp y después recalibrados: el escolar es 6x más barato, así que los umbrales de Karatsuba, Kronecker y Newton subirán.\n- fft.hpp: la NTT por limbs (limb::transform, to_limbs/from_limbs) solo acepta Fp. Hay que extenderla a FpN o se cae al backend Generic, más lento.\n- Opcional: FqT<FpN2> para extensiones con p grande.\n\n3) python-bindings: añadir FpN2 y FpN4 a la variante del cuerpo (selección por bit_length, como Fp64::fits) y las conversiones con to_bigint. Cada cuerpo nuevo instancia todo Poly, así que el módulo tarda más en compilar y ocupa más. python/ no se toca.\n\n4) Tests: equivalencia con Fp (checksums de la suite, factorizaciones, consumo del generador con set_seed) y casos frontera de p: 63/64/65 bits, 127/128 bits, p cercano a 2^128 (la REDC deja u2 = 1) y p = 2^64 + 13.\n\nLa parte lateral (DDF que compone tras cambiar el módulo) es de esfuerzo bajo: unas 10 líneas en Frobenius::cambiar_modulo, más un test de generador aleatorio como el de test_fase5.",
+   "riesgos": "- Los tiempos son PRELIMINARES: se midieron con otros 5 agentes compilando y midiendo, y FLINT varió de 2,78 a 3,12 ms entre dos ejecuciones. Además, la sección 5 repite una única entrada, porque el escenario de compare_libs tiene una sola, y eso puede favorecer al predictor de saltos.\n- La combinación FpN2 + DDF que compone es una ESTIMACIÓN por resta de piezas medidas, no una medición conjunta.\n- No he medido con -march=native (mulx/adx podrían abaratar algo más la REDC), ni N = 4, ni Kronecker o la NTT por limbs con FpN.\n- El prototipo exige p impar con 65-128 bits. Para hacerlo compilar en Poly sin tocar include/ usa dos apaños que no deben llevarse a la librería tal cual:\n  - E2::operator=(mpz_class), para la rama BigInt de ks::mul_primo, que Poly instancia aunque Auto nunca la elija;\n  - una declaración adelantada de alcp::ks::detail::como_limbs antes de incluir alcp.hpp.\n  FpN2 tampoco es copiable (tiene un mpz de trabajo mutable): en la versión real conviene que sea thread_local, por seguridad con hilos.\n- La variante de DDF usa interfaces públicas de Poly (Composer y Reducer). Antes de integrarla hay que confirmar con un test que el generador se consume igual cuando haya FFT. Mi razonamiento, no comprobado: el primer pow_mod, el que pide las tablas, se conserva, y la raíz base solo se pide una vez.\n- Los recuentos y las estimaciones de «aritmética frente a reservas» multiplican recuentos medidos por costes unitarios medidos aislados (caché caliente), así que son aproximados.\n- Añadir dos o tres cuerpos al binding aumenta el tiempo de compilación y el tamaño del módulo.\n\nEstos resultados son de una IA y conviene revisarlos antes de decidir.",
+   "perfil": "factor() de un polinomio mónico aleatorio de grado 20 en F_(2^127-1) con Poly<Fp>. Media de 48 llamadas sobre 16 entradas, ALCP_THREADS=1, asignador normal. Total 15,4 ms.\n\n| Fase | ms | % | Detalle |\n|---|---:|---:|---|\n| radical | 0,095 | 1 % | |\n| DDF pow_mod | 14,23 | 92 % | 2,5 por llamada: el primero y uno tras cada factor encontrado |\n| DDF composición | 0,037 | 0,2 % | 4,6 por llamada |\n| DDF MCD | 0,39 | 3 % | 7,1 MCD |\n| DDF otros | 0,05 | | |\n| EDF pow_mod | 0,58 | 4 % | 0,94 por llamada, exponente (q^r-1)/2 |\n| EDF resto | 0,011 | | |\n| multiplicidad | 0,046 | | |\n\nAritmética frente a reservas:\n- Recuentos por llamada: 427 000 acc_fma, 51 000 acc_reduce, 26 000 acc_set, 12 300 mul, 12 200 add/sub y 1 113 inv; 195 000 reservas de GMP y 5 290 operator new.\n- La aritmética estimada (recuento x coste unitario aislado, que incluye la reserva de cada resultado) suma 10,8 ms de 15,4.\n- Medido con el asignador pool de GMP, el total baja a 9,5-9,9 ms: alrededor del 38 % del tiempo son reservas y liberaciones de GMP. En modo pool, la aritmética mpz estimada es 8,7 de 9,5 ms (unos 92 %).\n\nCon Poly<FpN2> el total es 2,57 ms: DDF pow_mod 87 %, MCD 5 % y EDF 5 %. La aritmética de elementos estimada es de unos 2,4 ms (fma 1,4, reduce 0,5, inv 0,34) y operator new unos 0,14 ms."
+  },
+  "limpia": {
+   "tema": "fpn",
+   "ejecutado_ok": true,
+   "fichero_salida": "C:/Users/ismae/Documents/Archivos/Proyectos/finite-fields-algorithms/bench/results/fase6/fpn.txt",
+   "mediciones": [
+    {
+     "escenario": "Elemento p=2^127-1: mul (Fp mpz frente a FpN2)",
+     "antes": "66,7 ns",
+     "despues": "11,0 ns",
+     "factor": "6,1x"
+    },
+    {
+     "escenario": "Elemento: add / sub",
+     "antes": "42,2 / 42,0 ns",
+     "despues": "1,1 / 0,9 ns",
+     "factor": "37x / 46x"
+    },
+    {
+     "escenario": "Elemento: 20 acc_fma + acc_reduce",
+     "antes": "429 ns",
+     "despues": "81 ns",
+     "factor": "5,3x"
+    },
+    {
+     "escenario": "Elemento: acc_fma con acumulador reservado / acc_reduce",
+     "antes": "13,5 / 57,2 ns",
+     "despues": "3,3 / 9,5 ns",
+     "factor": "4,1x / 6,0x"
+    },
+    {
+     "escenario": "Elemento: inv / inv(1)",
+     "antes": "670 / 88 ns",
+     "despues": "635 / 58,5 ns",
+     "factor": "1,1x / 1,5x"
+    },
+    {
+     "escenario": "Poly grado 20: producto 19x19 / resto 38/20 / gcd",
+     "antes": "10,89 / 13,49 / 61,7 us",
+     "despues": "1,76 / 2,00 / 19,2 us",
+     "factor": "6,2x / 6,8x / 3,2x"
+    },
+    {
+     "escenario": "Poly grado 20: pow_mod exponente q",
+     "antes": "6 299 us",
+     "despues": "977 us",
+     "factor": "6,4x"
+    },
+    {
+     "escenario": "factor() 16 entradas grado 20 (malloc)",
+     "antes": "15,77 ms Poly<Fp>",
+     "despues": "2,76 ms Poly<FpN2>",
+     "factor": "5,72x"
+    },
+    {
+     "escenario": "factor() Poly<Fp>: malloc frente a pool de GMP",
+     "antes": "15,77 ms",
+     "despues": "9,37 ms",
+     "factor": "1,68x"
+    },
+    {
+     "escenario": "pow_mod Poly<Fp>: malloc frente a pool",
+     "antes": "6,30 ms",
+     "despues": "3,89 ms",
+     "factor": "1,62x"
+    },
+    {
+     "escenario": "DDF Poly<Fp>: librería frente a compone",
+     "antes": "14,83 ms",
+     "despues": "7,63 ms",
+     "factor": "1,94x"
+    },
+    {
+     "escenario": "DDF Poly<FpN2>: librería frente a compone",
+     "antes": "2,38 ms",
+     "despues": "1,26 ms",
+     "factor": "1,89x"
+    },
+    {
+     "escenario": "Escenario fp127.factor.d20: factor() Fp frente a FpN2",
+     "antes": "18,05 ms",
+     "despues": "3,08 ms",
+     "factor": "5,87x",
+     "referencia_flint": "python-flint 0.9.0: 2,59 ms (Fp 7,0x FLINT; FpN2 1,19x FLINT)"
+    },
+    {
+     "escenario": "Escenario fp127.factor.d20: DDF librería frente a compone (Fp / FpN2)",
+     "antes": "17,47 / 2,74 ms",
+     "despues": "7,69 / 1,21 ms",
+     "factor": "2,3x / 2,3x"
+    },
+    {
+     "escenario": "Escenario: estimación FpN2 + DDF que compone (no medido directamente)",
+     "despues": "1,55 ms (estimado)",
+     "referencia_flint": "2,59 ms -> ~0,60x FLINT"
+    }
+   ],
+   "diferencias_con_preliminar": "Ningún hallazgo cambia cualitativamente; las cifras quedan dentro de un 2-5 % de las preliminares.\n- Perfil Fp: total 15,40 ms (antes 15,4), DDF pow_mod 14,22 ms (92 %), 2,50 pow_mod y 4,56 composiciones por llamada. Los recuentos coinciden: 426 821 acc_fma, 50 711 reduce, 26 193 set, 12 321 mul, 12 165 add/sub y 1 113 inv.\n- Reservas: siguen siendo 195 319 reservas de GMP y 5 290 new por llamada. Con pool, factor() pasa de 15,77 a 9,37 ms (1,68x; antes 16,0 a 9,9, 1,6x) y pow_mod de 6,30 a 3,89 ms. La aritmética estimada en modo pool es 8,69 de 9,16 ms medidos (95 %; antes 92 %). En FpN2 quedan 956 reservas de GMP por llamada.\n- Elemento FpN2: mul 66,7 frente a 11,0 ns (6,1x; antes 6,2x); add 37x y sub 46x; núcleo fma 5,3x; acc_reduce 6,0x (antes 5,7x); inv 1,1x; inv(1) 88 frente a 58,5 ns.\n- Poly grado 20: producto 6,2x, resto 6,8x (antes 6,6x), gcd 3,2x y pow_mod 6,4x (antes 6,5x).\n- factor() en 16 entradas: 5,72x (antes 5,78x). FpN2 tarda 2,76 ms y su DDF pow_mod sigue siendo el 87 %.\n- Escenario exacto: 18,05 frente a 3,08 ms, 5,87x (antes 18,9 frente a 3,16, 5,98x). FLINT da hoy 2,59 ms, un poco menos que el rango preliminar de 2,78-3,12 ms. Con eso, la distancia de FpN2 a FLINT queda en 1,19x en lugar de 1,0-1,1x, y la de Fp en 7,0x en lugar de 6,8x.\n- DDF que compone: 1,94x con Fp y 1,89x con FpN2, idéntico. En el escenario, 17,47 frente a 7,69 ms con Fp y 2,74 frente a 1,21 ms con FpN2.\n- Combinación estimada: 1,55 ms (antes 1,54), unas 0,60x FLINT con la medida de hoy. Sigue siendo una estimación, no una medida directa.",
+   "notas": "- CPU AMD Ryzen 7 7730U, equipo enchufado (BatteryStatus=2), ALCP_THREADS=1, comandos ejecutados en serie. No se ha recompilado ni se ha tocado código. Las comprobaciones fallidas son 0 en ambos modos.\n- Anomalía nueva: con p de 65 bits y malloc, add/sub de Fp cuesta 340 ns (297x) y 20 fma+reduce 973 ns. Con pool baja a 21 ns. Es probablemente un efecto del asignador o del patrón de reservas de mpz con ese tamaño, no de FpN2; convendría repetir esa línea antes de citarla.\n- El punto de FLINT es una sola ejecución (2,59 ms) y la preliminar daba 2,78-3,12 ms. Para la comparación con FLINT conviene dar un rango y no una sola cifra."
+  },
+  "verificacion": {
+   "tema": "fpn",
+   "veredicto": "con_reservas",
+   "problemas": [
+    "La cobertura de corrección no incluye ningún primo mayor que 2^127. Los tres primos probados son 2^127-1, nextprime(2^100) y nextprime(2^64), y con ellos x+y nunca desborda 2^128. Por eso no se ejecutan tres ramas que solo existen para p > 2^127: el acarreo de add (s < x), el u2 = 1 de la segunda REDC (resultado < 2p > 2^128) y la resta final con u2. Al revisar el código a mano, estas ramas parecen correctas: la primera REDC da u < R+p, u2 vale 0 o 1, y la segunda REDC da un valor < 2p. Aun así, la afirmación «correcto para p de 65-128 bits» no está demostrada empíricamente. Además, la propuesta lista p cercano a 2^128 como caso frontera futuro sin haberlo probado.",
+    "Los casos límite de elementos casi no se prueban. 0, 1 y p-1 solo aparecen en el test del acumulador ((p-1)^2) y en inv(1). mul, add, sub, neg, pow (incluido el exponente negativo) y from_int de un negativo se prueban con valores aleatorios. En las pruebas de polinomios los coeficientes cero son prácticamente imposibles. pow no se compara nunca directamente con Fp.",
+    "La comprobación del generador aleatorio en fft_base_root es vacía. p = 2^127-1 tiene fft_capacity = 1, así que nunca se ejecutan FpN2::fft_base_root, FFTCache<E2> ni la FFT genérica con E2. Que factor() coincida no confirma que el generador se consuma igual cuando hay FFT. Al leer el código coincide línea a línea con Fp::fft_base_root, y Poly::mul pide la raíz según la regla old_fft (L >= 64), que no depende del backend. Es plausible, pero no está probado con un primo de 2-adicidad alta.",
+    "No he podido ejecutar mi prueba independiente. Escribí y compilé build/fase6/verif_fpn/verif.cpp, que cubre p = 2^128-159, nextprime(2^127+1), 2^64+13 y un primo k·2^64+1 de unos 120 bits con NTT. Prueba valores frontera (0, 1, p-1, (p±1)/2, 2^64±1), pow negativo, un acumulador de 2^22 términos, fft_base_root junto con el estado del generador, y factor(), producto y resto con grado 20 y 45, con y sin factores repetidos. La política de control de aplicaciones de Windows bloquea el ejecutable recién compilado, y no la he eludido.",
+    "La propuesta de despacho define fits como «FpN2 de 63 a 128 bits», pero el prototipo exige 65-128 bits y no se ha probado por debajo. Con p < 2^64, FpN2::inv llamaría a mpz_roinit_n(zp, lp, 2) con p1 = 0, es decir, con un mpz sin normalizar. Ese uso no es válido. El rango de 63-64 bits necesita código y pruebas propios.",
+    "Las ganancias dependen de la plataforma. Fp está dominado por las reservas: unas 195 000 reservas de GMP por llamada y aproximadamente el 40 % del tiempo de factor(). Se midió con un binario MinGW -static sobre el heap de UCRT (malloc+free cuesta unos 27 ns). En Linux con glibc (tcache) la reserva es más barata, así que el factor 5,7-6,0x y la distancia de unas 1,2x a FLINT podrían ser menores allí. No está medido.",
+    "La variante ddf_compone siempre reconstruye el Composer tras cambiar el módulo. La librería, en cambio, aplica a propósito la regla de alquilar o comprar de quiere_componer (pasos_ = 0, que obliga a un pow_mod primero). Componer siempre es correcto (H_{d+1} = H_d(H_1) mod g), pero solo se ha medido y validado con q = 2^127-1 y grado 20. Con q pequeño (pocos productos por pow_mod) construir el Composer (unos k productos) puede costar más que el pow_mod. El arreglo de unas 10 líneas debería conservar la condición productos_q_ >= k+1 y no componer de forma incondicional.",
+    "Las razones de add/sub (37x y 46x) están limitadas por el propio método de medida. usa() mantiene una cadena dependiente g_chk = g_chk*31 + x, de unos 4 ciclos, que domina los 0,9-1,1 ns de FpN2. Esas cifras no miden FpN2 en sí, y el «37x» no se puede extrapolar. No exagera el resultado; lo infraestima o lo vuelve impreciso. acc_set de FpN2 se escribe en un vector que no se lee nunca, así que el compilador podría eliminarlo, aunque no se usa en ninguna conclusión.",
+    "La integración combinada (FpN2 + DDF que compone ≈ 1,55 ms, unas 0,6x FLINT) es una resta de piezas medidas por separado sobre una única entrada repetida. Además, FLINT dio 2,59 ms en una ejecución frente a 2,78-3,12 ms en otras. La afirmación «más rápido que FLINT» no está demostrada: el rango honesto es 0,5-0,6x, estimado. Lo mismo ocurre con la distancia de FpN2 solo, que hay que dar como 1,0-1,2x y no como una cifra única.",
+    "El recuento de unas 3 000 comprobaciones no cuadra con el código: solo la sección 1 hace 1 024 x 6 comparaciones por primo y 3 primos, es decir, más de 18 000. Es un error menor de redacción.",
+    "Las estimaciones de fp127.mul.d500 (1,1-1,2x), de N = 4 (2,5-3,5x) y de los usos con NTT no están medidas. Además, con FpN2 el despacho cambia: la FFT pasa al backend Generic (umbral small >= 64 frente a 16 de Limb), kParKaratsubaMin vale 64 (el valor pensado para F_q) y prefer_kronecker es false. Por encima del grado 32 Poly<FpN2> no ejecuta los mismos algoritmos que Poly<Fp>, y sin los ajustes de despacho podría ser más lento que Fp en grados medios y altos."
+   ],
+   "correcciones": [
+    "Añadir a fpn_bench (o a un test) al menos p = 2^128-159 (o nextprime(2^127+1)) y un primo con 2-adicidad alta. Para cada uno, comprobar mul, add, sub, neg, inv, pow (exponente negativo y cero) y acc sobre valores frontera {0, 1, 2, p-1, p-2, (p±1)/2, 2^64-1, 2^64, 2^64+1}. Comprobar también fft_base_root más un rand_below posterior (estado del generador), y factor() con grado de 40 o más (L >= 64, que activa old_fft) comparando el generador tras la llamada. La prueba ya está escrita en build/fase6/verif_fpn/verif.cpp; falta poder ejecutarla.",
+    "Limitar la propuesta de fits a 65-128 bits mientras no se adapten inv (tamaño de vista de p) y la REDC para p de 63-64 bits, y probar ese rango aparte.",
+    "Reformular la DDF lateral: tras cambiar_modulo, componer de inmediato si h1_ existe y productos_q_ >= k+1, en lugar de componer siempre. Medirlo también con q pequeño (F_3, F_101) y comprobar el consumo del generador con un cuerpo con FFT.",
+    "Dar la distancia a FLINT como rango: FpN2 a unas 1,0-1,2x y la combinación a unas 0,5-0,6x (ESTIMADA). Indicar que la combinación no se ha medido de forma conjunta.",
+    "Medir add/sub sin la cadena dependiente de usa(), o declarar que esas cifras están limitadas por la medida. Indicar que el factor 6x se obtuvo con el heap de UCRT/MinGW y que en Linux puede ser menor.",
+    "Corregir el número de comprobaciones (más de 18 000) y declarar explícitamente que las ramas para p > 2^127 y la FFT con E2 no se han probado."
+   ],
+   "hallazgos_que_sobreviven": [
+    "Comparación justa en grado 20 con 2^127-1. Revisado el despacho de polynomial.hpp: con small < 32, prefer_kronecker, prefer_newton y prefer_fft dan el mismo camino (escolar) para Fp y FpN2, y fft_capacity vale 1, así que no hay tablas ni cachés que difieran. Las entradas son variadas (16, rotando; 1 024 en elementos), se usa ALCP_THREADS=1 en ambos y el trabajo no se elimina, porque usa() alimenta g_chk, que se imprime. Los dos asignadores (contadores de GMP y de new) afectan por igual a ambos cuerpos.",
+    "La corrección se compara de verdad con la librería: Fp, Poly<Fp>::factor(), distinct_degree(), pow_mod y gcd, nunca con copias propias. La entrada del escenario reproduce la de compare_libs.py (misma semilla sha256 y mismo _aleatorio con monico).",
+    "La aritmética de FpN2, revisada a mano, es correcta: inverso de Newton con 5 iteraciones (3→96 bits ≥ 64), REDC de dos pasos con t4, doble REDC sobre el canónico (u < R+p, luego < 2p), acumulador de 5 palabras con pliegue 2^256 ≡ R2 y bucle de acarreo, y add/sub con acarreo. random() y fft_base_root() replican exactamente las llamadas a rand_below de Fp (comparado con fp.hpp).",
+    "Ganancia de elemento y de Poly en grado 20 con 2^127-1: alrededor de 6x en mul, producto, resto y pow_mod, unas 3,2x en gcd (limitado por inv) y unas 5,7-6,0x en factor(). La medición limpia queda dentro de un 2-5 % de la preliminar.",
+    "La DDF clásica rehace un pow_mod de 127 bits tras cada factor. Confirmado en el código: cambiar_modulo pone comp_.reset() y pasos_ = 0, y quiere_componer devuelve false con pasos_ = 0. ddf_compone es matemáticamente correcta y da la salida de distinct_degree() en las 17 entradas probadas. No consume el generador, porque Composer usa mul_no_rng y el primer pow_mod se conserva. Medido: 1,9x en la DDF con q = 2^127-1.",
+    "El perfil (92 % pow_mod de la DDF) y el peso de las reservas de GMP (factor() 1,6-1,7x más rápido solo con un asignador por listas libres) están medidos de forma coherente. La recomendación de no cambiar mp_set_memory_functions en la librería es sensata, porque es estado global del proceso."
+   ]
+  }
+ },
+ {
+  "tema": "hgcd",
+  "preliminar": {
+   "tema": "hgcd",
+   "resumen": "He perfilado P::hgcd en F_998244353 y he prototipado variantes fuera de la librería. En todas ellas los cocientes coinciden con los de la librería: la matriz y los restos son idénticos a P::hgcd + P::aplicar, el mcd a gcd_classic y (g, x, y) a gcd_ext_classic. Lo comprobé en F_998244353, F_101 y F_(2^61-1), con casos de mcd no trivial. En el perfil, el caso base en sitio es el 26-34 % del tiempo, aplicar el 43-50 %, mul_mat el 17-20 % y paso y copias menos del 4 %. Fuera de hgcd, el gcd hace además un aplicar final de tamaño completo, que cuesta un 15 % más.\n\nLa mejor combinación (V3e) da 1,9-2,0x en hgcd. Tiene cuatro piezas: hgcd devuelve también los restos y la matriz se aplica solo a la parte baja; la matriz 2x2 se multiplica con transformadas NTT reutilizadas; la segunda mitad comparte las transformadas de S; y se usa la \"envoltura\", una convolución cíclica de tamaño 2^(k-1) con corrección directa de los coeficientes altos cuando L se pasa poco de una potencia de 2 (p. ej. 513). Con eso, mul_mat es 2,3x más rápido. Strassen-Winograd no gana: es un 20 % más lento.\n\nCon todo ello, half-GCD gana al clásico desde n ≈ 1024 en gcd (antes 4096) y desde ≈ 512 en gcd_ext (antes 2048). En gcd de grado 1000 la ganancia es pequeña: 1243 frente a 1133 µs (1,10x), y FLINT tarda 662 µs. La distancia restante está en el Euclides clásico en sitio, que es 1,6-1,9x más lento que el de FLINT. En gcd_ext de grado 1000 la mejora es de 4445 a unos 2510 µs (1,8x), frente a 1773 µs de FLINT.\n\nHallazgo colateral, medido: P::gcd_ext de producción es 2,4-2,6x MÁS LENTO que el clásico a partir de su umbral (2048 en p < 2^32). La causa es que, tras el primer hgcd, recorre toda la cola con P::paso sobre Poly y una matriz de tamaño completo.",
+   "archivos": [
+    "C:/Users/ismae/Documents/Archivos/Proyectos/finite-fields-algorithms/bench/experimentos/fase6/hgcd/hgcd_proto.cpp",
+    "C:/Users/ismae/Documents/Archivos/Proyectos/finite-fields-algorithms/bench/experimentos/fase6/hgcd/flint_gcd.py",
+    "C:/Users/ismae/Documents/Archivos/Proyectos/finite-fields-algorithms/build/fase6/hgcd/hgcd_proto3.exe",
+    "C:/Users/ismae/Documents/Archivos/Proyectos/finite-fields-algorithms/bench/results/fase6/hgcd_preliminar.txt"
+   ],
+   "comandos_medicion": [
+    "ALCP_THREADS=1 ./build/fase6/hgcd/hgcd_proto3.exe check",
+    "ALCP_THREADS=1 ./build/fase6/hgcd/hgcd_proto3.exe perfil",
+    "ALCP_THREADS=1 ./build/fase6/hgcd/hgcd_proto3.exe micro",
+    "ALCP_THREADS=1 ./build/fase6/hgcd/hgcd_proto3.exe gcd",
+    "ALCP_THREADS=1 ./build/fase6/hgcd/hgcd_proto3.exe ext",
+    "ALCP_THREADS=1 .venv/Scripts/python.exe bench/experimentos/fase6/hgcd/flint_gcd.py"
+   ],
+   "correcto": true,
+   "comprobacion_correccion": "El modo 'check' de hgcd_proto3.exe compara cada variante con las funciones de la librería, no con copias propias. Las variantes son V1, V2, V3, V2e, V3e y W, con caso base 64/128/256/512 y ntt_min 16/32/64/128. Comprueba cuatro cosas: que la matriz M y los restos (A, B) de hgcd_rem coinciden con P::hgcd(a,b) y P::aplicar (también con con_matriz=false); que gcd_v(a,b) == P::gcd_classic(a,b); que gcd_ext_v (umbral 0 y 512, con y sin cola en sitio) devuelve g, x, y idénticos a P::gcd_ext_classic; y que P::gcd coincide con gcd_classic. Los grados son 130, 300, 777, 1000, 1024, 2048 y 3001, con 4 pares aleatorios más 2 casos con mcd no trivial (factor común de grado n/3) y b de grado n-7. Los cuerpos son F_998244353 (camino NTT), F_101 y F_(2^61-1) (sin NTT: caminos de reserva). Resultado: OK en los tres. El modo 'micro' comprueba además mul_mat_ntt (con y sin envoltura) y Winograd frente a P::mul_mat. En cuanto al RNG, los productos nuevos solo usan la NTT si K.fft_cache_ no está vacía (mismo criterio que mul_no_rng) y fft::tables(K,k) con la caché ya poblada no consume el generador. Las mediciones construyen las tablas antes, como calibra_hgcd.cpp.",
+   "hallazgos": [
+    {
+     "titulo": "Perfil de P::hgcd (F_998244353, caso base 256)",
+     "medido": true,
+     "detalle": "Copia literal de P::hgcd con cronómetros por nivel. n=1024: hgcd 1607 µs, de los que el caso base en sitio (hgcd_base_w) es el 34 %, aplicar (4 productos) el 43 %, mul_mat (8 productos) el 17 %, paso el 4 %, copias/div_xk el 0,6 % y el control el 0,2 %. n=2048: 3797 µs (31 % / 47 % / 18 % / 3 %). n=4096: 10600 µs (26 % / 50 % / 20 % / 3 %). El gcd hace además, fuera de hgcd, un P::aplicar final con los polinomios completos: 250 / 540 / 1253 µs (+15 %). Recursión y reservas son despreciables. Todo el coste está en productos de matrices y en el caso base. Hay una ineficiencia concreta: los productos de mul_mat tienen longitud L = n/2 + 1 (p. ej. 513), lo que duplica el tamaño de la NTT."
+    },
+    {
+     "titulo": "V1: hgcd que devuelve los restos y aplica la matriz solo a la parte baja",
+     "medido": true,
+     "detalle": "(A,B) = (A1,B1)·x^m + R·(a mod x^m, b mod x^m), donde (A1,B1) ya los calculó la recursión, y lo mismo en la segunda mitad con x^k. Así desaparece el aplicar final del gcd y los productos de aplicar son de n/4 × n/2 en lugar de n/4 × n. El gcd del nivel superior se hace sin matriz (sin S·QR, al estilo FLINT/NTL 'hgcd + resto'). Con productos de la librería: hgcd + restos 1,29-1,38x frente a P::hgcd sin restos. gcd (umbral 0) en n=2048: 7067 → 4313 µs (1,64x); en n=8192: 43868 → 26982 µs.",
+     "antes": "gcd n=2048 hgcd lib 7067 µs",
+     "despues": "4313 µs",
+     "factor": "1,64x"
+    },
+    {
+     "titulo": "V2: matriz 2x2 con transformadas NTT reutilizadas",
+     "medido": true,
+     "detalle": "aplicar pasa a 6 transformadas directas + 2 inversas (en vez de 12) y mul_mat a 8 + 4 (en vez de 24). El producto punto a punto x1·y1 + x2·y2 usa una sola reducción de Barrett (p < 2^31). Micro con matrices reales de hgcd: aplicar 1,36-1,57x más rápido, pero mul_mat solo 1,08x (n=1024: 121 → 113 µs), porque al reunir los 8 productos todos quedan en la NTT del mayor, que tiene L = 513 → 1024. En hgcd + restos, 1,55-1,61x frente a P::hgcd."
+    },
+    {
+     "titulo": "Envoltura (V2e/V3e): convolución cíclica de tamaño 2^(k-1) cuando L se pasa poco",
+     "medido": true,
+     "detalle": "Si L - 2^(k-1) <= 2^(k-1)/16, se transforma con tamaño 2^(k-1) (plegando los operandos más largos). Los coeficientes j >= 2^(k-1), muy pocos, se calculan directamente y se restan de los envueltos. El resultado es idéntico. Micro mul_mat: n=512 61,5 → 27,2 µs; 1024: 121 → 52 µs; 2048: 264 → 115 µs; 4096: 575 → 242 µs; 8192: 1289 → 540 µs (2,26-2,39x). Lo mismo valdría para P::mul_no_rng en general (productos de longitud 2^k + pocos), pero eso es otro tema y no lo he medido.",
+     "antes": "mul_mat n=1024: 121,3 µs",
+     "despues": "52,1 µs",
+     "factor": "2,33x"
+    },
+    {
+     "titulo": "V3/V3e: compartir las transformadas de S en la segunda mitad",
+     "medido": true,
+     "detalle": "S·(partes bajas) y S·QR usan la misma NTT cuando el tamaño coincide (10 directas + 6 inversas en lugar de 16 + 8). La ganancia es pequeña: V3e frente a V2e en hgcd + restos 837 frente a 872 µs (n=1024) y 5254 frente a 5559 µs (n=4096). En n=2048 empatan. Mejor variante, V3e: hgcd + restos 1,92x (1024), 1,69x (2048) y 2,02x (4096) frente a P::hgcd sin restos. Si se incluye el aplicar final que el gcd de la librería necesita, el factor sube a 2,2x en 1024."
+    },
+    {
+     "titulo": "Strassen-Winograd 2x2 (7 productos)",
+     "medido": true,
+     "detalle": "Más lento que los 8 productos: micro mul_mat 1,20-1,23x más lento (n=1024: 148 frente a 121 µs). En el gcd, la columna W es igual o peor que V1. Las 15 sumas y los operandos de mayor grado (s4, t4) no compensan el producto ahorrado. Además, con NTT reutilizada el producto punto a punto ya es casi gratis. Lo descarto."
+    },
+    {
+     "titulo": "Tamaño del caso base (kHgcdMin)",
+     "medido": true,
+     "detalle": "Depende de la relación entre n y el caso base. Con 128: hgcd n=1024 794 µs (V3e min128) frente a 837 µs (V3e 256); gcd n=4096 7533 frente a 8055 µs; pero n=768 1198 frente a 981 µs y n=1536 3089 frente a 2476 µs. Con 512 es peor en casi todo. No hay un valor claramente mejor que 256. Elegir el caso base según n para que la última recursión caiga en unos 150-250 sería una mejora menor que no he probado."
+    },
+    {
+     "titulo": "Nuevo punto de corte de gcd frente al clásico en sitio",
+     "medido": true,
+     "detalle": "Con V3e y el clásico por debajo de un umbral exterior U, medido en µs. n=512: clásico 348, U=512 422 (pierde). n=1000: 1243 frente a 1133 (U=512, 1,10x). n=1024: 1299 frente a 1162 (U=1024, 1,12x). n=1536: 2894 frente a 2311 (1,25x). n=2048: 5001 frente a 3210 (1,56x). n=4096: 19803 frente a 8014 (2,47x; frente a P::gcd de producción, 15846 µs: 1,98x). n=8192: 85149 frente a 19277 (P::gcd de producción 45814: 2,38x). Umbral propuesto para gcd en p < 2^32 con NTT: unos 1024, antes 4096. En d1000 la ganancia es marginal (1,10x, en el límite del ruido con otros agentes midiendo)."
+    },
+    {
+     "titulo": "Distancia a FLINT (python-flint 0.9.0, nmod_poly, mismo protocolo)",
+     "medido": true,
+     "detalle": "gcd FLINT, en µs: 256: 63,5; 1000: 662; 2048: 2897; 4096: 8608; 8192: 22835. Nuestro clásico a 256 tarda 99 µs (1,56x) y a 1000, 1243 µs (1,88x). Con V3e (U=512/1024): 1000 → 1133 (1,71x), 2048 → 3210 (1,11x), 4096 → 8014 (0,93x, más rápido que FLINT), 8192 → 19277 (0,84x). xgcd FLINT: 1000: 1773; 2048: 5368; 4096: 14175. Con gcd_ext V3e: 1000 → 2524 (1,42x), 2048 → 6360-6758 (1,2x), 4096 → 15228 (1,07x). Conclusión: half-GCD alcanza a FLINT en grados grandes. En d1000 la diferencia está en el Euclides clásico (FLINT 1,6-1,9x más rápido en la zona cuadrática, n <= 1024), que además es el 50-60 % del hgcd mejorado (caso base). Eso es otro tema (bucle axpy/división en sitio)."
+    },
+    {
+     "titulo": "gcd_ext de producción: regresión grave a partir del umbral",
+     "medido": true,
+     "detalle": "P::gcd_ext tal cual (umbral 2048 en F_998244353), en µs: n=2048 45833 frente a gcd_ext_classic 17583 (2,6x más LENTO); n=4096 171747 frente a 70426 (2,4x más lento). La causa: tras el primer hgcd (n → n/2), como r0 queda por debajo del umbral, el bucle hace los n/2 pasos restantes con P::paso sobre Poly, con divmod y productos q·M de tamaño completo con reservas, en lugar del Euclides en sitio. Con umbral 128 (como calibra_hgcd) hay menos pasos de cola, pero aun así salen 16145 µs en 2048 y 37735 µs en 4096. Afecta también a inv_mod. Arreglo prototipado ('cola en sitio': copia del bucle de gcd_ext_classic_w partiendo de la matriz acumulada) o, simplemente, seguir con hgcd hasta grados pequeños.",
+     "antes": "P::gcd_ext n=2048: 45833 µs; n=4096: 171747 µs",
+     "despues": "V3e+cola (min128): 6360 µs; 15228 µs",
+     "factor": "7,2x / 11,3x"
+    },
+    {
+     "titulo": "Nuevo punto de corte de gcd_ext",
+     "medido": true,
+     "detalle": "V3e con cola en sitio, en µs. n=256: clásico 333 frente a 323 (umbral 256), empate. n=512: 1210 frente a 1054-1079 (1,12-1,15x). n=768: 2640 frente a 1893 (1,39x). n=1000: 4445 frente a 2509-2524 (V3 / V3e umbral 0: 1,76-1,77x). n=1024: 4494 frente a 2575 (1,75x). n=2048: 17583 frente a 6360 (2,76x). n=4096: 70426 frente a 15228 (4,6x). Umbral propuesto para gcd_ext en p < 2^32 con NTT: unos 512, antes 2048 (con 256-384 se empata). En gcd_ext d1000: 4445 → unos 2510 µs (1,77x)."
+    },
+    {
+     "titulo": "Ganancia estimada en gcd d1000 de la comparativa",
+     "medido": false,
+     "detalle": "Estimado a partir de lo medido: con half-GCD V3e y umbral 1024, el MCD de grado 1000 seguiría usando el clásico (1000 < 1024), así que la ganancia es 0. Con umbral 512, 1,10x, en el ruido. La distancia de 2,00x a FLINT en 'MCD grado 1000' no se cierra con half-GCD. Si el Euclides en sitio llegara a la velocidad de FLINT (unos 1,85x, otro tema), el clásico bajaría a unos 670 µs en d1000, y half-GCD (cuyo caso base también se acelera) seguiría sin compensar por debajo de unos 1024-1536. Ambas mejoras se suman en grados >= 2048."
+    }
+   ],
+   "estimacion_integrada": "Propuesta para Fp64 con NTT (p < 2^32). Cuatro cambios: (1) hgcd devuelve también los restos y aplica la matriz solo a la parte baja; gcd y gcd_ext usan esos restos y el gcd no calcula la matriz en el nivel superior. (2) La matriz 2x2 se multiplica y se aplica con NTT reutilizada y envoltura cíclica, compartiendo las transformadas de S en la segunda mitad. (3) gcd_ext termina la cola en sitio, o sigue con hgcd hasta el caso base. (4) Se recalibran los umbrales: gcd unos 1024 (antes 4096) y gcd_ext unos 512 (antes 2048). kHgcdMin se queda en 256.\n\nGanancias medidas (preliminares) frente a la librería actual, en µs:\n- gcd: 1,0x en d1000 (1,10x con umbral 512); 2048 → 1,56x (5001 → 3210); 4096 → 1,98x (15846 → 8014); 8192 → 2,38x.\n- gcd_ext: d1000 → 1,77x (4445-4512 → unos 2510); 2048 → 7,2x (45833 → 6360, por la regresión actual); 4096 → 11x.\n\nEn la comparativa, 'MCD grado 1000' seguiría en unos 1,9-2,0x de FLINT. Ese hueco es del Euclides clásico, no de half-GCD. En gcd_ext/inv_mod de grado 1000 se pasaría de unos 2,5x a unos 1,4x de FLINT. En grados >= 4096 quedaríamos a la par o por delante de FLINT.\n\nPara otros Fp64 (F_101, 2^61-1, sin NTT) solo se aplica V1 (restos + parte baja, más la cola en sitio de gcd_ext). Allí la ganancia de V1 sobre hgcd fue de 1,3-1,4x en F_998244353; en esos cuerpos no la he medido.",
+   "esfuerzo": "Medio. Unas 250-300 líneas en polynomial.hpp: hgcd_rem (sustituye a hgcd o lo complementa), un helper de producto de matrices 2x2 sobre fft::word con plegado/envoltura (necesita acceso a FFTTables/word::transform, que ya existen), la cola en sitio de gcd_ext (copia del bucle de gcd_ext_classic_w) y la recalibración de umbral_hgcd. Las pruebas existentes de gcd/gcd_ext frente a los clásicos sirven tal cual. Conviene añadir casos de longitud 2^k + 1 para la envoltura.",
+   "riesgos": "- Las mediciones son preliminares: había 5 agentes más compilando y midiendo. La ganancia de 1,10x en d1000 está dentro del ruido. python-flint se midió en otra tanda, minutos después.\n- El prototipo usa '#define private public' alrededor de #include \"alcp/alcp.hpp\" para acceder a Mat2, hgcd_base_w, paso_w, etc. La librería no se toca, pero el truco solo sirve para investigar.\n- RNG: los productos nuevos solo usan la NTT con la caché de tablas ya poblada, igual que mul_no_rng. Así se respeta que el primer fft::tables de un cuerpo consuma el generador. Las mediciones se hicieron con la caché construida antes, como calibra_hgcd. gcd_ext conserva el guardado de la librería (sin caché → clásico).\n- La envoltura con coeficientes altos directos usa acumuladores de 128 bits. El caso p >= 2^31 del producto punto a punto usa u128 % p y es lento: no está optimizado y solo se ha comprobado su corrección en F_(2^61-1), donde no hay NTT y no se usa.\n- No he medido con -march=native ni en otros cuerpos Fp64 (F_101, 2^61-1): allí solo he comprobado la corrección.\n- El hallazgo de la regresión de P::gcd_ext (2,4-2,6x más lento que el clásico desde n=2048) está medido aquí. Conviene confirmarlo en la tanda en serie antes de priorizarlo, aunque la causa (cola con P::paso sobre Poly) se ve en el código.\n- Los ejecutables build/fase6/hgcd/hgcd_proto.exe y hgcd_proto2.exe son versiones intermedias (el primero lo bloqueó Smart App Control). El válido es hgcd_proto3.exe. Los comandos se ejecutan desde la raíz del repo en Git Bash. No he hecho git add ni commit.",
+   "perfil": "P::hgcd, F_998244353, mejor de 3 tandas, 8 pares variados (a grado n, b grado n-1), µs por llamada:\n- n=1024: total 1607 (aplicar final del gcd fuera de hgcd: +250). Caso base 34 % (3 llamadas en el nivel 2 + 2 en el 3), aplicar 43 % (nivel 0: 260 µs; nivel 1: 428 µs en 2 llamadas, con productos desequilibrados que a veces van por Karatsuba), mul_mat 17 %, paso 4 %, copias/div_xk 0,6 %, control 0,2 %.\n- n=2048: total 3797 (+540). Caso base 31 %, aplicar 47 %, mul_mat 18 %, paso 3 %, copias 0,4 %.\n- n=4096: total 10600 (+1253). Caso base 26 % (15 llamadas), aplicar 50 %, mul_mat 20 %, paso 3 %, copias 0,6 %, resto 0,7 %.\nCon V3e: caso base 489, aplicar 156, mul_mat 151, paso 31 y copias 6 (n=1024, total 837). Ahí el caso base en sitio ya es el 58 % y pasa a ser el cuello de botella."
+  },
+  "limpia": {
+   "tema": "hgcd",
+   "ejecutado_ok": true,
+   "fichero_salida": "C:/Users/ismae/Documents/Archivos/Proyectos/finite-fields-algorithms/bench/results/fase6/hgcd.txt",
+   "mediciones": [
+    {
+     "escenario": "check (F_998244353, F_101, F_(2^61-1))",
+     "antes": "OK",
+     "despues": "OK",
+     "factor": "-"
+    },
+    {
+     "escenario": "Perfil P::hgcd n=1024 (caso base/aplicar/mul_mat/paso)",
+     "antes": "1607 µs (34/43/17/4 %)",
+     "despues": "1662 µs (35,5/43,8/16,4/3,4 %); aplicar final 246 µs",
+     "factor": "-"
+    },
+    {
+     "escenario": "Perfil P::hgcd n=2048",
+     "antes": "3797 µs (31/47/18/3 %)",
+     "despues": "4171 µs (28,9/48,0/18,7/2,8 %); aplicar final 536 µs",
+     "factor": "-"
+    },
+    {
+     "escenario": "Perfil P::hgcd n=4096",
+     "antes": "10600 µs (26/50/20/3 %)",
+     "despues": "9724 µs (23,5/52,2/20,2/2,7 %); aplicar final 1225 µs",
+     "factor": "-"
+    },
+    {
+     "escenario": "hgcd+restos V1 / V2 / V3e frente a P::hgcd (n=1024/2048/4096)",
+     "antes": "V1 1,29-1,38x; V2 1,55-1,61x; V3e 1,92/1,69/2,02x",
+     "despues": "V1 1,30/1,42/1,36x; V2 1,59/1,73/1,68x; V3e 1,91/2,02/2,00x (869/2068/4851 µs); V3e min128 2,10/2,15/2,14x",
+     "factor": "V3e ~2x"
+    },
+    {
+     "escenario": "gcd umbral 0, n=2048: lib hgcd frente a V1",
+     "antes": "7067 → 4313 µs",
+     "despues": "7271 → 4273 µs",
+     "factor": "1,70x"
+    },
+    {
+     "escenario": "gcd umbral 0, n=8192: lib hgcd frente a V1",
+     "antes": "43868 → 26982 µs",
+     "despues": "44910 → 27462 µs",
+     "factor": "1,64x"
+    },
+    {
+     "escenario": "Micro mul_mat n=1024: 8 productos / NTT reutilizada / con envoltura / Winograd",
+     "antes": "121 / 113 / 52,1 / 148 µs",
+     "despues": "119,1 / 109,9 / 51,0 / 144,9 µs",
+     "factor": "envoltura 2,33x (rango 512-8192: 2,33-2,43x); Winograd 1,22x más lento"
+    },
+    {
+     "escenario": "Micro aplicar con NTT reutilizada (n=512..8192)",
+     "antes": "1,36-1,57x",
+     "despues": "1,37-1,56x (n=1024: 112,3 → 72,2 µs)",
+     "factor": "1,56x en 1024"
+    },
+    {
+     "escenario": "gcd clásico frente a V3e con umbral U (n=1000, U=512)",
+     "antes": "1243 → 1133 µs",
+     "despues": "1243 → 1129 µs",
+     "factor": "1,10x"
+    },
+    {
+     "escenario": "gcd n=2048 clásico frente a V3e U=512",
+     "antes": "5001 → 3210 µs",
+     "despues": "4944 → 3121 µs",
+     "factor": "1,58x",
+     "referencia_flint": "2789 µs (V3e 1,12x más lento)"
+    },
+    {
+     "escenario": "gcd n=4096 P::gcd producción frente a V3e U=512",
+     "antes": "15846 → 8014 µs",
+     "despues": "15724 → 7769 µs",
+     "factor": "2,02x (2,52x frente al clásico)",
+     "referencia_flint": "8234 µs (V3e 0,94x)"
+    },
+    {
+     "escenario": "gcd n=8192 P::gcd producción frente a V3e U=512",
+     "antes": "45814 → 19277 µs",
+     "despues": "45274 → 18876 µs",
+     "factor": "2,40x",
+     "referencia_flint": "22163 µs (V3e 0,85x)"
+    },
+    {
+     "escenario": "gcd clásico n=256 / n=1000 frente a FLINT",
+     "antes": "99 / 1243 µs (1,56x / 1,88x)",
+     "despues": "99,6 / 1243 µs",
+     "factor": "1,63x / 1,93x más lento",
+     "referencia_flint": "61,2 / 644 µs"
+    },
+    {
+     "escenario": "gcd_ext producción (umbral 2048) frente a clásico, n=2048 / 4096",
+     "antes": "45833 / 171747 µs frente a 17583 / 70426",
+     "despues": "45507 / 170636 µs frente a 17534 / 67925",
+     "factor": "2,6x / 2,5x más LENTO (regresión confirmada)"
+    },
+    {
+     "escenario": "gcd_ext producción frente a V3e+cola, n=2048 / 4096",
+     "antes": "45833 → 6360 µs; 171747 → 15228 µs",
+     "despues": "45507 → 6402 µs (min128 6175); 170636 → 15380 µs (min128 14785)",
+     "factor": "7,1x / 11,1x",
+     "referencia_flint": "xgcd 5200 / 13963 µs (1,23x / 1,10x más lento)"
+    },
+    {
+     "escenario": "gcd_ext n=1000 clásico frente a V3e+cola",
+     "antes": "4445 → 2510-2524 µs",
+     "despues": "4384 → 2495 µs",
+     "factor": "1,76x",
+     "referencia_flint": "xgcd 1733 µs (1,44x más lento)"
+    },
+    {
+     "escenario": "gcd_ext corte: n=256 / 512 / 768 (clásico frente a mejor V3e)",
+     "antes": "333 vs 323 / 1210 vs 1054-1079 / 2640 vs 1893",
+     "despues": "375 vs 321 (u256) / 1328 vs 1054-1086 / 2764 vs 1913 (u256)",
+     "factor": "1,17x / 1,22-1,26x / 1,44x"
+    },
+    {
+     "escenario": "copia gcd_ext librería con umbral 128, n=2048 / 4096",
+     "antes": "16145 / 37735 µs",
+     "despues": "15825 / 36675 µs",
+     "factor": "-"
+    },
+    {
+     "escenario": "kHgcdMin 128 frente a 256 (gcd V3e umbral 0): n=768 / 1024 / 1536 / 4096",
+     "antes": "1198 vs 981 / - / 3089 vs 2476 / 7533 vs 8055",
+     "despues": "1176 vs 927 / 1213 vs 1326 / 2991 vs 2480 / 7461 vs 8032",
+     "factor": "depende de n; sin ganador claro"
+    }
+   ],
+   "diferencias_con_preliminar": "Ningún hallazgo cambia de conclusión. Las diferencias son de ruido, de entre el 1 % y el 10 %. (1) Perfil: n=2048 sube de 3797 a 4171 µs (+10 %) y n=4096 baja de 10600 a 9724 µs (-8 %). El reparto de porcentajes se mantiene (caso base 35→24 %, aplicar 44→52 %, mul_mat 16→20 %, paso unos 3 %), igual que el aplicar final (246/536/1225 µs). (2) V3e frente a V2e en n=2048: antes empataban; ahora V3e gana un 6 % (2068 frente a 2198 µs). Los factores de V3e quedan en 1,91/2,02/2,00x. (3) En n=4096, la NTT reutilizada sin envoltura es algo MÁS LENTA que los 8 productos (612,7 frente a 561,3 µs); antes era 1,08x más rápida. Refuerza que la ganancia de mul_mat viene de la envoltura (2,33-2,43x, antes 2,26-2,39x). (4) En gcd_ext n=256 el clásico salió en 375 µs (antes 333), así que el umbral 256 ahora gana 1,17x en lugar de empatar. Parece ruido del clásico: 'lib prod', que en 256 también es el clásico, da 385. El umbral propuesto de unos 512 para gcd_ext no cambia. (5) La distancia a FLINT casi no se mueve: gcd 1000 1,75x; 2048 1,12x; 4096 0,94x; 8192 0,85x. xgcd 1000 1,44x; 2048 1,23x; 4096 1,10x (antes 1,07x). El clásico en d1000 está a 1,93x de FLINT (antes 1,88x). (6) La regresión de P::gcd_ext de producción se confirma: 2,6x/2,5x más lento que el clásico, y 7,1x/11,1x frente a V3e+cola. Sigue en pie la estimación no medida de que en d1000 la ganancia de half-GCD es nula con U=1024 y de 1,10x con U=512.",
+   "notas": "Mediciones en serie, con ALCP_THREADS=1 y como único proceso midiendo. No hizo falta recompilar ni volver a enlazar, y no se modificó código fuente. Todos los comandos terminaron con código de salida 0 y check dio OK en los tres cuerpos. La cabecera del fichero recoge la fecha (2026-11-07 22:16), la CPU (AMD Ryzen 7 7730U) y la alimentación: enchufado, según Win32_Battery BatteryStatus=2, con la batería al 79 %. Los tiempos de FLINT incluyen la sobrecarga de Python. Son resultados de una sola ejecución, sin repeticiones, así que conviene revisarlos antes de usarlos."
+  },
+  "verificacion": {
+   "tema": "hgcd",
+   "veredicto": "con_reservas",
+   "problemas": [
+    "La propuesta integrada de gcd_ext no es la configuración que se midió. Las cifras de 2495-2510 µs en d1000, 6402 en 2048 y 15380 en 4096 (los factores 1,76x, 7,1x y 11,1x) vienen de gcd_ext_v(a, b, 0, kV3e, true), es decir, con umbral 0. Con umbral 0 la condición 'cola_en_sitio && r0.degree() < umbral' nunca se cumple, así que la 'cola en sitio' no llega a ejecutarse: la columna 'V3+cola' (2507) es idéntica a 'V3' (2504). La configuración propuesta (umbral ~512 + cola en sitio) sí está medida, en la columna 'V3e+c u512' de hgcd.txt: 3500 µs en n=1000 (solo 1,25x frente a los 4384 del clásico), 8931 en 2048 y 21096 en 4096. Es entre un 40 % y un 37 % peor que seguir con hgcd. Con u256 tampoco mejora: 2804 en 1000 y 6921 en 2048. La cola en sitio arrastra cofactores de grado alto en un bucle cuadrático y siempre empeora el resultado. Las etiquetas 'V3e+cola (min128): 6360 / 15228 µs' y la afirmación 'arreglo prototipado: cola en sitio' son, por tanto, engañosas.",
+    "La estimación 'gcd_ext d1000: 4445 → ~2510 µs (1,77x)' y 'gcd_ext/inv_mod ~1,4x de FLINT' solo vale con un diseño de DOS umbrales: uno de entrada (~256-512) y otro interior a 0, que siga con hgcd hasta el caso base sin cola clásica. Ese diseño no está descrito en la propuesta: el punto (3) lo deja como alternativa ('o sigue con hgcd'). Si n es mayor o igual que el umbral de entrada, su coste coincide con la columna u0, pero ninguna medición lo prueba explícitamente para n < 768, donde u0 pierde en n=256 (407 frente a 375 µs).",
+    "Fallo latente de corrección en la envoltura con primos NTT cercanos a 2^62, confirmado por mí. coef() acumula en u128 sin reducir, y con p ~ 2^62 bastan unos 20 términos de (p-1)^2 para desbordar. Con p = 4179340454199820289 (29·2^57+1, admite NTT en Fp64) y operandos con todos los coeficientes en p-1, mul_mat_ntt(..., true) y aplicar_v(kV2e) dan un resultado DISTINTO de P::mul_mat / P::aplicar cuando L = 1024 + ext con ext >= 20. Con ext <= 10 y en F_998244353 el resultado es correcto. Los datos aleatorios casi nunca lo disparan: con 5 casos aleatorios no falló. El check original no lo detecta porque ninguno de sus tres cuerpos ejerce la NTT con p >= 2^31 (F_101 y F_(2^61-1) no tienen NTT). Los riesgos del informe solo mencionan que ese camino es 'lento', no que sea incorrecto.",
+    "La cobertura del check en el camino NTT se reduce a F_998244353 con entradas aleatorias (sucesiones normales, salvo b de grado n-7 y el mcd común). F_101 y F_(2^61-1) solo prueban los caminos de reserva, porque la caché de K101 está vacía y 2^61-1 no tiene NTT. Faltaban coeficientes p-1, polinomios dispersos y b = 0, constante, b | a o a = b, además de sucesiones anormales a mitad de la recursión. Lo he cubierto yo (véanse los hallazgos), y en F_998244353 todo da OK.",
+    "Ninguna medición se hizo con la caché FFT vacía. Bajar el umbral de gcd de 4096 a ~1024 sin condicionarlo a la caché puede hacer que, con la caché vacía, el hgcd use productos Karatsuba (mul_no_rng sin NTT) y resulte más lento que el clásico. gcd_ext ya protege ese caso; gcd no.",
+    "La ganancia de gcd en n=4096 frente a producción (2,02x) mezcla dos efectos: el algoritmo V3e y el cambio de umbral (U=512 frente a 4096). Frente al clásico es 2,52x y frente a 'lib hgcd' con umbral 0, 2,35x. Son coherentes, pero conviene distinguirlos.",
+    "Todo se ejecutó con un solo hilo (ALCP_THREADS=1). No se sabe cómo se comparan la variante y la librería con hilos: convolve_word lanza la segunda transformada en otro hilo para n grandes, y la NTT reutilizada de los prototipos no."
+   ],
+   "correcciones": [
+    "Reformular el punto (3) de la propuesta: eliminar la 'cola en sitio' de gcd_ext, que es más lenta (u512: 3500 frente a 2495 µs en d1000; 8931 frente a 6402 en 2048), y usar un umbral solo de ENTRADA (~256-512). Una vez dentro, el bucle debe seguir con hgcd_rem hasta el caso base (equivalente a la columna u0). Volver a medir esa configuración exacta en 256-1024 antes de fijar el umbral.",
+    "Renombrar en el informe 'V3e+cola' como 'V3e, umbral interior 0, cola inactiva', y atribuir los factores 7,1x, 11,1x y 1,76x a hgcd hasta el final, no a la cola en sitio.",
+    "En el helper de envoltura, limitarla a p < 2^32 o reducir el acumulador u128 en coef() de forma periódica (cada ~8 términos si p ~ 2^62). Añadir a las pruebas de la librería casos con todos los coeficientes en p-1, longitudes 2^k + 20..64 y un primo NTT de 62 bits.",
+    "Condicionar el nuevo umbral de gcd (~1024) a que la caché FFT no esté vacía, o medirlo también con la caché vacía. Si no, el gcd de un cuerpo recién creado puede empeorar.",
+    "Añadir al check sucesiones de restos anormales en F_998244353 (cocientes de grado variable a mitad de la recursión) y los casos límite: b = 0, b constante, b | a, a = b, coeficientes p-1 y polinomios dispersos."
+   ],
+   "hallazgos_que_sobreviven": [
+    "Comprobé la corrección de V1/V2/V3/W/V2e/V3e (y de variantes con caso base 64/128 y ntt_min 16/32) en F_998244353, con build/fase6/verif_hgcd/verif.cpp (binario verif3.exe). Los 64 casos dan resultados idénticos a P::hgcd+P::aplicar, gcd_classic, gcd_ext_classic, P::gcd y P::gcd_ext: 36 sucesiones anormales construidas hacia atrás con cocientes de grado 1..60, coeficientes todos p-1, x^n-1 con x^k-1, polinomios dispersos con p-1, b=0, b constante p-1, b|a y a=b, en n = 300..3001. También coinciden con las del primo de 62 bits cuando las entradas son aleatorias.",
+    "El álgebra de V1 es correcta: R·(a,b) = (R·(a0,b0))·x^m + R·(a mod x^m, b mod x^m), y lo mismo en la segunda mitad con x^k. Los rangos de la NTT también: la transformada directa sale en [0,p); en fma2 con p < 2^31 se cumple x1·y1 + x2·y2 < 2^63, y la reducción de Barrett con dos correcciones basta.",
+    "RNG: los nuevos productos solo usan la NTT si fft_cache_ no está vacía. fft::tables para un tamaño nuevo usa fft_base_root(), que queda en caché (base_root_ready_), así que no vuelve a consumir el generador. divmod, paso_w y '%' son los mismos que ya usa la librería.",
+    "La comparación es justa: mismas 8 entradas aleatorias rotando, mejor de 3 tandas, checksum, tablas construidas antes, un solo hilo en todas las columnas, y la línea base (copia de P::hgcd y P::gcd/P::gcd_ext reales) medida en la misma ejecución. Comparar hgcd+restos con P::hgcd sin restos es conservador.",
+    "Perfil (caso base ~24-35 %, aplicar 44-52 %, mul_mat 16-20 %) y ganancia de la envoltura en mul_mat (2,33-2,43x). Winograd es ~1,2x más lento y se descarta. Todo ello es coherente con el código y con las dos tandas.",
+    "Con V3e y U=512/1024, gcd mejora a partir de n ~1024-1536 y en d1000 queda prácticamente igual (1,10x con U=512, en el límite del ruido). La conclusión de que el hueco con FLINT en 'MCD grado 1000' está en el Euclides clásico es sólida.",
+    "La regresión de P::gcd_ext de producción (umbral 2048) se confirma: 45507 frente a 17534 µs en 2048 (2,6x más lento) y 170636 frente a 67925 en 4096. La causa también se ve en el código: tras el primer hgcd, el bucle sigue con P::paso sobre Poly porque r0 queda por debajo del umbral. Es el hallazgo más prioritario, y se corrige con hgcd hasta el final (umbral interior 0), no con la cola en sitio."
+   ]
+  }
+ },
+ {
+  "tema": "newton",
+  "preliminar": {
+   "tema": "newton",
+   "resumen": "Los tiempos son PRELIMINARES (5 agentes en paralelo; dos tandas que difieren hasta un 20 %). Todo está compilado en modo portable (-O3 -static, sin -march=native) y con ALCP_THREADS=1. Las tres variantes dan un resultado idéntico al de la librería (0 fallos de comprobación).\n\nHallazgo principal: la división 4000/2000 desde Python va por el camino «frío». Este hallazgo sale de leer el código, no de ejecutarlo desde Python. bindings.cpp crea un Fp64 nuevo en cada Fp(p), y divmod solo usa mul_no_rng, que no pide la raíz. Por eso la caché FFT sigue vacía y todos los productos de Newton van por Kronecker.\n\nMedido en C++ con 16 entradas:\n- divmod con cuerpo frío: 1350-1690 us.\n- Con las tablas ya construidas: 808-988 us, es decir, 1,7x más rápido sin tocar el algoritmo.\n- Prototipo a), producto medio en Newton más resto módulo x^N-1: 394-497 us, que es 2,0x frente a caliente y 3,4x frente a frío. La inversión de la serie gana 2,6-2,7x.\n- python-flint, ahora enchufado: 718 us. La distancia pasaría de unas 2x a 0,55-0,7x.\n\nConstruir las tablas 2^1..2^12 de un cuerpo nuevo cuesta unos 195 us, una sola vez. Propongo d): tablas propias para mul_no_rng con una raíz determinista, en una caché aparte. Así no cambia cuándo se consume el generador aleatorio, y la raíz no influye en el producto (comprobado con 0 diferencias de 8).\n\npow_mod con exponente q:\n- El 73-74 % del tiempo se va en las reducciones, que hacen 2 productos de tamaño 2n.\n- El cuadrado ya usa una sola transformada directa: a*a cuesta 0,66-0,70 de a*b, así que c) no aporta nada.\n- Prototipo b), Reducer con las transformadas de rev(m)^-1 y de m precalculadas: la reducción gana 2,0-2,1x, pow_mod 1,57-1,65x y la composición de Brent-Kung 1,7x.\n- Frente a FLINT, grado 300: de 1,8-2,2x por detrás a 1,1-1,3x. Grado 1000: alcp ya era más rápido (6,1-7,5 ms frente a 10,2 ms) y bajaría a 3,9-4,7 ms.\n\nLas ideas solo aplican a primos con NTT. No afectan a F_101, F_(2^127-1) ni F_(3^30), que van por Kronecker.",
+   "archivos": [
+    "C:/Users/ismae/Documents/Archivos/Proyectos/finite-fields-algorithms/bench/experimentos/fase6/newton/newton_proto.cpp",
+    "C:/Users/ismae/Documents/Archivos/Proyectos/finite-fields-algorithms/bench/experimentos/fase6/newton/coste_tablas.cpp",
+    "C:/Users/ismae/Documents/Archivos/Proyectos/finite-fields-algorithms/bench/experimentos/fase6/newton/flint_ref.py",
+    "C:/Users/ismae/Documents/Archivos/Proyectos/finite-fields-algorithms/build/fase6/newton/newton_proto.exe",
+    "C:/Users/ismae/Documents/Archivos/Proyectos/finite-fields-algorithms/build/fase6/newton/coste_tablas.exe",
+    "C:/Users/ismae/Documents/Archivos/Proyectos/finite-fields-algorithms/bench/results/fase6/newton_preliminar.txt",
+    "C:/Users/ismae/Documents/Archivos/Proyectos/finite-fields-algorithms/bench/results/fase6/newton_preliminar_barrett.txt",
+    "C:/Users/ismae/Documents/Archivos/Proyectos/finite-fields-algorithms/bench/results/fase6/newton_flint_preliminar.txt",
+    "C:/Users/ismae/Documents/Archivos/Proyectos/finite-fields-algorithms/bench/results/fase6/newton_tablas_preliminar.txt"
+   ],
+   "comandos_medicion": [
+    "ALCP_THREADS=1 build/fase6/newton/newton_proto.exe",
+    "ALCP_THREADS=1 build/fase6/newton/newton_proto.exe barrett",
+    "ALCP_THREADS=1 build/fase6/newton/coste_tablas.exe",
+    "ALCP_THREADS=1 .venv/Scripts/python.exe bench/experimentos/fase6/newton/flint_ref.py"
+   ],
+   "correcto": true,
+   "comprobacion_correccion": "Cada variante se compara con las funciones de la librería, no con otra copia mía, sobre 16 entradas aleatorias por tamaño.\n\n- inv_serie_mp frente a Poly::inverse_series.\n- divmod_mp frente a Poly::divmod (cociente y resto).\n- ReducerProto::reduce, mulmod y sqrmod frente a Poly::Reducer::reduce de a*b y de a*a.\n- pow_mod: v1 y v2 frente a Poly::pow_mod(a, q, Reducer) en 4 entradas por grado. Además pow_mod(a, q, m) coincide con la versión con Reducer.\n- ComposerProto::compose frente a Poly::Composer::compose, con k = ceil(sqrt(n)), n = 300 y 1000.\n- mulmod_fijo frente a reduce(a*b) a grado 400.\n\nResultado: «fallos de comprobación: 0» en las dos tandas (newton_proto.exe devuelve 1 si hay alguna diferencia). coste_tablas.exe comprueba que dos cuerpos con raíces distintas dan convoluciones idénticas: 0 diferencias de 8.\n\nLimitaciones de la comprobación:\n- Las entradas son aleatorias de grado completo; los casos borde (d1 < n, grados pequeños, restos nulos) no están cubiertos y habría que testearlos en una integración.\n- Los prototipos usan tablas ya construidas en un cuerpo «caliente».\n- La afirmación de que la comparativa de Python mide el camino frío sale de leer bindings.cpp y compare_libs.py (Fp(p) crea un Fp64 nuevo, sin caché de cuerpos), no de ejecutarlo desde Python: el binding no estaba disponible en el .venv.",
+   "hallazgos": [
+    {
+     "titulo": "Perfil del coste de una transformada y del producto punto a punto",
+     "medido": true,
+     "detalle": "Transformada directa en palabras: N=512 3,9-4,5 us; 1024 8,6-9,4; 2048 18-22; 4096 40-48; 8192 93-117. Producto punto a punto con '%' (word::mul_mod): 3,2-3,7 us a 2048, es decir, un 15-17 % de una transformada. Con Barrett baja a 1,6-1,9 us. La ganancia de Barrett es real pero pequeña (unos 1,5 us por producto de 2048); en la tanda «barrett» de pow_mod queda dentro del ruido."
+    },
+    {
+     "titulo": "divmod 4000/2000 desde Python va por el camino frío (Kronecker): el binding crea un Fp64 nuevo y divmod nunca construye tablas FFT",
+     "medido": true,
+     "antes": "frío 1350-1691 us (inversión 707-879, cociente+resto 625-782; un producto Kronecker 2000x2000 cuesta 310-390)",
+     "despues": "caliente 808-988 us (inversión 518-619, cociente+resto 289-354; un producto NTT 2001x2001 cuesta 144-172)",
+     "factor": "1,67-1,71x sin cambiar el algoritmo",
+     "detalle": "Que la comparativa mide el camino frío se deduce del código (bindings.cpp: FpW::crear construye un Fp64 nuevo en cada Fp(p); compare_libs.py crea el cuerpo por escenario), no se ha medido desde Python. En C++ sí está medido: el cuerpo frío mantiene fft_cache_ vacía después de los divmod. Inversión de la serie: 52 % del tiempo en frío y 63 % en caliente. Propuesta d): cuando la caché principal está vacía, que mul_no_rng use tablas PROPIAS con una raíz determinista (por ejemplo, el primer x = 2, 3, ... cuyo x^((p-1)/2^cap) tenga orden 2^cap), guardadas en una caché aparte. Así no cambia cuándo se pide la raíz al RNG. coste_tablas.exe mide 102 us (2^1..2^11), 195 us (2^1..2^12) y 373 us (2^1..2^13) para construirlas en un cuerpo nuevo, una sola vez por cuerpo, y verifica que la raíz no cambia el producto."
+    },
+    {
+     "titulo": "a) Producto medio en Newton y resto módulo x^N-1 (divmod 4000/2000)",
+     "medido": true,
+     "antes": "librería caliente 808-988 us (inversión 518-619)",
+     "despues": "prototipo 394-497 us (inversión 190-239; cociente+resto 204-258)",
+     "factor": "total 1,99-2,05x frente a caliente y 3,40-3,42x frente a frío; inversión 2,59-2,73x",
+     "detalle": "Cada paso de Newton se hace con una convolución cíclica de tamaño N = 2^ceil(log2 n) en lugar de 2^ceil(log2(n+k-1)). Los coeficientes k..n-1 de a·x_k salen limpios (producto medio) y la transformada de x_k se reutiliza en el segundo producto: 5 transformadas de tamaño ~n frente a 6 de tamaño ~2n. El resto r = f - g·q se calcula módulo x^N2 - 1 con N2 = 2^ceil(log2 deg g), porque deg r < deg g: 3 transformadas de 2048 en lugar de 3 de 4096. El cociente sigue necesitando un producto corto de tamaño 2·d1-1. Con python-flint en 718 us, alcp pasaría de 1,9-2,35x (frío) a 0,55-0,69x."
+    },
+    {
+     "titulo": "c) Cuadrado con una sola transformada directa: ya está hecho",
+     "medido": true,
+     "antes": "a*a / a*b = 0,66-0,70 (deg 299 y 999)",
+     "despues": "sin cambio",
+     "factor": "1x",
+     "detalle": "operator* llama a convolve con el mismo vector y convolve_word detecta &A == &B. En el prototipo, sqrmod también hace 1 directa + 1 inversa. No hay ganancia adicional."
+    },
+    {
+     "titulo": "Perfil de pow_mod (exponente q = p: 29 cuadrados y 7 productos)",
+     "medido": true,
+     "detalle": "deg m = 300: 2746-3401 us. Cada reduce cuesta 57-70 us: rev(a)·ginv 28-34, m·q 28-34 y menos de 1,5 us de reservas y restas. deg m = 1000: 6101-7518 us. reduce 128-163 us: dos productos de 61-75 us y 6-14 us de conversiones, reservas y restas. El modelo 29(sq+red)+7(mul+red) cuadra con el total (diferencia inferior al 6 %): reducciones 73-74 %, cuadrados 19-20 %, productos 7 %. La inversión de la serie ya se amortiza en Reducer y no aparece."
+    },
+    {
+     "titulo": "b) Reducer con transformadas precalculadas de rev(m)^-1 y de m (FFTRep de NTL)",
+     "medido": true,
+     "antes": "reduce 57-70 us (n=300) y 128-163 us (n=1000); pow_mod 2746-3401 us y 6101-7518 us",
+     "despues": "reduce 28-34 us y 63-77 us; pow_mod v1 (productos de la librería) 1722-2113 us y 3857-4552 us; v2 (todo en palabras) 1745-2058 us y 3791-4684 us",
+     "factor": "reduce 2,01-2,12x; sqr+reduce 1,56-1,67x; mul+reduce 1,51-1,57x; pow_mod 1,57-1,65x",
+     "detalle": "Cada reducción hace 1 directa + 1 inversa de N1 = 2^ceil(log2(2n-1)) y 1 directa + 1 inversa de N2 = 2^ceil(log2 n), con producto punto a punto de Shoup contra transformadas precalculadas. Antes eran 6 transformadas de tamaño ~2n. Usar ginv completo en lugar de truncado a d1 no cambia los d1 primeros coeficientes porque d1+n-1 <= N1. v1 y v2 rinden igual: las conversiones a Poly no pesan. Referencia python-flint pow_mod: 1564 us (n=300) y 10216 us (n=1000); con mod_rev_inv precalculado, lo mismo. Distancia a FLINT: n=300 pasa de 1,76-2,17x a 1,10-1,32x; n=1000, alcp ya era más rápido (0,60-0,74x) y bajaría a 0,38-0,45x."
+    },
+    {
+     "titulo": "Composer (Brent-Kung, la base de la DDF de Kaltofen-Shoup y de is_irreducible) con el paso gigante y h transformados",
+     "medido": true,
+     "antes": "compose 1523-1774 us (n=300, k=18) y 6774-8264 us (n=1000, k=32); producto modular a grado 400: 86-92 us",
+     "despues": "compose 879-1022 us y 4012-4812 us; producto modular: 56-60 us (genérico) y 47-50 us (operando fijo transformado)",
+     "factor": "compose 1,69-1,74x; construir+componer 1,71-1,77x; producto modular 1,52x (genérico) y 1,82-1,85x (fijo)",
+     "detalle": "El producto acc·gigante transforma solo acc (2 transformadas en lugar de 3) y la reducción es la de b)."
+    },
+    {
+     "titulo": "Referencias de extremo a extremo en la librería (C++, F_998244353)",
+     "medido": true,
+     "detalle": "is_irreducible de grado 400 con entrada irreducible: 140-145 ms. factor de grado 300 aleatorio: 43-46 ms. No se ha prototipado la integración de extremo a extremo; ver estimacion_integrada."
+    },
+    {
+     "titulo": "Ganancia integrada en is_irreducible y factor (F_998244353)",
+     "medido": false,
+     "detalle": "ESTIMADO. is_irreducible de grado 400: en Fp64, k = min(n, 2^22/n) = n. Antes de componer hay unas 12 potencias (regla de alquilar o comprar con 36 productos por potencia, unos 430 productos modulares), luego 400 productos para precalcular las potencias de H_1 y después unas 190 combinaciones n×n, sin productos. Unos 830 productos de 86-92 us suponen unos 75 ms de 140; con 1,5-1,8x se ahorran unos 30 ms, así que la ganancia rondaría 1,2-1,3x. factor de grado 300: la DDF de Kaltofen-Shoup hace unos 450-500 productos modulares (H_1, Composer de los pasos pequeños, el de los gigantes y los productos I), es decir, la mayor parte de los 43-46 ms. Con compose a 1,7x se estima 1,3-1,5x."
+    },
+    {
+     "titulo": "Alcance: no aplica a los cuerpos sin NTT de la lista de distancias",
+     "medido": false,
+     "detalle": "Por lectura de código, no medido. F_101 (101-1 = 4·25, capacidad FFT 2), F_(2^127-1) (capacidad 1) y F_(3^30) usan Kronecker, así que a), b) y d) no los tocan. Las distancias de factor en F_101 y F_(2^127-1), del producto en F_(3^30) y F_256 y del MCD no se mueven con este tema. La idea b) se podría trasladar a Kronecker (guardar empaquetados ginv y m), pero ahorraría solo el empaquetado: no medido, previsiblemente un 10-20 %."
+    }
+   ],
+   "estimacion_integrada": "Todo es ESTIMADO a partir de piezas medidas, salvo donde se indica. Supone integrar a), b) y d) para Fp64 con NTT; c) ya está hecho.\n\n- divmod 4000/2000 en F_998244353, desde Python (cuerpo nuevo): con d) solo, 1,7x (medido como frío frente a caliente). Con a) + d), unos 3,4x (medido el prototipo frente al frío). La distancia a FLINT pasaría de 1,97x a unas 0,55-0,7x. La primera división de cada cuerpo pagaría además unos 0,2 ms de tablas; en la comparativa se amortiza.\n- pow_mod: 1,6x medido como prototipo integrado con el mismo orden de operaciones. A grado 300 pasaría de unas 2x por detrás de FLINT a 1,1-1,3x; a grado 1000 alcp ya gana.\n- is_irreducible de grado 400: 1,2-1,3x estimado (alcp ya gana a FLINT).\n- factor de grado 300 en F_998244353: 1,3-1,5x estimado; FLINT quedaría en unas 1,2-1,4x.\n- factor en F_101, en F_(2^127-1) y en F_(3^30), el MCD y los productos: sin efecto.\n\nSi los productos de mul_no_rng con NTT se adoptan también en half-GCD y en Euclides, habría efectos secundarios, sin estimar.",
+   "esfuerzo": "Medio.\n\n- d), tablas sin generador aleatorio para mul_no_rng: bajo, pero delicado. Hace falta una segunda caché en Fp64 (y en Fp con palabra) con una raíz determinista. Hay que comprobar que la caché principal y la primera petición de raíz por el generador no cambian, y que test_fase5 sigue pasando.\n- a), inverse_series y divmod_with_inverse en palabras para NativeWordField cuando hay tablas: unas 100 líneas.\n- b), Reducer con FFTRep perezoso: guardar las transformadas de ginv y de m con sus cocientes de Shoup, y hacer una ruta de reducción en palabras. Hay que vigilar las copias de Reducer (Frobenius y Composer lo copian) y que Reducer decide de forma perezosa si usa Newton.\n- Composer con el paso gigante transformado: pequeño una vez hecho b).\n\nDespués hay que recalibrar prefer_newton (los umbrales amortizado/aislado bajarán) y kFrobPresupuesto o la regla de alquilar o comprar, y repasar los checksums de la suite.",
+   "riesgos": "- Mediciones preliminares con 5 agentes en paralelo; entre las dos tandas hay hasta un 20 % de diferencia absoluta. Los cocientes, medidos dentro de la misma tanda, son estables (±5 %).\n- Generador aleatorio: los prototipos suponen tablas ya construidas. En la librería, a) y b) solo pueden usar la NTT si la caché ya tiene tablas, como hoy mul_no_rng, o con las tablas deterministas de d). Si se usara fft::tables directamente en Reducer o en divmod, se adelantaría la petición de la raíz y cambiarían factor(), Fq(p, n) y demás.\n- d) duplica la memoria de tablas en cuerpos que acaben usando las dos cachés. La raíz determinista debe buscarse sin el generador aleatorio y con un procedimiento que acabe siempre.\n- Comprobación con entradas aleatorias de grado completo solamente; faltan casos borde (d1 < n, grados pequeños, restos cero, n potencia de 2 exacta con plegado de m, sobre todo en el truco módulo x^N-1).\n- El binding de alcp no estaba en el .venv. Que la comparativa de Python va por el camino frío se deduce del código, no se ha medido desde Python.\n- Solo aplica a primos con NTT (F_998244353 y similares).\n- Barrett frente a '%' en el producto punto a punto da poco y no se separa bien del ruido.\n- Una sola máquina (Zen 3, MinGW), sin -march=native.\n- No he modificado nada fuera de bench/experimentos/fase6/newton, build/fase6/newton y bench/results/fase6. No hay git add ni commit.\n- Estos resultados son orientativos y deben revisarse antes de usarlos.",
+   "perfil": "divmod 4000/2000 (us, dos tandas):\n- Frío, como desde Python: total 1350-1691; inversión de la serie 707-879 (52 %); cociente+resto 625-782; cada producto Kronecker 2000x2000 cuesta 310-390.\n- Caliente: total 808-988; inversión 518-619 (63 %); cociente+resto 289-354; un producto NTT 2001x2001 cuesta 144-172.\n\npow_mod con q = p, 29 cuadrados y 7 productos:\n- n=300: total 2746-3401; reduce 57-70 (dos productos de 28-34, resto inferior a 1,5); a*a 19-23; a*b 28-35.\n- n=1000: total 6101-7518; reduce 128-163 (dos productos de 61-75; conversiones, reservas y restas 6-14); a*a 42-53; a*b 61-76.\n- En los dos casos: reducciones 73-74 %, cuadrados 19-20 %, productos 7 %.\n- Conversiones y reservas: menos del 10 % de cada reducción (0,7-1,4 us a n=300 y 6-14 us a n=1000).\n- Transformadas: 2048 puntos 18-22 us; 4096 puntos 40-48 us.\n- Producto punto a punto con '%': un 15-17 % de una transformada."
+  },
+  "limpia": {
+   "tema": "newton",
+   "ejecutado_ok": true,
+   "fichero_salida": "C:/Users/ismae/Documents/Archivos/Proyectos/finite-fields-algorithms/bench/results/fase6/newton.txt",
+   "mediciones": [
+    {
+     "escenario": "Transformada directa en palabras N=512/1024/2048/4096/8192 (us)",
+     "antes": "3,9-4,5 / 8,6-9,4 / 18-22 / 40-48 / 93-117",
+     "despues": "3,8 / 8,4 / 18,2-18,3 / 39,8-40,2 / 90,9-91,7",
+     "factor": "punto a punto '%' 3,2 us a 2048 (17,5 % de una transformada); Barrett 1,6 us"
+    },
+    {
+     "escenario": "divmod 4000/2000: frío (Kronecker) frente a caliente (NTT)",
+     "antes": "frío 1326-1337 us (inversión 693-703; cociente+resto 618-630; producto Kronecker 304-307)",
+     "despues": "caliente 778-780 us (inversión 494-497; cociente+resto 281-283; producto NTT 138-142)",
+     "factor": "1,70-1,71x",
+     "referencia_flint": "704,2 us; alcp frío 1,88-1,90x"
+    },
+    {
+     "escenario": "a) divmod 4000/2000 prototipo (producto medio + resto mod x^N-1)",
+     "antes": "librería caliente 778-780 us (inversión 494-497)",
+     "despues": "386-403 us (inversión 187-195; cociente+resto 200-208)",
+     "factor": "total 1,94x (%) y 2,01x (Barrett) frente a caliente; 3,32-3,44x frente a frío; inversión 2,55-2,65x",
+     "referencia_flint": "704,2 us; prototipo 0,55-0,57x"
+    },
+    {
+     "escenario": "c) cuadrado frente a producto (a*a/a*b)",
+     "antes": "deg 299: 0,69; deg 999: 0,68-0,69",
+     "despues": "sin cambio",
+     "factor": "1x"
+    },
+    {
+     "escenario": "b) Reducer con transformadas precalculadas, deg m = 300",
+     "antes": "reduce 56,7-56,9 us; pow_mod 2728-2739 us",
+     "despues": "reduce 28,4-28,5 us; pow_mod v1 1706-1713, v2 1715-1734 us",
+     "factor": "reduce 1,99-2,00x; sqr+reduce 1,61-1,62x; mul+reduce 1,51-1,53x; pow_mod 1,57-1,60x",
+     "referencia_flint": "1544 us (1537 con mod_rev_inv); prototipo 1,10-1,12x"
+    },
+    {
+     "escenario": "b) Reducer con transformadas precalculadas, deg m = 1000",
+     "antes": "reduce 126,9-127,4 us; pow_mod 6002-6089 us",
+     "despues": "reduce 62,4-62,7 us; pow_mod v1 3752-3761, v2 3745-3830 us",
+     "factor": "reduce 2,03x; sqr+reduce 1,63-1,65x; mul+reduce 1,53-1,56x; pow_mod 1,59-1,62x",
+     "referencia_flint": "10129 us (10153 con mod_rev_inv); librería 0,59-0,60x, prototipo 0,37-0,38x"
+    },
+    {
+     "escenario": "Composer (Brent-Kung) n=300 k=18 / n=1000 k=32",
+     "antes": "compose 1460-1492 / 6730-6784 us",
+     "despues": "compose 837-850 / 3961-4035 us",
+     "factor": "compose 1,68-1,76x; construir+componer 1,72-1,75x"
+    },
+    {
+     "escenario": "Producto modular grado 400",
+     "antes": "85,4-85,8 us",
+     "despues": "56,2-56,6 (genérico); 47,3-47,7 (operando fijo transformado)",
+     "factor": "1,52x; 1,79-1,81x"
+    },
+    {
+     "escenario": "Extremo a extremo librería: is_irreducible deg 400 / factor deg 300",
+     "despues": "135,8-136,2 ms / 42,1-42,2 ms"
+    },
+    {
+     "escenario": "coste_tablas: tablas FFT en cuerpo nuevo 2^1..2^11 / ..2^12 / ..2^13",
+     "despues": "96,8 / 182,5 / 361,5 us",
+     "factor": "raíces distintas, 0 de 8 convoluciones distintas"
+    }
+   ],
+   "diferencias_con_preliminar": "Las conclusiones no cambian. Con la máquina en exclusiva, todos los tiempos caen en el extremo bajo de los rangos preliminares o algo por debajo (entre un 1 % y un 5 %), y la dispersión entre las tandas «%» y «barrett» es muy pequeña. Factores medidos: a) divmod 1,94-2,01x frente al cuerpo caliente (preliminar 1,99-2,05x; la tanda «%» queda un poco por debajo) y 3,32-3,44x frente al frío (preliminar 3,40-3,42x). El paso de frío a caliente da 1,70-1,71x (preliminar 1,67-1,71x). b) reduce 1,99-2,03x (preliminar 2,01-2,12x) y pow_mod 1,57-1,62x (preliminar 1,57-1,65x). Composer 1,68-1,76x (preliminar 1,69-1,74x). Producto modular 1,52x y 1,79-1,81x (preliminar 1,82-1,85x para el operando fijo, ahora algo menos). En c) el cuadrado no aporta ganancia adicional (0,68-0,69). El perfil de pow_mod repite reducciones 73-74 %, cuadrados 19-20 % y productos 7 %. Barrett en el producto punto a punto ahorra 1,6 us a 2048; en divmod mejora el factor de 1,94x a 2,01x y en pow_mod no se distingue del ruido. coste_tablas: 97/183/362 us (preliminar 102/195/373); se comprueba que la raíz no cambia el producto. Distancias a FLINT: divmod en frío 1,88-1,90x (preliminar 1,9-2,35x) y prototipo a) 0,55-0,57x; pow_mod n=300 con el prototipo, 1,10-1,12x; n=1000, librería 0,59-0,60x y prototipo 0,37-0,38x. Las referencias de extremo a extremo son algo menores: is_irreducible 136 ms (preliminar 140-145) y factor 42,1-42,2 ms (preliminar 43-46). Las estimaciones integradas (1,2-1,3x y 1,3-1,5x) siguen sin medirse y no se ven afectadas.",
+   "notas": "Ejecución del 2026-11-07, 22:18, con un AMD Ryzen 7 7730U enchufado a la corriente (Win32_Battery.BatteryStatus=2), ALCP_THREADS=1 y los comandos en serie. No se ha recompilado nada porque los dos ejecutables existían y arrancaron sin bloqueo. Las dos tandas terminaron sin fallos de comprobación (checksums cfe39182038cb3a9 y 704947d1d1c847ef). flint_ref.py usa python-flint 0.9.0 e informa de que el binding de alcp no está disponible (No module named 'alcp'), así que sigue sin medirse desde Python que la comparativa recorre el camino frío: es una deducción a partir del código. No se ha modificado el código fuente."
+  },
+  "verificacion": {
+   "tema": "newton",
+   "veredicto": "con_reservas",
+   "problemas": [
+    "La ganancia de a) en la inversión de la serie (2,55-2,73x) depende del tamaño, y 4000/2000 es casi el mejor caso posible. En cada paso de Newton el prototipo usa N = 2^ceil(log2 n) y la librería 2^ceil(log2(n+k-1)), con n+k-1 ≈ 1,5n. Con d1 = 2001, todos los niveles de la recursión (2001, 1001, 501, 251...) caen justo por debajo de una potencia de 2: queda 4096 frente a 2048, unas 2,4x por transformadas. Con d1 entre 2^j y 4/3·2^j (por ejemplo d1 ≈ 1100, que da 550, 275...), los dos tamaños coinciden y la ganancia baja a unas 1,2x (5 transformadas frente a 6). Para el escenario de la comparativa la cifra vale, pero no puede generalizarse a otros divmod ni al inverso del Reducer. No se ha medido ningún tamaño desfavorable.",
+    "b) ReducerProto usa ginv completo (n coeficientes) y por eso fija N1 = 2^ceil(log2(2n-1)). Al reducir un producto (deg a = 2n-2, d1 = n-1), a la librería le basta 2^ceil(log2(2n-3)) para rev(a)·ginv. Con n = 2^(j-1)+1 (257, 513, 1025...), el prototipo usa una transformada el doble de grande que la librería y la ganancia de reduce baja de unas 2x a unas 1,5x. Se arregla truncando ginv a n-1 para el caso habitual. Solo se midieron n = 300 y n = 1000, dos tamaños favorables o neutros.",
+    "La cifra de cabecera «2,0x frente a caliente» de a) mezcla la tanda Barrett con la tanda «%». Con el mismo producto punto a punto que la librería («%»), la medición limpia da 1,94x, y 3,32x frente al frío. El 2,01x y el 3,44x incluyen además Barrett, que es otro cambio.",
+    "El factor de b) y la distancia a FLINT en pow_mod excluyen costes de preparación. En C++ se usa un Reducer de la librería con inv_ ya calculado y un ReducerProto ya construido (inverso, 2 transformadas y cocientes de Shoup). FLINT, en cambio, se llama sin mod_rev_inv en la cifra principal. El sesgo es pequeño (unos pocos %) pero favorece a alcp. Además, pow_mod no es un escenario de compare_libs.py: la distancia a FLINT compara C++ con Python y no sale de la comparativa.",
+    "La estimación integrada para factor de grado 300 (1,3-1,5x) se apoya en un recuento de «450-500 productos modulares» que no está instrumentado. Con mul+reduce de la librería a 85-105 us, 475 productos sumarían unos 40-50 ms, prácticamente todo el tiempo medido (42 ms) y sin margen para EDF, MCD, etc.: el recuento o el coste por producto no cuadran. Las cifras de is_irreducible (unas 12 potencias, unos 430 + 400 productos, 190 combinaciones) tampoco se han contado en ejecución. Ninguna de las dos estimaciones está demostrada.",
+    "coste_tablas.exe mide fft::tables, que obtiene la raíz con el generador aleatorio, e incluye la construcción del Fp64 dentro del tiempo. La frase «la búsqueda determinista de la raíz cuesta lo mismo» es una suposición: el procedimiento determinista propuesto en d) ni se ha implementado ni se ha medido, y no está demostrado que termine siempre ni cuál es su coste.",
+    "Que la comparativa de Python mida el camino frío sigue siendo una deducción. La he confirmado leyendo el código: compare_libs.py lanza un subproceso por escenario, adaptador_alcp_native crea nat.Fp(p) nuevo, OpsFp::crear hace make_shared<FpW> con un Fp64 nuevo, la preparación solo construye polinomios (K.poly) y divmod/inverse_series/divmod_with_inverse solo llaman a mul_no_rng. Pero no se ha ejecutado desde Python, porque el binding no está en el .venv.",
+    "d) no es inocuo para el resto de la librería. Cambia la elección de algoritmo de mul_no_rng en todos los cuerpos fríos: MCD/half-GCD (que también se mide en frío, fp30.gcd), Euclides y Composer. Además, carga 0,1-0,4 ms de tablas a la primera operación grande. Los resultados no cambian, pero el efecto en tiempo de esas otras operaciones está sin estimar. Tampoco se ha analizado la seguridad con varios hilos de una segunda caché."
+   ],
+   "correcciones": [
+    "Citar 1,94x frente a caliente y 3,32x frente a frío para a) con el mismo producto punto a punto que la librería. Presentar Barrett aparte (+3-4 % en divmod, inapreciable en pow_mod).",
+    "Matizar que la ganancia de la inversión con producto medio va de unas 1,2x a 2,6x según dónde caiga d1 respecto a las potencias de 2. Medir al menos un tamaño desfavorable (por ejemplo, divmod 2200/1100) antes de generalizar.",
+    "En ReducerProto, precalcular la transformada de ginv truncado a n-1 con N1 = 2^ceil(log2(2n-3)) para el caso deg a ≤ 2n-2, y dejar la ruta actual solo para deg a = 2n-1. Medir n = 257 o 513 para confirmar que el factor de 2x se mantiene.",
+    "Rebajar las estimaciones integradas de is_irreducible y factor a «hipótesis», o instrumentar la librería (contar los productos modulares y sus tamaños) antes de dar 1,2-1,3x y 1,3-1,5x. El recuento actual para factor es incompatible con el tiempo total medido.",
+    "Incluir en la comparación con FLINT de pow_mod el coste de construir el Reducer y el ReducerProto (inverso, transformadas, Shoup), o comparar con FLINT usando mod_rev_inv precalculado como cifra principal.",
+    "Implementar y medir la búsqueda determinista de la raíz de d) (x = 2, 3, ... con comprobación de orden 2^cap), demostrar que termina y medir el efecto de d) en fp30.gcd.d1000 y en otras operaciones que hoy van por Kronecker en frío.",
+    "Confirmar desde Python, cuando el binding esté disponible, que el divmod de la comparativa deja fft_cache_ vacía y tarda lo mismo que el camino frío medido en C++ (unos 1,33 ms)."
+   ],
+   "hallazgos_que_sobreviven": [
+    "Corrección de los prototipos. He compilado y ejecutado una prueba de casos límite: C:/Users/ismae/Documents/Archivos/Proyectos/finite-fields-algorithms/build/fase6/verif_newton/verif.cpp, que incluye newton_proto.cpp y compara con la librería. Pasan 1296 de 1296 casos, 0 fallos. Cubre coeficientes todos p-1, polinomios dispersos con ceros, grados potencia de 2 y potencia de 2 más 1 (2..2048), d1 = 1, resto nulo, grado del divisor 2, inv_serie_mp con n = 1..4097, ReducerProto con deg a ∈ {0, n-1, n, n+1, 2n-2, 2n-1}, reduce del polinomio cero, mulmod, sqrmod, mulmod_fijo, powmod_v2, ComposerProto, y Barrett y «%» en divmod_mp. Así se cubren los casos borde que el informe dejaba como limitación, aunque con m y g aleatorios: no ha aparecido ningún caso adverso dirigido.",
+    "La comparación de newton_proto.cpp es justa en lo esencial. Usa las mismas entradas (16 rotando), el mismo cuerpo caliente Kw con las tablas ya construidas para la librería y para los prototipos, ALCP_THREADS=1, checksum acumulado y funciones opacas que el compilador no puede eliminar. La comprobación compara siempre con Poly::divmod, inverse_series, Reducer::reduce, pow_mod y Composer::compose de la librería.",
+    "Camino frío desde Python (deducción verificada en el código): compare_libs.py ejecuta cada escenario en un subproceso, crea un Fp64 nuevo, la preparación no hace productos, y divmod_newton → inverse_series/divmod_with_inverse usa solo mul_no_rng, que exige fft_cache_ no vacía. En C++, el cuerpo frío conserva la caché vacía. Frío frente a caliente da 1,70-1,71x sin cambiar el algoritmo.",
+    "c) es correcta: el cuadrado ya usa una sola transformada directa (a*a/a*b = 0,68-0,69) y no hay nada que ganar.",
+    "b) es sólida a n = 300 y 1000: la reducción hace 2 transformadas de N1 y 2 de N2 con producto de Shoup frente a 6 transformadas de ~2n, y reduce gana unas 2x. pow_mod gana 1,57-1,62x con resultado idéntico; el perfil de reducciones (73-74 %) cuadra con el modelo. Composer gana 1,7x y el producto modular con operando fijo 1,8x.",
+    "En RNG, las propuestas son coherentes: a) y b) solo pueden usar tablas que ya existan, y d) usaría una caché aparte con una raíz determinista. La raíz no altera el producto (comprobado con dos cuerpos de raíces distintas: 0 diferencias de 8, y es cierto matemáticamente). En pow_mod, operator* ya construye las tablas antes que el Reducer, así que b) no adelanta el consumo del RNG en ese uso.",
+    "El alcance es correcto: sin NTT (F_101, F_(2^127-1), F_(3^30)) estas ideas no aplican."
+   ]
+  }
+ },
+ {
+  "tema": "ntt",
+  "preliminar": {
+   "tema": "ntt",
+   "resumen": "Medí por partes la convolución NTT en palabras de alcp en F_998244353 y prototipé varias alternativas fuera de la librería. Todas dan exactamente el mismo producto que fft::convolve: 572 comprobaciones, de n = 2^4 a 2^16, con p = 998244353 y con un primo de 62 bits (4611615649683210241), sin ninguna diferencia. Tiempos preliminares, con un hilo y otros agentes cargando la máquina.\n\n1) Perfil (n = 2048 / 32768). Las etapas de mariposas suman el 85-90 % del tiempo. La mariposa ya cuesta unos 1,6-2,1 ns con el portátil enchufado, no 4-5 ns. La permutación de bits cuesta poco con n = 2048 (2,4 µs de 68), pero con n = 32768 son 300 µs de unos 1900 (15 %), por fallos de caché. Las etapas half = 1 y 2 salen algo más caras por mariposa (1,9-2,0 ns frente a 1,6-1,7). El producto punto a punto con % cuesta 1,7 ns por elemento (5 %) y el escalado por n^-1, un 2 %. Las conversiones y reservas son despreciables (1 %).\n\n2) Variantes, como aceleración de la convolución completa a grado 100 / 1000 / 10000:\n- a) DIF sin permutación + DIT: 1,02x / 1,07x / 1,53x.\n- c) Producto punto a punto de Montgomery fusionado con n^-1: apenas cambia nada (0-2 %).\n- b) Radix 4 + Montgomery: 1,32x / 1,32x / 1,89x. Con la pareja de etapas len = 4 especializada para no multiplicar por los twiddles iguales a 1: 1,49x / 1,49x / 2,01x.\n- d) AVX2 para p < 2^30 (8 carriles de 32 bits, Shoup en las mariposas, Montgomery en el producto punto a punto, etapas half = 8, 4, 2, 1 fusionadas en registros con barajados, y detección con __builtin_cpu_supports): unos 0,2 ns por mariposa, y 7,1x / 8,0x / 10,7x en la convolución completa (0,9 / 8,4 / 181 µs).\n- e) La FFT truncada no la he prototipado. Sí medí el salto de tamaño: L = 2048 tarda 64 µs y L = 2049, 135 µs (2,1x); L = 4096, 146 µs y L = 4097, 322 µs (2,2x).\n\n3) Con python-flint 0.9.0 (nmod_poly.mul): 71 µs a grado 1000 y 1657 µs a grado 10000. alcp desde Python ya tarda 62 y 1567 µs, es decir, 0,87x y 0,95x. A esos tamaños alcp ya iguala o supera a esta compilación de FLINT, y con AVX2 sería unas 8-10x más rápido. Las ganancias solo llegan a los primos con NTT en palabras (2^k divide a p - 1 y p < 2^62). F_101, F_(2^127-1) y F_(3^30) no usan este camino.",
+   "archivos": [
+    "C:/Users/ismae/Documents/Archivos/Proyectos/finite-fields-algorithms/bench/experimentos/fase6/ntt/ntt_fase6.cpp",
+    "C:/Users/ismae/Documents/Archivos/Proyectos/finite-fields-algorithms/bench/experimentos/fase6/ntt/flint_ref.py",
+    "C:/Users/ismae/Documents/Archivos/Proyectos/finite-fields-algorithms/build/fase6/ntt/ntt_fase6_c.exe",
+    "C:/Users/ismae/Documents/Archivos/Proyectos/finite-fields-algorithms/bench/results/fase6/ntt_preliminar.txt"
+   ],
+   "comandos_medicion": [
+    "ALCP_THREADS=1 build/fase6/ntt/ntt_fase6_c.exe",
+    "ALCP_THREADS=1 .venv/Scripts/python.exe bench/experimentos/fase6/ntt/flint_ref.py"
+   ],
+   "correcto": true,
+   "comprobacion_correccion": "Al arrancar, el ejecutable compara la salida de cada variante con fft::convolve de la librería, coeficiente a coeficiente. Las variantes son la copia de convolve_word, A, A+M, B4, B4e y, para p = 998244353, la de AVX2. Los tamaños van de n = 2^4 a 2^16, con 4 pares de longitudes distintas por tamaño (una de ellas con todos los coeficientes iguales a p - 1), en p = 998244353 y en el primo de 62 bits p = 4611615649683210241 (c·2^40 + 1), que pone a prueba el Montgomery de 64 bits con valores perezosos. Resultado: 572 pruebas, 0 distintas; si alguna fallara, el programa terminaría con código 1 antes de medir. El script de Python comprueba además, con un assert, que el producto de alcp coincide con el de FLINT. Ninguna variante usa el RNG: las tablas se piden con fft::tables antes de medir, igual que en la librería. Los twiddles son los mismos de WordNTTTables, copiados a 32 bits para AVX2.",
+   "hallazgos": [
+    {
+     "titulo": "Perfil por partes de la convolución (n = 2048 y n = 32768)",
+     "medido": true,
+     "detalle": "En µs por convolución (dos directas y una inversa), n = 2048 / n = 32768:\n- Reservas y conversión de entrada: 0,7 / 9,1.\n- t.swaps: 2,4 / 300. Con n grande el patrón de acceso falla en caché: 100 µs por transformada.\n- Etapa half = 1: 6,3 / 93 (2,0 / 1,9 ns por mariposa).\n- Etapa half = 2: 5,4 / 84 (1,8 / 1,7 ns).\n- Resto de etapas: 46 / 1026 (1,7 / 1,6 ns).\n- Normalización de las directas: 2,3 / 36.\n- Producto punto a punto con mul_mod: 3,5 / 55 (1,7 ns por elemento).\n- Escalado por n^-1: 1,6 / 25.\n- Vector de salida: 0,5 / 4,7.\n\nLa suma de las partes (68,9 µs) cuadra con convolve medido (67,7 µs). Con n = 32768 la suma da 1632 µs frente a 1935 µs medidos: el total sale ruidoso con la máquina cargada, y la copia de convolve_word dio 1851 µs. La transformada entera cuesta entre 1,8 y 2,1 ns por mariposa: el portátil enchufado va unas 2x más rápido que los 4-5 ns de la fase 5.",
+     "antes": "68 µs (n = 2048); 1935 µs (n = 32768)"
+    },
+    {
+     "titulo": "a) DIF sin permutación + DIT",
+     "medido": true,
+     "detalle": "La directa es una DIF de Harvey con entrada natural, salida en orden de bits invertido y valores en [0, 2p). La inversa es el mismo bucle DIT de la librería sin t.swaps. El resultado es idéntico. Solo compensa con n grande, donde los intercambios fallan en caché: 1,02x (n = 256), 1,07x (n = 2048) y 1,53x (n = 32768). La directa suelta pasa de 20,7 a 18,5 µs (n = 2048) y de 524 a 388 µs (n = 32768).",
+     "antes": "68 / 1935 µs",
+     "despues": "63 / 1261 µs",
+     "factor": "1,07x (n = 2048); 1,53x (n = 32768)"
+    },
+    {
+     "titulo": "c) Producto punto a punto de Montgomery fusionado con n^-1",
+     "medido": true,
+     "detalle": "Hace REDC de 64 bits sobre a·b y luego multiplica por Shoup por n^-1·2^64. Así desaparece la pasada de escalado, que se queda en normalizar. Por elemento cuesta 1,5 ns frente a 1,7 ns con %. El % de 64 bits sale barato aquí porque p < 2^32. El conjunto apenas cambia: 63,3 frente a 63,3 µs, un 0-2 %. Por sí sola no merece la pena con p < 2^32. Con p > 2^32 la librería hace el % de 128 bits (__umodti3), mucho más lento, y ahí sí ganaría; eso está estimado, no medido. El código sirve para p < 2^62 y está comprobado con un primo de 62 bits.",
+     "factor": "~1,0x (p < 2^32)"
+    },
+    {
+     "titulo": "b) Radix 4 y etapa len = 4 sin multiplicaciones por 1",
+     "medido": true,
+     "detalle": "Fusiona dos etapas en registros (4 cargas y 4 escrituras por cada 4 mariposas) y hace una etapa radix 2 suelta cuando k es impar. Con los mismos twiddles el resultado es idéntico. Directa suelta: 1,26 ns por mariposa (n = 2048) frente a 1,83 de la librería. Con la pareja len = 4 especializada (w = 1 en tres de sus cuatro mariposas): 1,15 ns. Convolución completa B4e (radix 4, len = 4 especial y Montgomery): 4,2 µs (n = 256, 1,49x), 45,3 µs (n = 2048, 1,49x) y 965 µs (n = 32768, 2,01x).",
+     "antes": "6,3 / 68 / 1935 µs",
+     "despues": "4,2 / 45 / 965 µs",
+     "factor": "1,5x (n ≤ 2048); 2,0x (n = 32768)"
+    },
+    {
+     "titulo": "d) AVX2 de 8 carriles de 32 bits para p < 2^30",
+     "medido": true,
+     "detalle": "Las mariposas usan Shoup de 32 bits (2 mul_epu32, 2 mullo_epi32 y un blend), con valores perezosos en [0, 4p), que caben en 32 bits porque p < 2^30. Las reducciones son min_epu32(x, x - m). Las etapas half ≥ 16 son vectoriales directas. Las half = 8, 4, 2 y 1 van fusionadas sobre bloques de 16 en registros, con permute2x128, unpack_epi64 y shuffle_ps / unpack_epi32. El producto punto a punto es Montgomery de 32 bits más Shoup por n^-1·2^32. Todo va en funciones con __attribute__((target(\"avx2\"))) y se elige con __builtin_cpu_supports, así que el binario sigue siendo portable (-O3 sin -march). Coste: 0,20-0,22 ns por mariposa, unas 8x la mariposa escalar. Convolución completa, incluidas las conversiones u64 <-> u32: 0,9 µs (n = 256, 7,1x), 8,4 µs (n = 2048, 8,0x) y 181 µs (n = 32768, 10,7x). Comprobada para p = 998244353 en todos los tamaños de 2^4 a 2^16.",
+     "antes": "6,3 / 68 / 1935 µs",
+     "despues": "0,9 / 8,4 / 181 µs",
+     "factor": "7-11x"
+    },
+    {
+     "titulo": "e) Salto de potencia de 2 (FFT truncada no prototipada)",
+     "medido": true,
+     "detalle": "Medido en la librería: L = 2048 tarda 63,9 µs y L = 2049, 134,6 µs (2,1x); L = 4096, 146 µs y L = 4097, 322 µs (2,2x). Lo siguiente es ESTIMADO y no lo he prototipado. Si L = n + r con r pequeño, se puede calcular el producto cíclico módulo x^n - 1 con la NTT de tamaño n, obtener aparte los r coeficientes altos (unas r·min(r, |A|) operaciones) y restarlos de los bajos; con r ≤ ~64 eso evita la duplicación. La FFT truncada (van der Hoeven) daría, según la bibliografía, 1,2-1,4x de media y hasta 2x justo después de cada potencia de 2."
+    },
+    {
+     "titulo": "Referencia python-flint 0.9.0 (nmod_poly.mul, F_998244353)",
+     "medido": true,
+     "detalle": "FLINT tarda 70,9 µs a grado 1000 y 1657 µs a grado 10000. alcp desde Python tarda 61,8 y 1567 µs, es decir, 0,87x y 0,95x. A esos tamaños alcp ya iguala o supera a esta compilación de FLINT. No sé si la rueda de python-flint para Windows incluye fft_small (AVX2); si no la incluye, una FLINT compilada con -march=native podría ser bastante más rápida. Esto no lo he verificado."
+    },
+    {
+     "titulo": "Estimación de extremo a extremo y de lo que depende del producto",
+     "medido": false,
+     "detalle": "Producto de grado 1000: de unos 68 µs a 45 µs con el escalar B4e (1,5x) o a 8,5 µs con AVX2 (8x). Grado 10000: de 1,9 ms a 0,96 ms (2x) o a 0,18 ms (10x). Medido en el prototipo; la parte estimada es la integración. Lo que depende de él, ESTIMADO: la división 4000/2000 por Newton (productos de n = 4096-8192, distancia 1,97x a FLINT) bajaría unas 1,4x con el escalar y 3-4x con AVX2, si los productos son el 70-80 % de su tiempo. Eso la dejaría por debajo de FLINT con AVX2. El producto de grado 100 desde Python (1,81x de distancia) apenas cambiaría: el núcleo tarda 6,3 µs y con AVX2 tardaría 0,9 µs, así que el resto del tiempo es sobrecarga ajena a la NTT. El MCD de grado 1000 casi no cambiaría si usa el Euclides clásico en sitio. factor en F_101, F_(2^127-1) y F_(3^30) NO se beneficia: F_101 solo admite n ≤ 4 (100 = 4·25) y los otros dos no van por la NTT en palabras."
+    }
+   ],
+   "estimacion_integrada": "Hay dos niveles. Escalar portable: DIF sin permutación, radix 4 con len = 4 especializada y Montgomery fusionado. Gana 1,5x en convoluciones de hasta n = 2048 y 2x con n = 32768, sin código específico de CPU. AVX2 con despacho en tiempo de ejecución, para p < 2^30 (998244353, 469762049, 167772161...): 7-11x en la convolución. Lo medido es el prototipo, no la librería. Los productos de grado 1000 y 10000 en F_998244353 pasarían de unos 68 µs y 1,9 ms a unos 8,5 µs y 0,18 ms, unas 8x por debajo del python-flint 0,9.0 de referencia. La división y lo que use Newton o pow_mod sobre primos NTT ganaría entre 1,4x (escalar) y unas 3x (AVX2); esto está estimado. Las distancias de factor en F_101, F_(2^127-1) y F_(3^30) no cambian. Con p entre 2^30 y 2^62 solo aplicaría el nivel escalar, salvo que se haga una versión AVX2 de 4 carriles de 64 bits (no prototipada).",
+   "esfuerzo": "Escalar (DIF/DIT sin permutación y radix 4 con len = 4 especializada): bajo-medio, 1-2 días con pruebas. Afecta solo a word::transform y convolve_word, y la permutación t.swaps deja de hacer falta en ese camino. AVX2: medio, 3-5 días. Hace falta guardar tablas de 32 bits y de Shoup de 32 bits en WordNTTTables (n·16 bytes más por tamaño, calculadas a partir de los mismos twiddles y sin RNG), el despacho con __builtin_cpu_supports, el respaldo escalar, el caso n < 16 y pruebas en las dos rutas.",
+   "riesgos": "Las mediciones son preliminares: había otros 5 agentes en marcha, y en n = 32768 la suma de las partes (1632 µs) no cuadra con el convolve medido (1935 µs) por el ruido. AVX2 en MinGW-w64: GCC no garantiza la alineación de 32 bytes de la pila en Windows (bug 54412). Si el compilador vuelca registros __m256i a la pila con vmovdqa, el programa puede fallar. Aquí no ha pasado, pero hay que comprobarlo con más compilaciones y niveles de optimización, o mantener los núcleos sin volcados. La variante AVX2 exige p < 2^30 para que [0, 4p) quepa en 32 bits; con p < 2^31 o 2^32 habría que reducir de forma más estricta. Las conversiones u64 <-> u32 ya están incluidas en los tiempos. No he hecho la FFT truncada ni el truco de L = 2^k + r, solo la medición del salto. Montgomery fusionado no da ganancia con p < 2^32: su interés con p > 2^32 está estimado, no medido. Restricciones respetadas: no he tocado include/, python/, python-bindings/ ni tests/, y no he hecho git add ni commit. ntt_fase6.exe quedó bloqueado por Smart App Control. ntt_fase6_b.exe funciona, pero es una versión anterior sin el caso de grado 100. El bueno es ntt_fase6_c.exe (-DRELINK_3).",
+   "perfil": "Pesos del perfil (n = 2048 / 32768): mariposas el 85 % / 74 %, permutación el 3,5 % / 15-18 %, punto a punto el 5 % / 3 %, normalización y escalado el 6 % / 3,5 %, conversiones y reservas el 2 % / 1 %. La mariposa cuesta 1,6-2,1 ns, y las etapas half = 1 y 2 un 15-20 % más por mariposa que las demás."
+  },
+  "limpia": {
+   "tema": "ntt",
+   "ejecutado_ok": true,
+   "fichero_salida": "C:/Users/ismae/Documents/Archivos/Proyectos/finite-fields-algorithms/bench/results/fase6/ntt.txt",
+   "mediciones": [
+    {
+     "escenario": "Perfil por partes, convolve librería (n=256 / 2048 / 32768)",
+     "antes": "5,9 / 60,4 / 1654,9 µs (suma de partes 6,0 / 60,5 / 1519,4 µs; t.swaps 292 µs con n=32768; mariposa 1,46-1,98 ns)"
+    },
+    {
+     "escenario": "a) DIF sin permutación + DIT (n=256 / 2048 / 32768)",
+     "antes": "5,9 / 60,4 / 1654,9 µs",
+     "despues": "5,5 / 57,6 / 1214,0 µs",
+     "factor": "1,07x / 1,05x / 1,36x (directa suelta 18,6->17,2 µs y 485,5->358,1 µs)"
+    },
+    {
+     "escenario": "c) Montgomery fusionado con n^-1 (A+M)",
+     "antes": "punto a punto 3,2 µs (1,58 ns/elem) + escalado 1,4 µs (n=2048)",
+     "despues": "3,0 µs (1,44 ns/elem); convolución A+M 57,0 µs frente a 57,6 de A",
+     "factor": "~1,01x"
+    },
+    {
+     "escenario": "b) Radix 4 + len=4 especial + M (B4e)",
+     "antes": "5,9 / 60,4 / 1654,9 µs",
+     "despues": "3,7 / 41,1 / 926,8 µs",
+     "factor": "1,57x / 1,47x / 1,79x (B4 sin especializar: 1,41x / 1,33x / 1,69x)"
+    },
+    {
+     "escenario": "d) AVX2 8x32 bits",
+     "antes": "5,9 / 60,4 / 1654,9 µs",
+     "despues": "0,7 / 7,3 / 167,7 µs",
+     "factor": "7,82x / 8,26x / 9,87x (0,18-0,20 ns/mariposa)"
+    },
+    {
+     "escenario": "e) Salto de potencia de 2 (librería)",
+     "antes": "L=2048: 62,9 µs; L=4096: 141,7 µs",
+     "despues": "L=2049: 132,1 µs; L=4097: 311,3 µs",
+     "factor": "2,10x / 2,20x"
+    },
+    {
+     "escenario": "python-flint 0.9.0 nmod_poly.mul frente a alcp desde Python, grado 1000",
+     "antes": "flint 71,4 µs",
+     "despues": "alcp 63,4 µs",
+     "factor": "alcp/flint 0,89x",
+     "referencia_flint": "71,4 µs"
+    },
+    {
+     "escenario": "python-flint 0.9.0 nmod_poly.mul frente a alcp desde Python, grado 10000",
+     "antes": "flint 1589,1 µs",
+     "despues": "alcp 1568,3 µs",
+     "factor": "alcp/flint 0,99x",
+     "referencia_flint": "1589,1 µs"
+    }
+   ],
+   "diferencias_con_preliminar": "Ninguna conclusión cambia; las cifras confirman el preliminar con matices menores.\n- Perfil: con la máquina libre todo sale algo más rápido (n=2048: 60,4 µs frente a 68; n=32768: 1655 frente a 1935 µs). La mariposa escalar cuesta 1,46-1,98 ns, no 1,6-2,1. Con n=2048 la suma de las partes cuadra (60,5 frente a 60,4 µs). Con n=32768 sigue sin cuadrar del todo: 1519 frente a 1655 µs, y la copia de convolve_word da 1618 µs. Así que el desfase no se debía solo a la carga de la máquina. t.swaps sigue en unos 97 µs por transformada con n grande.\n- a) Factores 1,05x (n=2048) y 1,36x (n=32768), frente a 1,07x y 1,53x. Con n grande baja, porque la librería, la base de la comparación, ahora va más rápida. Las conclusiones no cambian: solo compensa con n grande.\n- c) Se confirma un efecto de un 0-2 %, ~1,0x (1,44 frente a 1,58 ns por elemento).\n- b) B4e: 1,57x / 1,47x / 1,79x (preliminar 1,49x / 1,49x / 2,01x). Los tiempos absolutos mejoran: 3,7 / 41,1 / 927 µs. El factor con n=32768 baja de 2,0x a 1,8x porque la base es más rápida. Mariposa directa suelta: 1,03 ns (preliminar 1,15).\n- d) AVX2: 0,7 / 7,3 / 168 µs, es decir 7,8x / 8,3x / 9,9x (preliminar 7,1x / 8,0x / 10,7x). El rango de 7-11x sigue valiendo, aunque con n=32768 el factor queda algo por debajo de 10x.\n- e) Se reproduce el salto de 2,1x y 2,2x (62,9->132,1 y 141,7->311,3 µs). La parte de FFT truncada sigue siendo una estimación, no medida.\n- FLINT: 0,89x y 0,99x (preliminar 0,87x y 0,95x). alcp sigue igualando o superando a la rueda de python-flint, pero con grado 10000 queda prácticamente empatado.\n- Comprobación de corrección: 572 pruebas contra fft::convolve, con p = 998244353 y un primo de 62 bits, y 0 resultados distintos.\n- La estimación de extremo a extremo (sin medir) mantiene sus órdenes de magnitud: de unos 60 a 41 µs con B4e y a 7,3 µs con AVX2 en grado 1000; de 1,65 ms a 0,93 ms o a 0,17 ms en grado 10000.",
+   "notas": "Mediciones ejecutadas en serie el 2026-11-07, con ALCP_THREADS=1, en un AMD Ryzen 7 7730U enchufado a la corriente (BatteryStatus=2, 81 %). No se ha recompilado nada: build/fase6/ntt/ntt_fase6_c.exe ya existía y se ejecutó sin bloqueos. No se ha modificado código fuente. El ejecutable mide el mejor de 3 tandas, así que queda algo de ruido entre ejecuciones del orden de unos pocos puntos porcentuales."
+  },
+  "verificacion": {
+   "tema": "ntt",
+   "veredicto": "con_reservas",
+   "problemas": [
+    "La estimación integrada usa cifras del preliminar que la medición limpia ya no sostiene. Con n = 32768, B4e da 1,79x y no 2,0x, y la variante A da 1,36x y no 1,53x. El rango del AVX2 medido es de 7,8x a 9,9x, no de 7 a 11x. El '2x con n = 32768' del nivel escalar está exagerado.",
+    "Se comparan magnitudes distintas: el 'unas 8x por debajo de python-flint' enfrenta el tiempo del prototipo en C++ (7,3 / 168 µs) con FLINT medido desde Python, que incluye la sobrecarga del intérprete. Además, alcp desde Python a grado 10000 (1568 µs) sale más rápido que fft::convolve en C++ (1655 µs), lo que deja ver un ruido entre procesos del orden del 5 %. Contando la sobrecarga de Python de alcp (unos 3 µs a grado 1000), el factor a grado 1000 sería de unas 7x, no de 8 a 10x.",
+    "La referencia FLINT es dudosa: 71 µs a grado 1000 es lento para una FLINT 3 con fft_small, así que la rueda probablemente no la incluye. 'alcp iguala o supera a FLINT' vale solo para esta compilación de python-flint y no para FLINT en general. El autor lo reconoce, pero sigue sin verificar.",
+    "El esfuerzo propuesto, 'afecta solo a word::transform y convolve_word, y t.swaps deja de hacer falta', es incorrecto si se cambia word::transform. La función pública fft::transform (fft.hpp:530-569) llama a word::transform y espera la NTT en orden natural. Una DIF con salida en orden de bits invertido rompería esa API. Hacen falta funciones nuevas, solo para la convolución, y t.swaps tiene que mantenerse.",
+    "No se cubre el camino de cuadrado de convolve_word (&A == &B, una sola transformada directa más mul_mod(wa, wa)), que es el que usan pow_mod y Newton. La estimación para la división y pow_mod da por hecho que el cuadrado se integra igual, pero no está prototipado ni comprobado.",
+    "La comprobación de corrección original no incluye ceros explícitos, ni el caso |A| = 1, ni L = n exacto, ni coeficientes p - 1 en los dos operandos (solo en A). El AVX2 solo se comprobó con p = 998244353, aunque se anuncia para todo p < 2^30. Lo he cubierto con una prueba adicional que se describe en los hallazgos.",
+    "No se comprueba n < 16. dif_avx2 y dit_avx2 leen bloques de 16 elementos y con n = 8 accederían fuera de rango. El autor menciona el respaldo, pero el prototipo no lo tiene.",
+    "Las estimaciones para la división por Newton (1,4x en escalar y 3-4x con AVX2, 'por debajo de FLINT') se apoyan en una proporción supuesta del 70-80 % del tiempo en productos, que no está medida. El 'producto de grado 100 desde Python, 1,81x de distancia' tampoco sale de este experimento.",
+    "El perfil mide cada parte en sitio sobre 16 búferes calientes y lo repite. Con n = 32768 la suma de las partes (1519 µs) sigue sin cuadrar con el convolve medido (1655 µs) incluso con la máquina libre. El desglose de n grande es, por tanto, aproximado: unos 136 µs sin explicar. p_mont se obtiene restando p_norm, medido aparte.",
+    "Detalle menor: el 'half = 1 y 2 un 15-20 % más caras por mariposa' no encaja con las cifras limpias. Half = 1 sale un 22 % más cara y half = 2, solo un 5-6 %.",
+    "Riesgos que no están demostrados: la integración del AVX2 en una biblioteca de solo cabeceras (target('avx2') en plantillas inline, compatibilidad fuera de GCC y Clang), la alineación de pila en MinGW (bug 54412) y la interacción con las compilaciones -march=x86-64-v3 o native del CMakeLists."
+   ],
+   "correcciones": [
+    "Rehacer la estimación integrada con las cifras limpias. Escalar B4e: 1,5-1,6x hasta n = 2048 y unas 1,8x con n = 32768. AVX2: 7,8-9,9x, 'unas 8-10x'.",
+    "Para comparar con FLINT, medir alcp con AVX2 desde Python o restar la sobrecarga de Python de forma explícita. Mientras tanto, conviene decir 'unas 7x (grado 1000) y unas 9x (grado 10000) frente a esta rueda de python-flint' y aclarar que probablemente esa rueda no incluye fft_small.",
+    "En el plan de integración, no tocar word::transform: añadir rutinas DIF/DIT propias de convolve_word y mantener t.swaps para fft::transform.",
+    "Prototipar y comprobar el camino de cuadrado (&A == &B) con las variantes antes de extrapolar la ganancia a pow_mod y a Newton.",
+    "Añadir el respaldo escalar para n < 16 en el AVX2 y probar el despacho con y sin AVX2, por ejemplo forzando la ruta escalar.",
+    "Marcar como estimación sin medir la ganancia en la división por Newton, y medir qué fracción de su tiempo se va en productos."
+   ],
+   "hallazgos_que_sobreviven": [
+    "La corrección es sólida. Revisé las cotas: en Shoup de 32 bits, y < 4p < 2^32 da un resto en [0, 2p). En el REDC de 32 bits, u < 2p si p < 2^30. En el REDC de 64 bits, u < 2p si p < 2^62. Las sumas perezosas caben en 32 y 64 bits. Además, compilé y ejecuté una verificación adicional (build/fase6/verif_ntt/verif.cpp y verif.exe) con los primos 998244353, 754974721, 469762049, 167772161, 7340033 y 4611615649683210241, k de 4 a 14, y los casos |A| = 1, L = n exacto, p - 1 en los dos operandos, ceros intercalados y A con todo ceros salvo un 1. Resultado: 1925 pruebas y 0 resultados distintos frente a fft::convolve de la librería, AVX2 incluido para los primos < 2^30.",
+    "Los 572 de la comprobación original cuadran: 2 primos × 13 tamaños × 4 repeticiones × 5 rutas (520), más 52 de AVX2. La referencia es de verdad fft::convolve de la librería, y el programa termina con código 1 si alguna difiere.",
+    "La comparación de tiempos es justa en lo esencial. Las dos rutas reservan wa, wb y out igual; las tablas se piden antes de medir; ALCP_THREADS=1 se imprime y comprueba (la librería solo usaría hilos con n ≥ 8192); se rotan 16 entradas; y cada resultado se consume en un sumidero volátil a través de vectores en el montón, así que el compilador no puede eliminar el trabajo. La conversión u64 <-> u32 entra en el tiempo del AVX2.",
+    "No hay consumo nuevo del RNG. Todas las variantes reutilizan WordNTTTables obtenidas con fft::tables, y las tablas de 32 bits y de Shoup se derivan de los mismos twiddles.",
+    "El perfil se sostiene cualitativamente. Las mariposas son el 75-85 % del tiempo; t.swaps pesa poco con n = 2048 y ronda el 18 % con n = 32768; Montgomery fusionado apenas cambia nada con p < 2^32 (unos 1,01x).",
+    "Variante A: compensa solo con n grande (1,05x con n = 2048 y 1,36x con n = 32768).",
+    "B4e escalar: 1,47-1,57x hasta n = 2048 y 1,79x con n = 32768, portable.",
+    "AVX2 8x32 para p < 2^30: 7,8x / 8,3x / 9,9x en la convolución completa del prototipo.",
+    "El salto de potencia de 2 (2,1x y 2,2x) está medido. La FFT truncada y el truco de L = 2^k + r siguen siendo estimaciones."
+   ]
+  }
+ },
+ {
+  "tema": "factor",
+  "preliminar": {
+   "tema": "factor: factorización con q pequeño (F_101) y en extensiones (F_(3^30), F_256), y producto en F_q",
+   "resumen": "Todos los tiempos son PRELIMINARES. Se midieron con el portátil enchufado mientras otros 5 agentes trabajaban a la vez, y el ruido observado entre tandas es de alrededor del 10 %. Todas las variantes son prototipos fuera de la librería: tipos de cuerpo derivados y especializaciones explícitas de ks::mul_extension y ks::mul_primo, que Poly<> de la librería usa sin modificarla. Se comprobó que cada una da el mismo resultado que la librería: mismos factores, multiplicidades, orden canónico y coeficiente principal, y mismo estado del generador aleatorio después de factor().\n\nPerfil:\n- En F_(3^30), grado 5, factor() se reparte entre la DDF (64 %, casi todo el paso de Frobenius x^q por pow_mod) y la EDF (34 %, pow_mod con exponente (q-1)/2). Por dentro, casi todo es aritmética de elementos de F_q: por cada factor() hay 5891 acc_fma, 2861 acc_reduce, 694 mul y 236 inv. Un mul cuesta 1,3 µs y un inv 5 µs.\n- En F_256, grado 30, la DDF se lleva el 89 %, con 120 000 acc_fma por factor().\n- En F_101 se identifican dos costes. El primero es el desempaquetado de Kronecker en mul_primo, que hace u128 % p (__umodti3) por cada coeficiente. El segundo es el acumulador perezoso u128 con comprobación de acarreo.\n- En mul_extension, el mpn_mul es solo el 35-41 % del tiempo. El resto se va en desempaquetar (leer() + mpn_mod_1 por cada hueco) y en reducir módulo g.\n\nResultados medidos sobre las mismas 16 entradas que python-flint:\n\n| Caso | Prototipo | Aceleración | Distancia a FLINT, variadas (antes → después) |\n|---|---|---:|---|\n| F_256 grado 30, factor | FqTab (tablas de logaritmos, elemento = palabra) | 37x (6,8 ms → 0,18 ms) | 1,27x → 0,03x |\n| F_256 grado 1000, producto | FqTab con Karatsuba | 3,7x | 1,7x → 0,46x |\n| F_(3^30) grado 5, factor | FqSwar (aritmética de F_p[t]/g en 64 bits, SWAR de 16 bits, Euclides con reducción perezosa) | 2,6x | 1,63x → 0,63x |\n| F_(3^30) grado 200, producto | FqSwar + mul_extension con desempaquetado directo | 1,65x | 1,57x → 0,95x |\n| F_101 grado 40, factor | Acc de 64 bits + mul_primo rápida | 1,55x | 2,67x → 1,72x |\n| F_101 grado 100, factor | Acc de 64 bits + mul_primo rápida | 1,70x | 2,90x → 1,70x |\n\nLo que no da ganancia o da poca:\n- KS2: como mucho ahorra unos 65-70 µs de unos 1000 µs.\n- pow_mod con ventana deslizante: 1,16x con exponentes de 48 bits, pero 0,64x con exponente 101, así que habría que elegir la ventana según el tamaño del exponente.\n- Multiplicidad y radical: entre el 1 y el 9 %, no compensa tocarlos.\n- EDF sin cambiar el consumo del generador: no se ve margen algorítmico. Su coste es pow_mod y baja con la aritmética de elementos.",
+   "archivos": [
+    "C:/Users/ismae/Documents/Archivos/Proyectos/finite-fields-algorithms/bench/experimentos/fase6/factor/perfil.cpp",
+    "C:/Users/ismae/Documents/Archivos/Proyectos/finite-fields-algorithms/bench/experimentos/fase6/factor/proto.cpp",
+    "C:/Users/ismae/Documents/Archivos/Proyectos/finite-fields-algorithms/bench/experimentos/fase6/factor/proto2.cpp",
+    "C:/Users/ismae/Documents/Archivos/Proyectos/finite-fields-algorithms/bench/experimentos/fase6/factor/proto3.cpp",
+    "C:/Users/ismae/Documents/Archivos/Proyectos/finite-fields-algorithms/bench/experimentos/fase6/factor/flint_ref.py",
+    "C:/Users/ismae/Documents/Archivos/Proyectos/finite-fields-algorithms/build/fase6/factor/perfil.exe",
+    "C:/Users/ismae/Documents/Archivos/Proyectos/finite-fields-algorithms/build/fase6/factor/proto.exe",
+    "C:/Users/ismae/Documents/Archivos/Proyectos/finite-fields-algorithms/build/fase6/factor/proto2b.exe",
+    "C:/Users/ismae/Documents/Archivos/Proyectos/finite-fields-algorithms/build/fase6/factor/proto2_native.exe",
+    "C:/Users/ismae/Documents/Archivos/Proyectos/finite-fields-algorithms/build/fase6/factor/proto3.exe",
+    "C:/Users/ismae/Documents/Archivos/Proyectos/finite-fields-algorithms/bench/results/fase6/factor_preliminar.txt",
+    "C:/Users/ismae/Documents/Archivos/Proyectos/finite-fields-algorithms/bench/results/fase6/factor_entradas.txt"
+   ],
+   "comandos_medicion": [
+    ".venv/Scripts/python.exe bench/experimentos/fase6/factor/flint_ref.py",
+    "ALCP_THREADS=1 build/fase6/factor/perfil.exe",
+    "ALCP_THREADS=1 build/fase6/factor/proto.exe",
+    "ALCP_THREADS=1 build/fase6/factor/proto2b.exe",
+    "ALCP_THREADS=1 build/fase6/factor/proto3.exe",
+    "ALCP_THREADS=1 build/fase6/factor/proto2_native.exe",
+    "ALCP_THREADS=1 .venv/Scripts/python.exe bench/compare_libs.py --libs alcp_native_1h,flint --filter f"
+   ],
+   "correcto": true,
+   "comprobacion_correccion": "Todas las comprobaciones comparan con las funciones de la librería, no con otra copia propia.\n\n- factor(): para cada una de las 16 entradas de cada caso se ejecuta set_seed(s), luego factor() con la librería (Poly<Fq64> o Poly<Fp64>) y con la variante, y después rand_below(2^64). Se exige que coincidan los factores (coeficientes), las multiplicidades, el orden de salida, el coeficiente principal y el número aleatorio siguiente, es decir, el mismo consumo del generador. Resultado: «sí» en las 4 familias (F_101 d40 y d100, F_(3^30) d5, F_256 d30) y en todas las variantes.\n- Productos: (A*B).coeffs() de la librería es igual al de la variante en los 16 pares de F_(3^30) d200, F_256 d1000 y F_101 de grado 16 a 1000.\n- Elementos:\n  - FqPeq: mul e inv iguales a Fq64 en 2000 pares por cuerpo.\n  - FqSwar: mul, inv y acumulación de 40 fma iguales a Fq64 en 3000 casos.\n  - FqTab: mul, add, inv y orden de las 65 536 parejas de F_256 frente a Fq64 (el orden numérico de la palabra coincide con el lexicográfico de std::vector, y canonical_less ordena igual).\n- Contador: el cuerpo contador derivado de Fq64 da el mismo factor() que Fq64.\n- pow_mod con ventana: igual a P::pow_mod en las 16 entradas de cada caso.\n- Generador aleatorio: ninguna variante cambia cuándo se piden las tablas FFT. FqTab::random hace las mismas e llamadas a rand_below(2) en el mismo orden, y la comprobación del estado posterior lo confirma.\n- La salida de python-flint (compare_libs) coincide con la de la librería en todos los escenarios.",
+   "hallazgos": [
+    {
+     "titulo": "Perfil F_(3^30) grado 5: todo es aritmética de elementos de F_q",
+     "medido": true,
+     "detalle": "factor() tarda 6,4-6,9 ms: radical 2 %, DDF 64 % (Frobenius 4,25 ms, 1 MCD), EDF 34 % (pow_mod 2,28 ms, 1 intento) y multiplicidad 1 %. Con el cuerpo contador salen, por factor(): 5891 acc_fma (e² = 900 FMA de u128 con comprobación de acarreo cada uno), 2861 acc_reduce, 694 mul (1,31 µs) y 236 inv (5,0 µs; Euclides con Barrett u128 y vectores en el montón). Los polinomios son de grado ≤ 5, así que no se usa ni Kronecker ni la FFT: el coste está en la aritmética de los elementos, no en la de polinomios."
+    },
+    {
+     "titulo": "Perfil F_256 grado 30 y F_101",
+     "medido": true,
+     "detalle": "F_256 d30: la DDF clásica se lleva el 89 % (Frobenius 5,5 ms y 10 MCD que suman 1,25 ms) y la EDF el 8 %. Hay 119 754 acc_fma y 13 714 acc_reduce por factor(), y cada elemento es un std::vector de 8 palabras. F_101, producto de grado 38: DDF 48 %, EDF 39 % (12 intentos de separación por llamada, exponentes pequeños) y multiplicidad 9 %. F_101 d100: la DDF (Kaltofen–Shoup) se lleva el 94 %."
+    },
+    {
+     "titulo": "F) FqTab: F_(2^e) con elemento = palabra y tablas exp/log",
+     "medido": true,
+     "antes": "factor F_256 d30: 6806 µs; producto d1000: 1139 µs; mul de elemento: 165 ns",
+     "despues": "factor: 182 µs; producto (Karatsuba con elementos en palabra): 304 µs; mul: 34 ns (incluye el bucle de medida)",
+     "factor": "factor 37x (31x con -march=native); producto 3,7x",
+     "detalle": "Es un cuerpo nuevo, no una mejora de FqT: el elemento es una palabra con c_0 en el bit alto, de modo que el orden numérico coincide con el lexicográfico del vector y la salida ordenada es idéntica. Suma = XOR y producto e inverso por tablas de logaritmos. random() consume el generador igual que FqT. Frente a python-flint con las mismas 16 entradas (5342 µs y 667 µs), factor pasaría de 1,27x a 0,03x y el producto de 1,7x a 0,46x. Se aplica a p = 2 con e ≤ 16. Para p impar y q ≤ 2^16 harían falta logaritmos de Zech (sin prototipo)."
+    },
+    {
+     "titulo": "E) FqSwar / FqPeq: aritmética de F_p[t]/(g) en 64 bits con p pequeño",
+     "medido": true,
+     "antes": "F_(3^30): mul 1334 ns, inv 4750 ns, acc (8 fma + reduce) 5191 ns; factor d5 5450 µs",
+     "despues": "FqPeq (u64, Barrett 64): mul 725, inv 1722, acc 2465 ns, factor 3057 µs. FqSwar (4 huecos de 16 bits por palabra, Euclides con reducción perezosa, Acc de tamaño fijo): mul 471, inv 1452, acc 1609 ns, factor 2095 µs",
+     "factor": "factor d5: 1,78x (FqPeq) y 2,60x (FqSwar); 2,69x con -march=native",
+     "detalle": "Se conservan el tipo Elem (vector<uint64_t>), el consumo del generador y el resultado. Las condiciones son 2·e·(p-1)² < 2^62 para FqPeq y < 2^16 para FqSwar. Frente a FLINT con las mismas entradas (3350 µs), factor d5 pasaría de 1,63x a 0,63x. Con la entrada única de compare_libs (alcp 6,19 ms frente a FLINT 2,07 ms, 3,0x) se estima unos 1,15x; esa cifra es una estimación."
+    },
+    {
+     "titulo": "B) mul_extension con desempaquetado directo (F_q por Kronecker)",
+     "medido": true,
+     "antes": "producto F_(3^30) d200: 1036 µs; F_256 d1000: 1119 µs",
+     "despues": "Fq64 + KS rápida: 734 / 828 µs. FqPeq + KS rápida: 584 / 706 µs. FqSwar + KS: 626 µs",
+     "factor": "1,34-1,35x por sí solo; 1,58-1,68x junto con la aritmética de 64 bits (1,87x con -march=native)",
+     "detalle": "El mpn_mul es solo el 41 % (408 de 1000 µs en d200, con 3336 limbs y huecos de 18 bits). El resto se va en leer() + mpn_mod_1 por cada hueco (2e-1 huecos por coeficiente) y en reducir módulo g. El prototipo lee cada hueco de ≤ 60 bits con un desplazamiento y una máscara y lo deja sin reducir en el acumulador, que ya reduce módulo p. F_(3^30) d200 frente a FLINT (661 µs con las mismas entradas): de 1,57x a 0,88-0,95x."
+    },
+    {
+     "titulo": "KS2 (Harvey: evaluar en 2^b y 2^-b): ganancia pequeña",
+     "medido": true,
+     "antes": "mpn_mul de 3336 x 3336 limbs: 408 µs (F_(3^30) d200); de 3754 x 3754: 459 µs (F_256 d1000)",
+     "despues": "2 mpn_mul de la mitad de tamaño: 337 / 394 µs",
+     "factor": "≤ 1,07x en el producto completo (cota superior: solo el núcleo, sin el coste extra de decodificar)",
+     "detalle": "Se midió solo el núcleo multiplicativo, como cota. El ahorro máximo es de 65-71 µs sobre unos 1000 µs, y la decodificación de KS2 (dos evaluaciones, recomposición con acarreos) se lo comería en parte. No se recomienda frente a corregir el desempaquetado."
+    },
+    {
+     "titulo": "C+G) F_101: mul_primo sin u128 % p y acumulador perezoso de 64 bits",
+     "medido": true,
+     "antes": "factor d40: 209,5 µs; d100: 1383 µs; producto grado 100: 2,50 µs",
+     "despues": "mul_primo rápida: 201,6 / 866 µs. Acc u64: 138,7 / 1375 µs. Las dos: 135,2 / 812 µs; producto grado 100: 1,27 µs",
+     "factor": "d40 1,55x; d100 1,70x; producto de grado 16-1000: 1,46-1,97x",
+     "detalle": "mul_primo de la librería desempaqueta con (u128) % p, que llama a __umodti3 por cada coeficiente. Se cambia por una lectura directa y Barrett de 64 bits. El Acc u64 (s += a·b sin acarreo) es válido con p < 2^16 y menos de 2^32 términos. Frente a FLINT con las mismas entradas (78,6 y 476,7 µs): d40 de 2,67x a 1,72x y d100 de 2,90x a 1,70x. Lo que queda está en la DDF de Kaltofen–Shoup (d100) y en la EDF con muchos intentos (d40), y no se ha desglosado más."
+    },
+    {
+     "titulo": "D) pow_mod con ventana deslizante: solo con exponentes grandes",
+     "medido": true,
+     "antes": "binario: 1627 µs (exponente q = 3^30, 48 bits, popcount 25); 72,1 µs (exponente 101)",
+     "despues": "ventana de 4 bits: 1392 µs; 112,4 µs",
+     "factor": "1,17x con 48 bits; 1,08x con 19 bits; 0,64x con 7 bits",
+     "detalle": "El resultado es idéntico. Habría que elegir el ancho de ventana según los bits del exponente (binario por debajo de unos 16). En F_(3^30) d5 el 95 % del tiempo es pow_mod con exponentes de 47-48 bits, así que se estima otro 1,13x sobre FqSwar (estimado, no integrado). Riesgo para el generador: añade productos a^2..a^15 al principio. En cuerpos con FFT podría adelantar la primera llamada a fft::tables dentro del mismo pow_mod; la raíz se pide una sola vez y no hay otras extracciones del generador en medio, pero hay que comprobarlo con test_fase5."
+    },
+    {
+     "titulo": "Multiplicidad, radical y EDF: sin margen propio",
+     "medido": true,
+     "detalle": "Multiplicidad: 1-9 %. Radical: 2-4 %. En la EDF, el MCD y la división son menos del 2 %; el coste es pow_mod (o la traza) y baja solo con la aritmética de elementos y la ventana. No se ha encontrado una EDF más barata que conserve exactamente el consumo del generador (Poly::random y la misma secuencia de intentos), así que no se propone tocarla."
+    }
+   ],
+   "estimacion_integrada": "Hay dos referencias de distancia a FLINT:\n- Con la entrada única de compare_libs, medida enchufado hoy: F_101 d40 2,47x, F_101 d100 3,0x, F_(3^30) d5 3,0x, F_256 d30 0,94x, producto F_(3^30) d200 1,9x y producto F_256 d1000 1,32x.\n- Con las 16 entradas variadas (mismas entradas en los dos lados, FLINT medido en la misma tanda que los prototipos): F_101 d40 2,67x, d100 2,90x, F_(3^30) d5 1,63x, F_256 d30 1,27x, producto d200 1,57x y producto d1000 1,7x.\n\nSi se integrara cada prototipo con la ganancia medida (sin costes de integración):\n\n| Caso | Cambios | Aceleración | Variadas | Entrada única |\n|---|---|---:|---:|---:|\n| F_101 d40 | Acc u64 + mul_primo | 1,55x | ~1,7x | ~1,6x |\n| F_101 d100 | Acc u64 + mul_primo | 1,70x | ~1,7x | ~1,75x |\n| F_(3^30) d5 | FqSwar | 2,6x | ~0,63x | ~1,15x |\n| F_(3^30) d5 | FqSwar + ventana (estimado) | ~2,9x | ~0,55x | ~1,0x |\n| Producto F_(3^30) d200 | FqSwar + KS | 1,65x | ~0,95x | ~1,15x |\n| F_256 d30 | FqTab | 37x | ~0,03x | ~0,03x |\n| Producto F_256 d1000 | FqTab con Karatsuba | 3,7x | ~0,46x | ~0,36x |\n\nSin un tipo nuevo para F_256, solo con FqPeq + KS: factor 1,3x y producto 1,58x.\n\nTodo esto es una ESTIMACIÓN a partir de medidas preliminares con la máquina cargada. Además, desde Python hay que sumar el coste de la llamada al binding.",
+   "esfuerzo": "Ordenado de más barato a más caro:\n\n1. **mul_primo y mul_extension con desempaquetado directo (kronecker.hpp).** Esfuerzo bajo, de unas 50 a 80 líneas sin cambios de API. Da 1,6x en F_101 d100 y unas 1,35x en los productos de F_q.\n2. **Acc de 64 bits para Fp64 con p < 2^16.** Esfuerzo bajo-medio. El Acc es un tipo de compilación, así que hace falta otro tipo (por ejemplo Fp64Small, elegido por el binding como hoy Fp/Fp64) o un Acc u128 sin la comprobación de acarreo cuando p < 2^32 (en ese caso no puede desbordar). Esta segunda opción no está medida y daría solo una parte de la ganancia.\n3. **Aritmética de 64 bits o SWAR dentro de FqT<Fp64>.** Esfuerzo medio. Se elige en tiempo de ejecución según 2·e·(p-1)² frente a 2^16 o 2^62 y e ≤ 64, con un Acc interno de tamaño fijo, que solo usan Poly y ks.\n4. **pow_mod con ventana adaptativa.** Esfuerzo bajo, pero exige revisar el generador aleatorio con test_fase5.\n5. **FqTab, un cuerpo nuevo de elemento = palabra para q = 2^e ≤ 2^16.** Esfuerzo medio-alto: tipo nuevo, from_index/to_index, una tercera alternativa en el variant del binding (bindings.cpp) y tests de equivalencia. Ampliarlo a q pequeño impar con logaritmos de Zech sería más trabajo; también se puede añadir Kronecker para productos grandes, sin prototipo.\n\npython/ no se toca en ningún caso.",
+   "riesgos": "- **Mediciones preliminares.** Hubo 5 agentes más compilando y midiendo, y la variación entre tandas idénticas fue de alrededor del 10 %. Por ejemplo, «FqPeq + KS» salió más lenta que «FqPeq» en factor d5, donde no se usa Kronecker, lo que es ruido. FLINT y los prototipos se midieron en procesos distintos, en momentos cercanos.\n- **Entradas.** La distancia a FLINT depende mucho de la entrada: en F_(3^30) d5 es 3,0x con la de compare_libs y 1,6x con las 16 variadas. Hay que dar las dos.\n- **Cotas de desbordamiento.** FqPeq, FqSwar y Fp64S dependen de cotas: 2e(p-1)² < 2^62 o 2^16, un contador lim que normaliza el Acc, p < 2^16 con menos de 2^32 términos, y huecos de Kronecker de ≤ 60 bits. Al integrarlo hay que hacer cumplir esas cotas, con un camino de reserva al código actual. La normalización por contador de FqSwar no se ejerce con p = 3 (haría falta acumular más de 545 productos sin reducir), así que conviene probarla expresamente con p y e en el límite.\n- **Tipo Elem de FqTab.** Elem = u64 en lugar de std::vector. Afecta al binding y a cualquier código que asuma el vector. Se comprobó la equivalencia del orden canónico y del consumo del generador, pero no fft_base_root para p impar (con p = 2, q - 1 es impar y no hay FFT).\n- **Especializaciones explícitas.** Los prototipos se apoyan en especializaciones explícitas de ks::mul_primo y ks::mul_extension y en tipos derivados. Integrados en la librería, puede haber costes de conversión o de reserva de memoria que reduzcan la ganancia.\n- **Ventana deslizante.** Puede adelantar la primera petición de tablas FFT dentro de pow_mod en cuerpos con FFT; hay que verificarlo con test_fase5.\n- **Alcance de la medición.** Todo se midió en una sola máquina (Windows, MinGW g++ 15.2). Con -march=native, FqPeq mejora mucho (mul de 725 a 465 ns) y FqSwar poco.\n- **Binarios.** proto.exe se compiló antes de añadir la guarda PROTO_SIN_MAIN a proto.cpp; el programa es el mismo. proto2.exe quedó bloqueado por Smart App Control; el binario que funciona es proto2b.exe (-DRELINK_2).",
+   "perfil": "Medido con build/fase6/factor/perfil.exe (un hilo, portable, 16 entradas generadas por alcp):\n\n| Caso | Total | Radical | DDF | EDF | Multiplicidad |\n|---|---:|---:|---|---|---:|\n| F_101, producto de grado 38 | 0,21 ms | 4 % | 48 % (Frobenius 0,081 ms, 6 MCD que suman 0,012 ms) | 39 % (pow_mod 0,072 ms, 12 intentos) | 9 % |\n| F_101 d100 | 1,44 ms | 2 % | 94 % (Kaltofen–Shoup) | 2 % | 1 % |\n| F_(3^30) d5 | 6,85 ms | 2 % | 64 % (Frobenius 4,25 ms) | 34 % (pow_mod 2,28 ms) | 1 % |\n| F_256 d30 | 7,7 ms | 2 % | 89 % (Frobenius 5,49 ms, 10 MCD que suman 1,25 ms) | 8 % | 2 % |\n\nElementos de F_q (Fq64):\n\n| Cuerpo | mul | inv | add | acc_clear + fma + reduce |\n|---|---:|---:|---:|---:|\n| F_(3^30) | 1313 ns | 5059 ns | 78 ns | 1302 ns |\n| F_256 | 163 ns | 412 ns | 64 ns | 159 ns |\n\nRecuento de operaciones de elementos por factor():\n\n| Caso | mul | inv | acc_fma | acc_reduce |\n|---|---:|---:|---:|---:|\n| F_(3^30) d5 | 694 | 236 | 5891 | 2861 |\n| F_256 d30 | 3234 | 416 | 119 754 | 13 714 |\n\nConclusión: en las extensiones casi todo el tiempo de factor() es aritmética de elementos, que hacen copias en el montón y acumulan en u128 con comprobación de acarreo. La parte propia de los polinomios es pequeña.\n\nDesglose de ks::mul_extension:\n\n| Producto | Total | mpn_mul | Resto (desempaquetar, reducir) |\n|---|---:|---:|---:|\n| F_(3^30) d200 | 1000 µs | 408 µs (41 %) | 592 µs |\n| F_256 d1000 | 1121 µs | 459 µs (41 %) | 662 µs |"
+  },
+  "limpia": {
+   "tema": "factor: factorización con q pequeño (F_101) y en extensiones (F_(3^30), F_256), y producto en F_q",
+   "ejecutado_ok": true,
+   "fichero_salida": "C:/Users/ismae/Documents/Archivos/Proyectos/finite-fields-algorithms/bench/results/fase6/factor.txt",
+   "mediciones": [
+    {
+     "escenario": "factor F_(3^30) d5 (FqPeq / FqSwar, 16 entradas)",
+     "antes": "5233-5432 us (librería)",
+     "despues": "FqPeq 2986-3155 us; FqSwar 2062 us; nativo FqSwar 1947 us",
+     "factor": "1,72-1,75x (FqPeq), 2,54x (FqSwar), 2,61x nativo",
+     "referencia_flint": "3353 us (FqSwar 0,61x)"
+    },
+    {
+     "escenario": "factor F_256 d30 (FqTab)",
+     "antes": "6632-6819 us",
+     "despues": "176 us (207 us con -march=native)",
+     "factor": "37,6x (31,4x nativo)",
+     "referencia_flint": "5332 us (pasa de 1,24x a 0,03x)"
+    },
+    {
+     "escenario": "producto F_256 d1000 (FqTab Karatsuba)",
+     "antes": "1080 us",
+     "despues": "297 us",
+     "factor": "3,64x",
+     "referencia_flint": "665 us (de 1,62x a 0,45x)"
+    },
+    {
+     "escenario": "producto F_(3^30) d200 (KS rápida)",
+     "antes": "979-992 us",
+     "despues": "Fq64+KS 738; FqPeq+KS 584; FqSwar+KS 596; nativo 526 us",
+     "factor": "1,34x; 1,70x; 1,64x; 1,86x",
+     "referencia_flint": "543 us (librería 1,83x; FqPeq+KS 1,08x; nativo 0,97x)"
+    },
+    {
+     "escenario": "producto F_256 d1000 (KS rápida)",
+     "antes": "1112 us",
+     "despues": "Fq64+KS 820; FqPeq+KS 678 us",
+     "factor": "1,36x; 1,64x",
+     "referencia_flint": "665 us"
+    },
+    {
+     "escenario": "KS2 núcleo",
+     "antes": "mpn_mul 402 / 454 us",
+     "despues": "338 / 397 us",
+     "factor": "ahorro máx. 64 / 57 us (<=1,07x)"
+    },
+    {
+     "escenario": "factor F_101 d40 (mul_primo + Acc u64)",
+     "antes": "211 us",
+     "despues": "135,5 us",
+     "factor": "1,56x",
+     "referencia_flint": "77,9 us (de 2,71x a 1,74x)"
+    },
+    {
+     "escenario": "factor F_101 d100 (mul_primo + Acc u64)",
+     "antes": "1383 us",
+     "despues": "802 us",
+     "factor": "1,72x",
+     "referencia_flint": "474,9 us (de 2,91x a 1,69x)"
+    },
+    {
+     "escenario": "producto F_101 grados 16-1000",
+     "antes": "0,44-39,9 us",
+     "despues": "0,25-27,6 us",
+     "factor": "1,45-1,99x"
+    },
+    {
+     "escenario": "pow_mod ventana 4",
+     "antes": "1633 / 72,5 / 35,8 us",
+     "despues": "1402 / 113 / 33,8 us",
+     "factor": "1,17x (48 bits); 0,64x (7 bits); 1,06x (19 bits)"
+    },
+    {
+     "escenario": "compare_libs (alcp_native_1h vs flint)",
+     "antes": "f3e30.factor.d5 5,73 ms; f2e8.factor.d30 7,82 ms; fp101.factor.d40 177 us; d100 1,37 ms; f3e30.mul.d200 944 us; f2e8.mul.d1000 1,03 ms",
+     "despues": "flint: 2,07 ms; 8,30 ms; 69,7 us; 445,5 us; 516,6 us; 773 us",
+     "factor": "alcp/flint: 2,77x; 0,94x; 2,54x; 3,08x; 1,83x; 1,33x"
+    }
+   ],
+   "diferencias_con_preliminar": "Las conclusiones se mantienen casi todas; las cifras repiten con un margen de pocos puntos. Hay tres diferencias. (1) FLINT es más rápido en el producto F_(3^30) d200: ahora mide 542,8 us, antes 661. La librería queda a 1,83x de FLINT (antes 1,57x) y FqPeq+KS rápida a 1,08x (antes 0,88-0,95x). Con -march=native (FqSwar+KS, 526 us) queda a 0,97x. Por tanto, deja de ser cierto que el prototipo gane a FLINT en ese producto sin compilación nativa. (2) En compare_libs, la entrada única de f3e30.factor.d5 da 5,73 ms frente a 2,07 ms (2,77x; antes 6,19 frente a 2,07, 3,0x). La de f2e8.factor.d30 da 7,82 frente a 8,30 ms: alcp ya queda por delante (0,94x). (3) En perfil.exe, el «factor() completo» de F_256 d30 marca 10923 us. El desglose (7,9 ms) y proto/proto2b (6,6-6,8 ms) no lo confirman, así que parece una medida atípica aislada. El reparto por fases (DDF 89 %, EDF 8 %) coincide con el preliminar. El resto coincide: perfil F_(3^30) con DDF al 66 % y EDF al 32 %, y los recuentos mul 694, inv 236, acc_fma 5891 y acc_reduce 2861; FqTab da 37,6x en factor y 3,64x en el producto; FqPeq 1,72-1,75x y FqSwar 2,54x (2,61x nativo); F_101 da d40 1,56x y d100 1,72x; la ventana da 1,17x con 48 bits y 0,64x con 7 bits; el ahorro máximo de KS2 es de 57-64 us. La precisión de las conclusiones cambia poco: en F_101 d40, «mul_primo rápida» sola da 1,06x en proto3 y 0,99x en proto, así que la ganancia en d40 viene del Acc u64.",
+   "notas": "Fecha: 2026-11-07 22:20. CPU: AMD Ryzen 7 7730U. Equipo enchufado (BatteryStatus=2). ALCP_THREADS=1. Los comandos se ejecutaron en serie, todos terminaron con código 0 y no hubo que recompilar nada. El nombre pedido para el fichero contiene «:», que Windows no admite, así que la salida se guardó como bench/results/fase6/factor.txt, igual que fpn.txt, hgcd.txt y el resto. flint_ref.py reescribe bench/results/fase6/factor_entradas.txt cada vez que se ejecuta; es un efecto propio del script y no se tocó código fuente. flint_ref.py avisa de «tipo FLINT ?» en f3e30 y f2e8; el aviso ya salía antes. Cada escenario se ha medido una sola vez (cada programa toma la mejor de 3 tandas), así que es normal una variación del 3-5 % entre programas. Los resultados deben revisarse antes de usarse."
+  },
+  "verificacion": {
+   "tema": "factor: factorización con q pequeño (F_101) y en extensiones (F_(3^30), F_256), y producto en F_q",
+   "veredicto": "con_reservas",
+   "problemas": [
+    "(1) No es cierto que se midan las «mismas 16 entradas» en los casos lentos, y es el fallo metodológico principal. medir_us (proto.cpp, líneas 56-70, igual en perfil.cpp y en el medir() de flint_ref.py) pone `veces = 0` al empezar cada tanda y se detiene en cuanto pasan 30 ms, así que solo mide las entradas 0..ceil(30 ms/t)-1. En factor F_(3^30) d5, la librería (unos 5,3 ms) mide solo las entradas 0-5, FqPeq (unos 3 ms) las 0-9, FqSwar (unos 2 ms) las 0-14 y FLINT (3,35 ms) las 0-8. En F_256 d30, la librería (6,7 ms) mide las 0-4, FLINT (5,3 ms) las 0-5 y FqTab las 16. Cada implementación se mide, por tanto, sobre un subconjunto distinto.",
+    "(1b) Cuantifiqué el sesgo sin medir tiempos. Conté las operaciones de elementos por entrada con un cuerpo contador, con semilla fija (build/fase6/verif_factor/verif.exe) y las ponderé con los costes de perfil. En f3e30_d5 el coste por entrada varía 4x (de 3338 a 13734 acc_fma). La media de las entradas 0-5 es un 12,5 % más baja que la de las 16, la de 0-8 un 2 % más baja y la de 0-14 coincide con la de las 16. El sesgo juega en contra del prototipo. Corregido, FqSwar daría unas 2,9x en lugar de 2,54x, y la distancia de la librería a FLINT con las entradas variadas sería de unas 1,9x en lugar de 1,63x. Es una estimación con un indicador indirecto, y además FLINT usa otro algoritmo. En F_256 d30 el sesgo es de alrededor del 4 % (las entradas 0-4 cuestan un 3,7 % menos que la media). La conclusión cualitativa se mantiene, pero las cifras no corresponden a las mismas entradas.",
+    "(1c) El valor «atípico» de 10923 µs en el factor() completo de F_256 d30 en perfil.exe puede ser un artefacto del mismo fallo. factor_us mide solo unas 4 entradas, de la 0 a la 3, mientras que el desglose promedia las 16 entradas tres veces. Atribuirlo a ruido no está demostrado. Mi explicación tampoco está demostrada, porque las entradas de perfil son otras (las genera alcp) y no las he contado.",
+    "(2) La conclusión preliminar sobre el producto F_(3^30) d200 frente a FLINT queda refutada. FLINT pasó de 661 a 543 µs entre tandas, un 18 %, por encima del ruido declarado del 10 %. Con la medición limpia, FqPeq+KS queda a 1,08x de FLINT y FqSwar+KS a 1,10x, no a 0,88-0,95x. La tabla integrada («~0,95x variadas, ~1,15x entrada única») tiene que corregirse a ~1,1x con las entradas variadas y ~1,12x con la entrada única. Solo con -march=native queda en 0,97x.",
+    "(3) La comprobación de consumo del generador se hace con las cachés ya calientes. En bench_factor, la librería se cronometra antes de llamar a mismo_factor, y el bloque de FqTab sigue el mismo orden, así que cualquier petición de fft::tables ya está hecha antes de comparar. La prueba no podría detectar una variante que adelante o retrase la primera petición de la raíz. En estos cuerpos da igual, porque no hay FFT: v2(3^30-1) = 3, v2(100) = 2 y 255 es impar, de modo que fft_exponent < 0 para L >= 64. Pero la afirmación general «ninguna variante cambia cuándo se piden las tablas FFT» queda sin demostrar para integrar FqPeq, la KS rápida o la ventana en cuerpos que sí tienen FFT (p = 17, 257, etc.). Hay que probarlo en un proceso nuevo, comparando la librería con la variante en frío.",
+    "(4) Las estimaciones integradas extrapolan. El 37x de FqTab y el 2,6x de FqSwar, medidos con 16 entradas y con el sesgo del punto (1), se aplican a la entrada única de compare_libs. El +1,13x de la ventana se midió en FqPeq, con una base aleatoria y fuera de factor(), y luego se suma a FqSwar sin haberlo integrado. FqSwar se propone «elegido en tiempo de ejecución dentro de FqT<Fp64>», pero FqT<Fp64>::Acc es un tipo fijado al compilar (vector<u128>). El prototipo gana en parte gracias a un Acc std::array de tamaño fijo y a búferes en la pila (kMaxE = 64), y nada de eso se conserva con un Acc que tenga que servir también para e > 64 o para el camino de reserva. La ganancia integrada no está demostrada.",
+    "(5) Los microtiempos de elementos incluyen una llamada a reloj::now() por iteración (QueryPerformanceCounter, unas decenas de ns). Por eso el «mul FqTab 34 ns» y el «mul F_256 163 ns» están inflados por el bucle de medida, y los cocientes entre elementos se deforman. Esto no afecta a las cifras de factor() ni de los productos.",
+    "(6) FLINT se mide desde Python, con el coste del binding y de construir la lista de factores. Los prototipos de alcp se miden en C++ directo. En los casos rápidos (F_101 d40, unos 78 µs), la distancia a FLINT resulta algo favorable a alcp. El informe lo menciona solo para alcp («hay que sumar el coste del binding»).",
+    "(7) Durante las medidas no se reinicia la semilla, así que la librería y cada variante hacen intentos de EDF distintos. Con solo 5-6 llamadas por tanda en los casos lentos, eso añade ruido que no está cuantificado.",
+    "(8) En el resumen de esfuerzo se atribuye a mul_primo «1,6x en F_101 d100». Es correcto (1383 → 866 µs), pero en d40 la mul_primo rápida sola da 0,99-1,06x. Toda la ganancia de d40 viene del Acc u64. La medición limpia ya lo reconoce, pero el resumen preliminar no."
+   ],
+   "correcciones": [
+    "Corregir medir_us (en proto.cpp, perfil.cpp y flint_ref.py) para que el índice de entrada no se reinicie en cada tanda, o para que cada tanda recorra un número entero de vueltas de las 16 entradas (por ejemplo, un mínimo de 16 llamadas). Después, volver a medir factor F_(3^30) d5, F_256 d30 y el factor() completo de perfil.",
+    "Corregir el producto F_(3^30) d200 frente a FLINT: el prototipo portable queda en ~1,08-1,10x, no en 0,88-0,95x, y con la entrada única en ~1,12x. Solo con -march=native queda por debajo de 1 (0,97x).",
+    "Dejar de presentar como resultado sobre las mismas entradas las cifras de factor F_(3^30) d5 (FqSwar 2,54x; librería frente a FLINT 1,63x) y de F_256 d30 (37x; 1,24x frente a FLINT) mientras no se repitan con el medidor corregido. Según el recuento de operaciones, la ganancia de FqSwar está infravalorada (unas 2,9x) y la distancia de la librería a FLINT también (unas 1,9x).",
+    "Tratar el valor de 10923 µs de perfil.exe como un posible artefacto de subconjunto (solo se miden las entradas 0-3), no como ruido, hasta repetirlo con el medidor corregido.",
+    "Añadir una comprobación del generador en frío: un proceso nuevo en el que la variante se ejecute antes que la librería, o un proceso por implementación, que compare rand_below después de factor(). Hacerlo además en al menos un cuerpo con FFT (por ejemplo F_(17^e) o F_257) antes de integrar la KS rápida, FqPeq o la ventana.",
+    "Marcar como no demostradas las estimaciones integradas que combinan prototipos (FqSwar + ventana) o que dependen de un Acc de tamaño fijo dentro de FqT<Fp64>. Medir un prototipo que use el tipo Acc real que tendría la librería.",
+    "Sacar reloj::now() del bucle interno en los microtiempos de elementos: hacer bloques de N llamadas por cada lectura del reloj."
+   ],
+   "hallazgos_que_sobreviven": [
+    "Corrección: la comparación se hace de verdad contra la librería (Poly<Fq64>/Poly<Fp64>): factores, multiplicidades, coeficiente principal y estado del generador con la caché caliente. Lo he ampliado con casos límite en build/fase6/verif_factor/verif.cpp (ejecutable verif.exe; no mide tiempos) y todo da «sí»: FqPeq y FqSwar con 0, 1, todos los coeficientes p-1, p-1 solo en el término inicial o en el principal, monomios t^i y elementos aleatorios. Además, acumulaciones de 600 fma en F_(3^30), que fuerzan la normalización de FqSwar por contador (lim16 = 545, nunca ejercida en el experimento original), y en el límite F_(11^64) (lim16 = 9), F_(23^64) (lim16 = 0) y FqPeq en F_(100000007^64) con lim pequeño.",
+    "Los productos de Kronecker rápidos (Fq64KS, FqPeqKS, FqSwar con KS, Fp64R y Fp64RS) coinciden con la librería en estas pruebas: todos los coeficientes p-1 (el peor caso de la cota de huecos), ceros intercalados, longitudes distintas y no potencia de 2 (33x1000, 1000x40, 200x201, 257x31, 500x500), cuadrados A*A, p = 101, 65521 y 2^32-5 (este último por el camino de reserva).",
+    "Los tipos derivados recorren los mismos caminos de la librería que Fq64 y Fp64. NativeWordField, Extension, LazyAccumulation y prefer_kronecker dependen del tipo Elem y de los métodos, no de is_same con Fq64 o Fp64, así que las especializaciones explícitas sí se ejecutan y el Euclides en sitio y los umbrales son los mismos. La única excepción es FqTab: al tener Elem aritmético usa otros umbrales (Karatsuba), lo que forma parte de su ganancia y es válido.",
+    "Las cotas de desbordamiento de FqSwar (2e(p-1)²+p < 2^16 y lim16), FqPeq (2^62), Fp64S (p < 2^16, menos de 2^32 términos) y de los huecos de KS (≤ 60 o 63 bits, con la misma fórmula de bits que la librería) son correctas al revisarlas a mano, incluida la suma de hasta e-1 aportaciones de reducir/reducir16.",
+    "La convención de entradas entre FLINT y alcp coincide (dígitos en base p de menor a mayor, y ctx([0,1]) == gen en python-flint 0.9.0), así que FLINT y alcp factorizan los mismos polinomios.",
+    "El perfil se sostiene cualitativamente. En F_(3^30) d5 y F_256 d30 casi todo el tiempo es aritmética de elementos (el recuento por entrada confirma miles o cientos de miles de acc_fma). En mul_extension, el desempaquetado (leer + mpn_mod_1 por hueco) pesa más que mpn_mul. mul_primo usa u128 % p (__umodti3) con nw = 1. KS2 da poco.",
+    "FqTab (F_(2^e), e ≤ 16) es correcto y conserva el orden canónico y el consumo del generador en las 65 536 parejas y en las 16 factorizaciones. La gran aceleración es real en orden de magnitud: el sesgo de subconjunto juega en su contra (unos -4 %).",
+    "En F_101 todas las implementaciones cubren las 16 entradas: d40 hace unas 140 llamadas por tanda, y d100 unas 22, con las entradas 0-5 contadas dos veces, lo que es un sesgo menor. Las cifras de 1,56x y 1,72x son fiables dentro del ruido, y la ganancia de d40 viene del Acc u64.",
+    "La ventana deslizante da el mismo resultado; que solo convenga con exponentes grandes es coherente. En estos cuerpos no hay FFT, así que no afecta al generador, pero sigue pendiente comprobarlo en cuerpos con FFT."
+   ]
+  }
+ },
+ {
+  "tema": "python",
+  "preliminar": {
+   "tema": "python",
+   "resumen": "El coste fijo de llamar desde Python NO explica la distancia a FLINT en el producto de grado 100. Medido con el portátil enchufado, la llamada cuesta unos 0,35-0,45 µs por operación sobre polinomios. Con alcp_native el producto de grado 100 tarda 6,4-6,7 µs (compare_libs: 6,5-6,7 µs), el mismo producto en C++ puro 6,0 µs y python-flint 3,7-3,8 µs. Las cifras de 16/13-14/9 µs del enunciado se midieron con batería; la proporción se mantiene (1,7-1,8x), así que la diferencia está en el núcleo C++ (6,0 frente a unos 3,6 µs) y no en el binding. Ni siquiera un tipo CPython hecho a mano, sin pybind11, baja de 6,0 µs: la distancia pasaría de 1,73x a unos 1,63x. Donde sí se gana mucho es en las conversiones y en las operaciones baratas. Con la conversión directa int<->u64 (sin mpz ni std::vector<BigInt>), K.poly(lista) es 7,7x más rápida en grado 100 y 12,7x en grado 1000, y coeffs() 4,3x y 3,5x; las dos quedan muy por delante de flint, que es aún más lento convirtiendo. Las operaciones de elementos (F.mul/F.add) pasan de 335 a 188 ns sin tocar el despacho de pybind11 y a 21-37 ns con METH_FASTCALL, como flint (30-46 ns). El producto de grado 10 bajaría de 711 a 255 ns con un tipo CPython (C++: 248 ns; flint: 336 ns). La suma de grado 100 bajaría de 540 a 136 ns. Todos los resultados del prototipo coinciden exactamente con los de alcp_native: 16 productos y sumas por grado, conversiones y elementos con casos extremos (negativos, enteros de 2^63 a 2^100, bool; float y str rechazados con TypeError). El hash de los productos coincide también con el de C++.",
+   "archivos": [
+    "C:/Users/ismae/Documents/Archivos/Proyectos/finite-fields-algorithms/bench/experimentos/fase6/python/bench_cpp.cpp",
+    "C:/Users/ismae/Documents/Archivos/Proyectos/finite-fields-algorithms/bench/experimentos/fase6/python/proto_modulo.cpp",
+    "C:/Users/ismae/Documents/Archivos/Proyectos/finite-fields-algorithms/bench/experimentos/fase6/python/mide_python.py",
+    "C:/Users/ismae/Documents/Archivos/Proyectos/finite-fields-algorithms/build/fase6/python/bench_cpp.exe",
+    "C:/Users/ismae/Documents/Archivos/Proyectos/finite-fields-algorithms/build/fase6/python/alcp_proto.cp315-win_amd64.pyd",
+    "C:/Users/ismae/Documents/Archivos/Proyectos/finite-fields-algorithms/bench/results/fase6/python_preliminar.txt"
+   ],
+   "comandos_medicion": [
+    "ALCP_THREADS=1 build/fase6/python/bench_cpp.exe",
+    "ALCP_THREADS=1 .venv/Scripts/python.exe bench/experimentos/fase6/python/mide_python.py",
+    ".venv/Scripts/python.exe bench/compare_libs.py --filter fp30.mul.d --libs alcp_native_1h,alcp,flint"
+   ],
+   "correcto": true,
+   "comprobacion_correccion": "mide_python.py usa assert y compara siempre con la librería (alcp_native), no con otra copia mía. Comprobaciones: (1) los 16 productos y las 16 sumas por grado (10, 100 y 1000) de PolyP, PolyH y RawPoly dan los mismos coeffs() que alcp_native, y flint coincide también; (2) Cuerpo.poly, Cuerpo.poly_stl y alcp_native K.poly dan los mismos coeficientes; (3) mul_grado devuelve el grado correcto; (4) en elementos, Cuerpo.mul/add y rmul/radd coinciden con alcp_native F.mul/F.add en 16 pares aleatorios y en un producto cartesiano con 0, 1, -1, p-1, p, p+1, -p, 2^30-1, 2^30, -2^30, 2^62, 2^63-1, 2^63, -2^63, 2^64, 2^100+12345, -2^100-7, True y False; los tres rechazan 2.0, \"3\" y None con TypeError; (5) el hash Σ c_j·(j+1) de los 16 productos es igual en C++ puro y en Python: 1701682770529 (d=10), 167239591985123 (d=100) y 16081085435374626 (d=1000). Las entradas son idénticas en los dos lados (splitmix64 replicado). Además, compare_libs da el mismo hash canónico para alcp_native, el paquete alcp y flint. El prototipo no consume el generador aleatorio de forma distinta: usa el mismo operator* de la librería. No se ha tocado nada de include/, python/, python-bindings/ ni tests/.",
+   "hallazgos": [
+    {
+     "titulo": "La premisa 16/13-14/9 µs era de una medición con batería: enchufado, la llamada desde Python cuesta un 6 % en el producto de grado 100",
+     "medido": true,
+     "detalle": "Enchufado y con ALCP_THREADS=1, el producto de grado 100 en F_998244353 da: C++ puro (Poly<Fp64>::operator*, 16 entradas rotando) 5,98-6,05 µs; alcp_native desde Python 6,4 µs (mide_python, tanda tranquila; 7,7 µs en una tanda con más carga) y 6,5-6,7 µs con compare_libs; paquete alcp 7,0 µs; python-flint 3,7-3,8 µs. La sobrecarga Python se queda en unos 0,35-0,45 µs. La proporción con flint (1,7-1,8x) es la misma que se midió con batería. Por eso la distancia de 1,81x en esta fila es del núcleo C++ (6,0 µs frente a unos 3,6 µs de FLINT sin su propia llamada) y no del binding. En grado 1000, alcp_native ya gana a flint (60 frente a 69-72 µs).",
+     "antes": "alcp_native 6,4 µs; C++ 6,0 µs",
+     "despues": "RawPoly (sin pybind11) 6,0 µs",
+     "factor": "1,06x como máximo eliminando todo el despacho"
+    },
+    {
+     "titulo": "Desglose de la sobrecarga de pybind11 por operación sobre polinomios (grado 10)",
+     "medido": true,
+     "detalle": "Tanda tranquila, en ns netos (descontado el bucle de Python). C++ puro: producto de grado 10 en 248 ns. Con alcp_native, 711 ns. PolyP (pybind11 sin variant ni comprobación de cuerpo) se queda en 649 ns: el variant, el shared_ptr y el control de PolyW cuestan unos 60 ns. mul_grado (mismo producto, pero devuelve un int en vez de un objeto) tarda 434 ns, así que crear el objeto resultado en pybind11 (reserva en el montículo, holder y registro de la instancia) cuesta unos 215 ns. Tras restar el producto (248 ns), el despacho del operador con 2 argumentos de clase registrada cuesta unos 185 ns; degree() cuesta 115-123 ns y una función vacía 51-67 ns. Con un tipo CPython hecho a mano (RawPoly, nb_multiply directo) el producto sale en 255 ns, igual que en C++, y degree() en unos 0 ns netos. El híbrido PolyH (clase pybind11 con la ranura nb_multiply sustituida y el valor leído por la API interna detail::instance) ahorra unos 270 ns frente a PolyP (1072→805 ns en la tanda con carga), pero sigue pagando la creación del objeto por py::cast.",
+     "antes": "711 ns (alcp_native, d=10)",
+     "despues": "255 ns (RawPoly); unos 440-500 ns estimados con PolyH en una tanda tranquila",
+     "factor": "2,8x (RawPoly); unos 1,5x (híbrido)"
+    },
+    {
+     "titulo": "Conversión lista de int <-> polinomio: el cuello de botella está en std::vector<BigInt> + mpz",
+     "medido": true,
+     "detalle": "K.poly(lista) en alcp_native construye un mpz por coeficiente, después el vector<u64> y después el Poly. Con lectura directa de PyLong compacto (PyUnstable_Long_IsCompact y CompactValue, con caminos de 64 bits y general por __index__ % p), en ns netos: d=10 1049→435; d=100 5592→728 (7,7x); d=1000 46133→3631 (12,7x). Con el caster std::vector<uint64_t> de pybind11 (que además no admite negativos) se queda a medio camino: 1499 y 9763 ns en grado 100 y 1000. coeffs(), con PyList_New y PyLong_FromUnsignedLongLong sin pasar por BigInt, mejora así: d=10 681→254; d=100 5127→1186 (4,3x); d=1000 50594→14302 (3,5x). Como referencia, flint es más lento que alcp_native en las dos direcciones: nmod_poly(c, p) tarda 6,4 µs en grado 100 y coeffs() 14,5 µs, que suben a 20 µs con int().",
+     "antes": "K.poly d=100: 5,6 µs; coeffs d=100: 5,1 µs",
+     "despues": "0,73 µs; 1,19 µs",
+     "factor": "7,7x y 4,3x (d=100); 12,7x y 3,5x (d=1000)"
+    },
+    {
+     "titulo": "Operaciones de elementos (F.mul, F.add): 9-10 veces más lentas que flint por el mpz y el despacho",
+     "medido": true,
+     "detalle": "alcp_native F.mul(a, b) tarda 335-370 ns netos y F.add 345-352 ns; flint nmod*nmod 30-46 ns; Python puro a*b%p 30-42 ns. Con la conversión directa a u64 y manteniendo el despacho de pybind11 (Cuerpo.mul), baja a 188-191 ns (1,8x). El caster uint64_t estándar da casi lo mismo (186-202 ns), así que lo que queda es el despacho de pybind11. Una función CPython METH_FASTCALL (rmul/radd) con la misma conversión baja a 21-37 ns, al nivel de flint. Esto no afecta a la comparativa (que solo mide operaciones sobre polinomios), pero sí al uso interactivo y a cualquier bucle Python sobre elementos.",
+     "antes": "335-370 ns",
+     "despues": "188-191 ns (pybind11 + conversión directa); 21-37 ns (CPython FASTCALL)",
+     "factor": "1,8x; unos 10x"
+    },
+    {
+     "titulo": "Guardar el polinomio Fp64 como objeto C++ opaco sin variant no aporta casi nada: ya es opaco",
+     "medido": true,
+     "detalle": "alcp_native ya conserva el Poly entre llamadas (PolyW con shared_ptr y variant): el bucle cronometrado de compare_libs no convierte nada. Quitar el variant y la comprobación de cuerpo (PolyP) ahorra unos 60 ns en el producto de grado 10 y entre 0 y 50 ns en la suma; en grado 100 y 1000 la diferencia queda dentro del ruido. Lo que cuesta de verdad es el despacho de pybind11 y la creación de la instancia, y eso solo se elimina saliendo de pybind11 para las ranuras numéricas.",
+     "antes": "711 ns (d=10)",
+     "despues": "649 ns",
+     "factor": "1,1x"
+    },
+    {
+     "titulo": "Ganancia estimada en las filas pequeñas de la comparativa",
+     "medido": false,
+     "detalle": "Estimación a partir de las mediciones anteriores. Producto de grado 100 en F_998244353: con RawPoly bajaría unos 0,4 µs de 6,4-6,7 µs, y la distancia a FLINT pasaría de 1,73-1,81x a unos 1,63x. Con el híbrido PolyH bajaría unos 0,25 µs, hasta unos 1,67x. Con la conversión directa sola, nada, porque esta fila no convierte dentro del bucle. El resto de filas de la comparativa tarda entre 0,17 ms y cientos de ms y devuelve como mucho unos pocos objetos: la ganancia es inferior al 0,1 % (factorizar grado 40 en F_101: menos de 1 µs de unos 170-470 µs). Fuera de la comparativa, las ganancias sí son notables en productos y sumas de grado 10 o menos (2-3x), en la construcción y lectura de polinomios (4-13x) y en operaciones de elementos (1,8x con pybind11, unos 10x con FASTCALL). El paquete alcp de alto nivel añade unos 0,3 µs sobre alcp_native en el producto de grado 100 (7,0 frente a 6,7 µs), así que también se beneficiaría de la conversión directa en los caminos que convierten listas."
+    }
+   ],
+   "estimacion_integrada": "Propuesta en dos niveles para el binding real. Las cifras de esfuerzo son estimaciones; las de ganancia, medidas en el prototipo. (A) Coste bajo-medio y riesgo bajo: en bindings.cpp, conversión directa int<->u64 para el backend Fp64. Supone sustituir const std::vector<BigInt>& por py::handle (o un caster propio de una lista de elementos) en poly(), PolyFp(...), from_int, add/sub/mul/div/inv y pow, y construir la lista de coeffs() con PyLong_FromUnsignedLongLong. El camino GMP y el Fq64 con q ≥ 2^64 seguirían usando el caster mpz, y para Fq64 haría falta además separar el índice en dígitos en base p con u64. Ganancia medida: K.poly 7,7-12,7x, coeffs 3,5-4,3x y elementos 1,8x. No cambia la fila de la comparativa (producto de grado 100) y no toca el generador aleatorio. Hay que conservar el mensaje de TypeError de float, el soporte de __index__ y bool, la reducción módulo p de negativos y enteros grandes (comprobado en el prototipo) y las firmas list[int] de los docstrings (py::arg con nombre de tipo o caster propio); los 710 tests de pytest dirían si algo cambia. (B) Coste alto y riesgo medio: sacar de pybind11 las ranuras numéricas (__mul__, __add__, __sub__...) de PolyFp y PolyFq. Hay dos variantes: (B1) el híbrido de ranura sustituida, que ahorra unos 270 ns por operación, pero depende de la API interna pybind11::detail::instance y conviene fijar la versión de pybind11; (B2) tipos CPython completos, que ahorran unos 450 ns e igualan a C++ en grado 10, pero obligan a reimplementar unos 40 métodos para 2 clases y 2 backends, con hash/eq/repr/copy/pickle y traducción de excepciones, y duplican la infraestructura de pybind11. Para la comparativa, B solo mueve la fila del producto de grado 100 de unos 1,75x a unos 1,63-1,67x. Para acercarse de verdad a FLINT en esa fila hay que mejorar el producto C++ de grado 100 (6,0 µs frente a unos 3,6 µs; Karatsuba o Kronecker en ese tamaño), que pertenece a otro tema.",
+   "esfuerzo": "A (conversión directa en Fp64/Fq64 con sus tests): estimado en 1-2 días. B1 (ranura nb_* híbrida): unos 0,5-1 día, pero frágil frente a versiones de pybind11. B2 (tipos CPython completos para PolyFp y PolyFq): unos 3-5 días más las pruebas. Recomendación: A sí (gran mejora en conversiones y elementos, riesgo bajo); B solo si importan las operaciones de grado ≤ 30 o los bucles Python sobre polinomios pequeños, porque en la comparativa apenas se nota (unos 6 % en una sola fila).",
+   "riesgos": "Todos los tiempos son PRELIMINARES: se midieron con otros 5 agentes compilando y midiendo a la vez. Entre las dos tandas de mide_python.py hubo diferencias del 20-60 % en valores absolutos (d=10 de alcp_native: 711 frente a 1160 ns netos); las proporciones entre variantes se mantuvieron. Los números de la primera tanda (más tranquila) no se guardaron en el fichero; python_preliminar.txt contiene la segunda tanda, con más carga, más la salida de compare_libs. Conviene re-ejecutar en serie. La columna «neto» resta el coste del bucle con una lambda Python (51-64 ns). rmul/radd usan un cuerpo global fijado con fijar_p: son un suelo de coste, no un diseño final (un método METH_FASTCALL sobre un tipo propio costaría parecido; estimado). PolyH depende de pybind11::detail::instance::get_value_and_holder (API interna de pybind11 3.1.0). El prototipo solo cubre Fp64 (p < 2^62); Fq64 y GMP no se han prototipado. Todo se ha compilado con las banderas portables del módulo (-O3, sin -march=native). No se ha modificado include/, python/, python-bindings/ ni tests/, ni se ha hecho git add ni commit. Los resultados de IA deben revisarse antes de llevarlos al código real.",
+   "perfil": "Desglose por capas (tanda tranquila, ns netos): una función vacía cuesta 67 ns con pybind11 y 14 ns con CPython; degree() cuesta 123 ns en pybind11 y unos 0 en CPython; crear el objeto resultado en pybind11 cuesta unos 215 ns, frente a casi nada en CPython; el variant y el control de PolyW de alcp_native, unos 60 ns; convertir con mpz cuesta unos 50 ns por coeficiente al entrar (d=100: 5,6 µs frente a 0,73 µs) y unos 40 ns por coeficiente al salir (5,1 frente a 1,2 µs). El cálculo propiamente dicho (C++ puro): producto de grado 10 en 248 ns, grado 100 en 6,0 µs y grado 1000 en 60-71 µs; suma de grado 100 en 88 ns; elementos 1,2-2,8 ns."
+  },
+  "limpia": {
+   "tema": "python",
+   "ejecutado_ok": true,
+   "fichero_salida": "C:/Users/ismae/Documents/Archivos/Proyectos/finite-fields-algorithms/bench/results/fase6/python.txt",
+   "mediciones": [
+    {
+     "escenario": "Producto grado 100 F_998244353: C++ puro / alcp_native (mide_python) / RawPoly",
+     "antes": "alcp_native 6420 ns (6370 netos); compare_libs 6,3 µs; paquete alcp 6,8 µs",
+     "despues": "C++ puro 5845 ns; RawPoly 5962 ns (5911 netos); PolyH 6227 ns",
+     "factor": "1,07-1,08x como máximo (alcp_native/C++ = 1,10x)",
+     "referencia_flint": "3,7-3,8 µs (1,70x frente a alcp_native en compare_libs)"
+    },
+    {
+     "escenario": "Producto grado 1000 F_998244353",
+     "antes": "alcp_native 60,1 µs; compare_libs 59,5 µs",
+     "despues": "C++ puro 60,6 µs",
+     "factor": "~1,0x",
+     "referencia_flint": "69,0-70,3 µs (alcp gana 1,16x)"
+    },
+    {
+     "escenario": "Producto grado 10 (ns netos)",
+     "antes": "alcp_native 798 ns; PolyP 764 ns",
+     "despues": "RawPoly 254 ns (C++ puro 245 ns); PolyH 573 ns; PolyP.mul_grado 430 ns",
+     "factor": "3,1x (RawPoly); 1,4x (PolyH)",
+     "referencia_flint": "336 ns netos"
+    },
+    {
+     "escenario": "Suma grado 10 (ns netos)",
+     "antes": "alcp_native 569 ns",
+     "despues": "RawPoly 58 ns; PolyP 538 ns",
+     "factor": "9,8x (RawPoly)",
+     "referencia_flint": "251 ns"
+    },
+    {
+     "escenario": "Lista -> polinomio K.poly (ns netos) d=10/100/1000",
+     "antes": "1193 / 5474 / 47311",
+     "despues": "directa 553 / 722 / 3397; vector<u64> 676 / 1412 / 10341",
+     "factor": "2,2x / 7,6x / 13,9x",
+     "referencia_flint": "825 / 6290 / 58553"
+    },
+    {
+     "escenario": "coeffs() (ns netos) d=10/100/1000",
+     "antes": "674 / 5050 / 55681",
+     "despues": "PolyP 245 / 1156 / 13285",
+     "factor": "2,8x / 4,4x / 4,2x",
+     "referencia_flint": "1660 / 14558 / 140853 (con int(): 2227 / 19668 / 190264)"
+    },
+    {
+     "escenario": "degree() (ns netos)",
+     "antes": "alcp_native 122-125 ns",
+     "despues": "PolyP 111-113; RawPoly 1-2 ns",
+     "factor": "-",
+     "referencia_flint": "38-39 ns"
+    },
+    {
+     "escenario": "Elementos F.mul / F.add (ns netos)",
+     "antes": "335 / 320",
+     "despues": "pybind11 directa 184 / 173 (caster u64 177); CPython FASTCALL 28 / 24",
+     "factor": "1,8x; ~12-13x",
+     "referencia_flint": "36 / 42 (Python a*b%p 33)"
+    },
+    {
+     "escenario": "Llamada vacía (ns netos)",
+     "antes": "pybind11 noop 54 ns",
+     "despues": "CPython rnoop 7 ns",
+     "factor": "-"
+    }
+   ],
+   "diferencias_con_preliminar": "Las conclusiones no cambian; las cifras se mueven dentro del ruido salvo en grado 10. (1) Grado 100: C++ puro sale algo más rápido (5,85 µs frente a 5,98-6,05), alcp_native igual (6,42 µs), compare_libs 6,3 µs (antes 6,5-6,7), paquete alcp 6,8 µs (antes 7,0) y flint 3,7-3,8 µs. Ahora la sobrecarga de Python es de unos 0,5-0,6 µs (antes 0,35-0,45) y la proporción con flint es de 1,70x. RawPoly da 5,96 µs, así que eliminar todo el despacho ganaría 1,08x como máximo (antes 1,06x). En grado 1000, alcp sigue ganando (59,5-60,1 frente a 69-70 µs). (2) Grado 10: esta tanda tiene más carga que la tranquila del preliminar. alcp_native da 798 ns netos (antes 711), PolyP 764 (antes 649), mul_grado 430 (antes 434) y RawPoly 254 (antes 255, igual que C++, que da 245). Así, la diferencia entre el variant y PolyP queda en unos 35 ns (antes 60) y la creación del objeto en unos 335 ns (antes 215). PolyH da 573 ns, por encima de los 440-500 ns que se estimaron para una tanda tranquila; el ahorro frente a PolyP es de unos 190 ns (antes 270) y el factor queda en 1,4x (antes ~1,5x). RawPoly frente a alcp_native pasa de 2,8x a 3,1x. degree() 122-125 ns y la llamada vacía 54 ns coinciden. (3) Conversiones: K.poly d=100 5474→722 (7,6x; antes 7,7x) y d=1000 47311→3397 (13,9x; antes 12,7x); el caster vector<u64> da 1412 y 10341 ns (antes 1499 y 9763). coeffs() da 4,4x y 4,2x (antes 4,3x y 3,5x; d=1000 13285 frente a 14302). Flint sigue siendo más lento en las dos direcciones (6,3 µs y 14,6 µs en d=100; 19,7 µs con int()). (4) Elementos: F.mul 335 ns y F.add 320 ns (antes 345-352 la suma). Con la conversión directa en pybind11 bajan a 184 y 173 ns (1,8x, coincide); con FASTCALL a 28 y 24 ns, al nivel de flint (36-42 ns) y de Python puro (33 ns). (5) La estimación sin medir de las filas de la comparativa se mantiene: con RawPoly, grado 100 bajaría unos 0,4-0,5 µs, de 6,3-6,4 µs, y la distancia a flint pasaría de 1,70x a unos 1,6x. Observación nueva, que no es de este tema: en fp30.mul.d10000, compare_libs da 1,51 ms para el binding con 1 hilo y 1,11 ms para el paquete; conviene repetirlo antes de interpretarlo.",
+   "notas": "He ejecutado las mediciones el 2026-11-07, una tras otra, con ALCP_THREADS=1, el equipo enchufado (BatteryStatus=2, 82 %) y un AMD Ryzen 7 7730U. No he recompilado nada: los ejecutables existían y ninguno quedó bloqueado. Tampoco he modificado código fuente. Los hashes coinciden entre implementaciones y con el preliminar (d=10 1701682770529, d=100 167239591985123, d=1000 16081085435374626). La tanda de grado 10 tiene más ruido que la tranquila del preliminar, así que esas cifras deben leerse como el extremo con carga."
+  },
+  "verificacion": {
+   "tema": "python",
+   "veredicto": "con_reservas",
+   "problemas": [
+    "Los binarios no se compilaron con las mismas cabeceras. alcp_native.cp315 es de las 21:32. include/alcp/polynomial.hpp y fft.hpp se modificaron a las 21:38, seguramente otro agente. bench_cpp.exe (22:00) y alcp_proto (22:02) se compilaron después. La comparación 'C++ puro 5,85 µs frente a alcp_native 6,42 µs' mezcla, por tanto, dos versiones del núcleo. La comparación PolyP frente a RawPoly (6351 frente a 5911 ns, mismas cabeceras) sí es limpia y da una sobrecarga parecida, de unos 0,44 µs. Que PolyP y alcp_native coincidan (6351 frente a 6370) indica que el cambio de cabeceras no afecta a d=100, pero no está demostrado.",
+    "La columna 'neto' resta una base que no es equivalente. La base es vacio(*_a), una función con varargs que empaqueta una tupla. Las variantes son lambdas de aridad fija que llaman a la operación. Por eso los netos salen algo bajos. Por ejemplo, RawPoly.degree() da 1-2 ns netos y rnoop 7 ns, cuando una llamada a C real cuesta más. El comentario final del script, que dice que todas las variantes van envueltas en una lambda 'como el bucle vacío', es inexacto. Esto afecta a las cifras pequeñas (degree, noop, rmul/radd de 21-37 ns, RawPoly add 58 ns), no a las de microsegundos. La comparación con flint se mantiene porque flint sufre el mismo sesgo.",
+    "Lo de que 'FLINT sin su propia llamada tarda unos 3,6 µs' no se ha medido: es una suposición sobre la sobrecarga de python-flint. Por eso la conclusión 'la distancia está en el núcleo C++, 6,0 frente a 3,6 µs' es razonable, pero ese 3,6 es una estimación.",
+    "En grado 10 el algoritmo depende del estado de la caché FFT del cuerpo: mul() desactiva la FFT si fft_cache_ está vacía y L < 64. En mide_python y en bench_cpp, d=10 se ejecuta con la caché vacía, y es coherente entre los dos. En compare_libs o en una sesión interactiva, la caché puede estar ya llena y la elección puede cambiar. Las cifras de d=10 (711/798 → 255 ns) solo valen para ese estado.",
+    "La estimación integrada usa cifras del preliminar que la medición limpia no confirma del todo. B1 (PolyH) ahorra unos 190 ns en limpio, no 270, y el factor queda en 1,4x, no 1,5x. 'La llamada cuesta 0,35-0,45 µs' pasa a 0,5-0,6 µs. Las conclusiones cualitativas no cambian.",
+    "El hash C++/Python no se compara con assert: mide_python solo lo imprime y la coincidencia se comprobó a mano. Coincide en python.txt para d=10, 100 y 1000. Además, la igualdad de coeffs() con alcp_native sí se comprueba con assert, así que esto no pone en duda la corrección.",
+    "Los mensajes de error no se conservan del todo. Con str y None, el prototipo da \"'str' object cannot be interpreted as an integer\", mientras que alcp_native da el mensaje de sobrecarga de pybind11 ('incompatible function arguments...'). Solo el de float coincide. La propuesta A dice que hay que conservar los mensajes; el prototipo no lo hace con str/None. Lo he verificado ejecutándolo.",
+    "Riesgo de portabilidad de la propuesta A que no se menciona: PyUnstable_Long_IsCompact y CompactValue solo existen desde CPython 3.12. Si el paquete admite versiones anteriores (también hay un alcp_native cp312), hará falta un camino alternativo, por ejemplo PyLong_AsLongLongAndOverflow, que ya existe como camino 2. Tampoco se han probado los objetos con __index__ distintos de bool, como numpy.int64.",
+    "El prototipo PolyP/RawPoly quita el invariante de PolyW, que reconstruye el Poly si apunta al cuerpo del otro operando. En operator* y operator+ no hay problema, porque el resultado usa el cuerpo de *this y se conserva x->K. Pero B1/B2 tendrían que mantener ese invariante en métodos como gcd, y eso no está cubierto. RawPoly tampoco implementa GC, weakref, pickle, hash ni eq: el esfuerzo de B2 (3-5 días) es una estimación sin respaldo."
+   ],
+   "correcciones": [
+    "Recompilar alcp_native, bench_cpp.exe y alcp_proto con las mismas cabeceras (o comprobar que el cambio de las 21:38 en polynomial.hpp/fft.hpp no afecta a Fp64 d=10/100/1000) antes de atribuir la diferencia 5,85→6,42 µs solo al binding. Mientras tanto, citar como cifra principal PolyP frente a RawPoly (unos 0,44 µs, mismas cabeceras).",
+    "Medir la base con la misma forma que las variantes, por ejemplo con lambda a, b: vacio2(a, b) o con una lambda que llame a una función de C trivial, o publicar los netos de menos de 50 ns como cota inferior.",
+    "Actualizar la estimación integrada con las cifras limpias: B1 ahorra unos 190 ns (1,4x en d=10), la sobrecarga de alcp_native en d=100 es de 0,5-0,6 µs, y la distancia a flint pasa de 1,70x a unos 1,58-1,6x con RawPoly.",
+    "Marcar '3,6 µs de FLINT sin llamada' como estimación, o medirlo con un benchmark C de nmod_poly_mul.",
+    "Indicar que las cifras de d=10 corresponden a la caché FFT vacía.",
+    "Convertir la comparación de hashes en un assert (por ejemplo, leer la salida de bench_cpp.exe), aunque la corrección ya está cubierta por la igualdad con alcp_native.",
+    "Añadir a la propuesta A: un camino alternativo para Python < 3.12 (o una versión mínima explícita), la conservación de los mensajes TypeError de str/None (o aceptar el cambio y ajustar los tests) y pruebas con numpy.int64 y otros objetos con __index__."
+   ],
+   "hallazgos_que_sobreviven": [
+    "Corrección del prototipo: lo he verificado en build/fase6/verif_python/verif.py. Kp.poly, raw_poly, poly_h, mul, add y degree coinciden exactamente con alcp_native con listas vacías, [0], ceros finales, coeficientes p-1 y p, negativos, 2^64, 2^100, bool y tamaños 63, 64 y 65 (potencia de 2 y vecinos). Hay 0 fallos y la mezcla de cuerpos se rechaza con ValueError, igual que en la librería.",
+    "La comparación es justa en lo básico: las mismas entradas splitmix64 en los dos lados (el orden F/G es idéntico), 16 entradas rotando, el resultado se consume en C++ (chk += coeffs()[d]), ALCP_THREADS=1, las mismas banderas portables -O3 y la caché FFT en el mismo estado en C++ y en Python, porque d=10 va primero y la comprobación de corrección precalienta cada cuerpo antes de medir.",
+    "El generador aleatorio no se ve afectado: todas las variantes usan Poly::operator* (MulAlgo::Auto) de la librería, y la propuesta A solo toca las conversiones, no la elección de algoritmo ni fft::tables.",
+    "La conclusión principal se mantiene: en el producto de grado 100, el binding explica como mucho alrededor del 7-8 % (RawPoly frente a PolyP o alcp_native, unos 0,44-0,46 µs). La distancia de 1,7x a flint está sobre todo en el núcleo C++. En grado 1000, alcp gana a flint.",
+    "Las grandes ganancias en las conversiones (K.poly 7,6-13,9x, coeffs 4,2-4,4x en d≥100) y en los elementos (1,8x con pybind11 y conversión directa, al nivel de flint con FASTCALL) se miden con resultados idénticos. La causa (vector<BigInt> y mpz por coeficiente) es coherente con el código de bindings.cpp (elems_in/elems_out).",
+    "La recomendación de hacer A sí y B solo si importan los grados pequeños está justificada: B mueve una sola fila de la comparativa en un 6-8 %."
+   ]
+  }
+ }
+]

@@ -1,0 +1,36 @@
+newton_proto: F_998244353, punto a punto en prototipos: Barrett
+ALCP_THREADS=1
+
+== Transformada en palabras (directa), us
+  N=  512  transformada      3.9   punto a punto %:    0.8   Barrett:    0.4
+  N= 1024  transformada      8.6   punto a punto %:    1.6   Barrett:    0.8
+  N= 2048  transformada     18.4   punto a punto %:    3.2   Barrett:    1.6
+  N= 4096  transformada     40.3   punto a punto %:    6.4   Barrett:    3.1
+  N= 8192  transformada     93.0   punto a punto %:   12.9   Barrett:    6.3
+
+== divmod grado 4000 / grado 2000 (us)
+  librería, cuerpo FRÍO (Kronecker)  : total   1350.1 | inversión    706.5 | cociente+resto    625.4 | 1 producto 2000x2000 Kronecker    309.8
+  librería, cuerpo CALIENTE (NTT)    : total    808.4 | inversión    518.1 | cociente+resto    288.6 | producto 2001x2001 NTT    144.2, 2001x2001    142.9
+  prototipo a) (tablas ya hechas)    : total    394.3 | inversión    189.9 | cociente+resto    204.4
+  -> ganancia frente a caliente: total 2.05x, inversión 2.73x;  frente a frío: 3.42x
+
+== pow_mod(a, q, m), deg m = 300, q = p (29 cuadrados + 7 productos)
+  librería: pow_mod    2746.4 | a*a    19.4  a*b    28.1 (a*a/a*b = 0.69) | reduce    57.1 (rev(a)*ginv   28.1 + m*q   28.4 + resto    0.7)
+            modelo 29(sq+red)+7(mul+red) = 2815.7  (cuadrados 20 %, productos 7 %, reducciones 73 %)
+  prototipo b) reduce    28.4 (2.01x) | sqr+reduce    47.2 (lib    76.5, 1.62x) | mul+reduce    55.6 (lib    85.2, 1.53x)
+  pow_mod: lib    2746.4 | v1 (productos lib + Reducer b)    1721.9 (1.59x) | v2 (todo en palabras)    1745.1 (1.57x)
+  Composer k=18: compose lib   1523.3 | proto    879.4 (1.73x) ;  construir+compose lib   3002.0 | proto   1754.1 (1.71x)
+
+== pow_mod(a, q, m), deg m = 1000, q = p (29 cuadrados + 7 productos)
+  librería: pow_mod    6101.3 | a*a    41.8  a*b    61.3 (a*a/a*b = 0.68) | reduce   128.5 (rev(a)*ginv   61.1 + m*q   61.7 + resto    5.7)
+            modelo 29(sq+red)+7(mul+red) = 6268.9  (cuadrados 19 %, productos 7 %, reducciones 74 %)
+  prototipo b) reduce    63.3 (2.03x) | sqr+reduce   103.7 (lib   170.4, 1.64x) | mul+reduce   122.2 (lib   189.8, 1.55x)
+  pow_mod: lib    6101.3 | v1 (productos lib + Reducer b)    3856.6 (1.58x) | v2 (todo en palabras)    3791.2 (1.61x)
+  Composer k=32: compose lib   6774.4 | proto   4012.1 (1.69x) ;  construir+compose lib  12642.9 | proto   7292.7 (1.73x)
+
+== Extremo a extremo en la librería (referencia para estimar)
+  is_irreducible grado 400 (irreducible):   139899.0 us
+  factor grado 300 (aleatorio)          :    42849.4 us
+  producto modular grado 400: lib    86.0 | proto    56.5 (1.52x) | proto con operando fijo transformado    47.3 (1.82x)
+
+fallos de comprobación: 0   checksum 64c7037251456377

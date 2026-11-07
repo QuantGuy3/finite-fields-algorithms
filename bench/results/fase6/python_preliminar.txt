@@ -1,0 +1,138 @@
+=== ALCP_THREADS=1 build/fase6/python/bench_cpp.exe
+C++ puro, Poly<Fp64> en F_998244353 (ns por operación, mejor de 3 tandas >= 30 ms, 16 entradas rotando)
+d=10    mul      276.1 ns   add     40.0 ns   Poly(K, vector)     31.7 ns   hash=1701682770529
+d=100   mul     5979.8 ns   add     89.1 ns   Poly(K, vector)     37.3 ns   hash=167239591985123
+d=1000  mul    71425.9 ns   add    649.5 ns   Poly(K, vector)    143.4 ns   hash=16081085435374626
+elementos: mul 2.80 ns   add 1.35 ns
+(checksum 60742476716687680)
+
+=== ALCP_THREADS=1 .venv/Scripts/python.exe bench/experimentos/fase6/python/mide_python.py
+Python 3.15.1, python-flint 0.9.0, F_998244353; ns por llamada (mejor de 3 tandas >= 30 ms, 16 entradas rotando)
+bucle vacío (llamada a una función Python que no hace nada): 64 ns (no se resta salvo en la columna «neto»)
+
+d=10: resultados idénticos (16 productos y sumas); hash productos = 1701682770529
+  mul (f*g)
+    alcp_native                              1225 ns   neto       1160 ns
+    proto PolyP                              1072 ns   neto       1007 ns
+    proto PolyH (ranura nb_multiply)          805 ns   neto        740 ns
+    proto RawPoly                             381 ns   neto        317 ns
+    flint                                     470 ns   neto        406 ns
+  mul sin crear objeto
+    proto PolyP.mul_grado                     603 ns   neto        539 ns
+  add (f+g)
+    alcp_native                               802 ns   neto        738 ns
+    proto PolyP                               748 ns   neto        684 ns
+    proto RawPoly                             135 ns   neto         71 ns
+    flint                                     374 ns   neto        310 ns
+  lista -> polinomio
+    alcp_native K.poly                       1604 ns   neto       1540 ns
+    proto K.poly (directa)                    803 ns   neto        738 ns
+    proto K.poly_stl (vector<u64>)            963 ns   neto        899 ns
+    proto raw_poly                            315 ns   neto        251 ns
+    flint nmod_poly(c, p)                    1062 ns   neto        998 ns
+  polinomio -> lista (coeffs)
+    alcp_native                               916 ns   neto        851 ns
+    proto PolyP                               391 ns   neto        327 ns
+    proto RawPoly                             207 ns   neto        142 ns
+    flint (coeffs, nmod)                     2136 ns   neto       2072 ns
+    flint [int(c) ...]                       2759 ns   neto       2695 ns
+  degree() (despacho de un método)
+    alcp_native                               212 ns   neto        148 ns
+    proto PolyP                               200 ns   neto        136 ns
+    proto RawPoly                              64 ns   neto         -0 ns
+    flint                                     110 ns   neto         46 ns
+
+d=100: resultados idénticos (16 productos y sumas); hash productos = 167239591985123
+  mul (f*g)
+    alcp_native                              7744 ns   neto       7680 ns
+    proto PolyP                              7943 ns   neto       7878 ns
+    proto PolyH (ranura nb_multiply)         7775 ns   neto       7710 ns
+    proto RawPoly                            7491 ns   neto       7426 ns
+    flint                                    4639 ns   neto       4574 ns
+  mul sin crear objeto
+    proto PolyP.mul_grado                    7652 ns   neto       7588 ns
+  add (f+g)
+    alcp_native                               733 ns   neto        669 ns
+    proto PolyP                               680 ns   neto        616 ns
+    proto RawPoly                             227 ns   neto        163 ns
+    flint                                     418 ns   neto        354 ns
+  lista -> polinomio
+    alcp_native K.poly                       7149 ns   neto       7085 ns
+    proto K.poly (directa)                    924 ns   neto        859 ns
+    proto K.poly_stl (vector<u64>)           1806 ns   neto       1742 ns
+    proto raw_poly                            636 ns   neto        571 ns
+    flint nmod_poly(c, p)                    7653 ns   neto       7589 ns
+  polinomio -> lista (coeffs)
+    alcp_native                              6382 ns   neto       6318 ns
+    proto PolyP                              1510 ns   neto       1445 ns
+    proto RawPoly                            1234 ns   neto       1170 ns
+    flint (coeffs, nmod)                    17331 ns   neto      17267 ns
+    flint [int(c) ...]                      24040 ns   neto      23975 ns
+  degree() (despacho de un método)
+    alcp_native                               207 ns   neto        142 ns
+    proto PolyP                               196 ns   neto        132 ns
+    proto RawPoly                              65 ns   neto          1 ns
+    flint                                     114 ns   neto         50 ns
+
+d=1000: resultados idénticos (16 productos y sumas); hash productos = 16081085435374626
+  mul (f*g)
+    alcp_native                             73602 ns   neto      73538 ns
+    proto PolyP                             74427 ns   neto      74363 ns
+    proto PolyH (ranura nb_multiply)        75457 ns   neto      75392 ns
+    proto RawPoly                           74676 ns   neto      74612 ns
+    flint                                   86716 ns   neto      86651 ns
+  mul sin crear objeto
+    proto PolyP.mul_grado                   74309 ns   neto      74245 ns
+  add (f+g)
+    alcp_native                              1637 ns   neto       1573 ns
+    proto PolyP                              1519 ns   neto       1454 ns
+    proto RawPoly                            1089 ns   neto       1024 ns
+    flint                                     740 ns   neto        676 ns
+  lista -> polinomio
+    alcp_native K.poly                      55912 ns   neto      55848 ns
+    proto K.poly (directa)                   4110 ns   neto       4046 ns
+    proto K.poly_stl (vector<u64>)          12375 ns   neto      12311 ns
+    proto raw_poly                           3801 ns   neto       3736 ns
+    flint nmod_poly(c, p)                   69526 ns   neto      69462 ns
+  polinomio -> lista (coeffs)
+    alcp_native                             59236 ns   neto      59171 ns
+    proto PolyP                             16442 ns   neto      16377 ns
+    proto RawPoly                           14773 ns   neto      14709 ns
+    flint (coeffs, nmod)                   155379 ns   neto     155314 ns
+    flint [int(c) ...]                     209677 ns   neto     209613 ns
+  degree() (despacho de un método)
+    alcp_native                               186 ns   neto        122 ns
+    proto PolyP                               176 ns   neto        111 ns
+    proto RawPoly                              56 ns   neto         -8 ns
+    flint                                      99 ns   neto         34 ns
+
+elementos: resultados idénticos (16 pares + enteros extremos, negativos, bool; float/str rechazados)
+  mul de elementos
+    alcp_native F.mul(a, b)                   434 ns   neto        370 ns
+    proto Cuerpo.mul (directa)                255 ns   neto        191 ns
+    proto Cuerpo.mul_u64 (caster u64)         250 ns   neto        186 ns
+    proto rmul (CPython FASTCALL)              85 ns   neto         21 ns
+    flint nmod * nmod                          94 ns   neto         30 ns
+    Python a * b % p                           94 ns   neto         30 ns
+  add de elementos
+    alcp_native F.add(a, b)                   416 ns   neto        352 ns
+    proto Cuerpo.add (directa)                255 ns   neto        191 ns
+    proto radd (CPython FASTCALL)              84 ns   neto         20 ns
+    flint nmod + nmod                         103 ns   neto         38 ns
+  llamada vacía
+    proto noop (pybind11)                     115 ns   neto         51 ns
+    proto rnoop (CPython)                      66 ns   neto          1 ns
+
+=== .venv/Scripts/python.exe bench/compare_libs.py --filter fp30.mul.d --libs alcp_native_1h,alcp,flint  (referencia: harness de la comparativa, enchufado)
+== fp30.mul.d100: producto de dos polinomios de grado 100
+   alcp (binding C++, 1 hilo)       6.7 µs  ok             b114213b41a4315b 
+   alcp (paquete Python)            7.0 µs  ok             b114213b41a4315b 
+   python-flint                     3.7 µs  ok             b114213b41a4315b 
+== fp30.mul.d1000: producto de dos polinomios de grado 1000
+   alcp (binding C++, 1 hilo)      59.8 µs  ok             9ac84640941f412d 
+   alcp (paquete Python)           62.0 µs  ok             9ac84640941f412d 
+   python-flint                    72.4 µs  ok             9ac84640941f412d 
+== fp30.mul.d10000: producto de dos polinomios de grado 10000
+   alcp (binding C++, 1 hilo)      1.71 ms  ok             c15ad70226e92353 
+   alcp (paquete Python)           1.31 ms  ok             c15ad70226e92353 
+   python-flint                    1.96 ms  ok             c15ad70226e92353 

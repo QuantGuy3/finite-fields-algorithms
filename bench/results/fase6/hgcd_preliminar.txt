@@ -1,0 +1,126 @@
+# Fase 6, tema hgcd — mediciones PRELIMINARES (otros 5 agentes compilando/midiendo a la vez; portátil enchufado)
+# Fuente: bench/experimentos/fase6/hgcd/hgcd_proto.cpp (g++ 15.2 -O3 -static, sin -march=native), ALCP_THREADS=1
+# Comando: ALCP_THREADS=1 ./build/fase6/hgcd/hgcd_proto3.exe todo ; .venv/Scripts/python.exe bench/experimentos/fase6/hgcd/flint_gcd.py
+Sat Nov  7 22:10:22 RST 2026
+Comprobación F_998244353 (hgcd M y restos == P::hgcd + P::aplicar; gcd == gcd_classic; gcd_ext == gcd_ext_classic): OK
+Comprobación F_101 (sin NTT: caminos de reserva) (hgcd M y restos == P::hgcd + P::aplicar; gcd == gcd_classic; gcd_ext == gcd_ext_classic): OK
+Comprobación F_(2^61-1) (hgcd M y restos == P::hgcd + P::aplicar; gcd == gcd_classic; gcd_ext == gcd_ext_classic): OK
+
+== Perfil de hgcd (copia de P::hgcd, kHgcdMin = 256), F_998244353, a grado n, b grado n-1 ==
+
+n = 1024: hgcd 1607.3 us (con cronómetros 1605.2 us); aplicar final del gcd (fuera de hgcd) 250.2 us
+  nivel               caso base                aplicar                   paso                mul_mat          copias/div_xk
+  0                0.0 us ( 0.0)         258.1 us ( 1.0)          14.7 us ( 1.0)         129.5 us ( 1.0)           7.3 us ( 3.0)
+  1                0.0 us ( 0.0)         395.1 us ( 2.0)          15.1 us ( 2.0)         112.0 us ( 2.0)           1.4 us ( 6.0)
+  2              453.1 us ( 3.0)          69.0 us ( 1.0)           4.9 us ( 1.0)          47.2 us ( 1.0)           0.5 us ( 3.0)
+  3               93.3 us ( 2.0)           0.0 us ( 0.0)           0.0 us ( 0.0)           0.0 us ( 0.0)           0.0 us ( 0.0)
+  total          546.4 us  34.0%         722.2 us  45.0%          34.7 us   2.2%         288.7 us  18.0%           9.2 us   0.6%
+  resto (control, Mat2 copias, returns): 4.0 us (0.2%)   [(n) = llamadas por hgcd]
+  V1         hgcd+restos   1198.1 us (1.34x frente a hgcd de la librería): caso base 513; aplicar 374; paso 32; mul_mat 271; copias/div_xk 6;
+  V2         hgcd+restos   1037.3 us (1.55x frente a hgcd de la librería): caso base 530; aplicar 250; paso 35; mul_mat 230; copias/div_xk 8;
+  V3         hgcd+restos   1011.9 us (1.59x frente a hgcd de la librería): caso base 538; aplicar 173; paso 35; mul_mat 310; copias/div_xk 8;
+  V2 min128  hgcd+restos    977.2 us (1.64x frente a hgcd de la librería): caso base 326; aplicar 326; paso 46; mul_mat 263; copias/div_xk 11;
+  V2e        hgcd+restos    871.7 us (1.84x frente a hgcd de la librería): caso base 504; aplicar 231; paso 31; mul_mat 111; copias/div_xk 7;
+  V3e        hgcd+restos    837.4 us (1.92x frente a hgcd de la librería): caso base 489; aplicar 156; paso 31; mul_mat 151; copias/div_xk 6;
+  V3e min128 hgcd+restos    794.3 us (2.02x frente a hgcd de la librería): caso base 310; aplicar 214; paso 44; mul_mat 209; copias/div_xk 10;
+
+n = 2048: hgcd 3797.4 us (con cronómetros 3875.3 us); aplicar final del gcd (fuera de hgcd) 539.9 us
+  nivel               caso base                aplicar                   paso                mul_mat          copias/div_xk
+  0                0.0 us ( 0.0)         555.0 us ( 1.0)          27.8 us ( 1.0)         267.3 us ( 1.0)           5.8 us ( 3.0)
+  1                0.0 us ( 0.0)         506.8 us ( 2.0)          28.7 us ( 2.0)         237.3 us ( 2.0)           2.6 us ( 6.0)
+  2                0.0 us ( 0.0)         785.5 us ( 4.0)          30.1 us ( 4.0)         213.1 us ( 4.0)           4.1 us (12.0)
+  3              999.2 us ( 7.0)          68.2 us ( 1.0)           5.0 us ( 1.0)          38.6 us ( 1.0)           0.6 us ( 3.0)
+  4               86.8 us ( 2.0)           0.0 us ( 0.0)           0.0 us ( 0.0)           0.0 us ( 0.0)           0.0 us ( 0.0)
+  total         1086.0 us  28.0%        1915.5 us  49.4%          91.6 us   2.4%         756.3 us  19.5%          13.0 us   0.3%
+  resto (control, Mat2 copias, returns): 12.9 us (0.3%)   [(n) = llamadas por hgcd]
+  V1         hgcd+restos   2944.7 us (1.29x frente a hgcd de la librería): caso base 1125; aplicar 1127; paso 91; mul_mat 780; copias/div_xk 18;
+  V2         hgcd+restos   2595.8 us (1.46x frente a hgcd de la librería): caso base 1127; aplicar 711; paso 97; mul_mat 602; copias/div_xk 19;
+  V3         hgcd+restos   2496.8 us (1.52x frente a hgcd de la librería): caso base 1211; aplicar 520; paso 102; mul_mat 912; copias/div_xk 23;
+  V2 min128  hgcd+restos   2379.7 us (1.60x frente a hgcd de la librería): caso base 661; aplicar 878; paso 122; mul_mat 669; copias/div_xk 28;
+  V2e        hgcd+restos   2245.3 us (1.69x frente a hgcd de la librería): caso base 1140; aplicar 733; paso 94; mul_mat 363; copias/div_xk 22;
+  V3e        hgcd+restos   2241.8 us (1.69x frente a hgcd de la librería): caso base 1133; aplicar 494; paso 94; mul_mat 476; copias/div_xk 21;
+  V3e min128 hgcd+restos   2082.3 us (1.82x frente a hgcd de la librería): caso base 704; aplicar 639; paso 128; mul_mat 623; copias/div_xk 32;
+
+n = 4096: hgcd 10600.0 us (con cronómetros 10651.8 us); aplicar final del gcd (fuera de hgcd) 1253.0 us
+  nivel               caso base                aplicar                   paso                mul_mat          copias/div_xk
+  0                0.0 us ( 0.0)        1389.4 us ( 1.0)          58.8 us ( 1.0)         632.3 us ( 1.0)          16.7 us ( 3.0)
+  1                0.0 us ( 0.0)        1212.4 us ( 2.0)          72.1 us ( 2.0)         542.9 us ( 2.0)          14.0 us ( 6.0)
+  2                0.0 us ( 0.0)        1114.5 us ( 4.0)          68.7 us ( 4.0)         495.5 us ( 4.0)           7.3 us (12.0)
+  3                0.0 us ( 0.0)        1784.9 us ( 8.0)          80.3 us ( 8.0)         458.8 us ( 8.0)           7.8 us (24.0)
+  4             2389.1 us (15.0)          77.3 us ( 1.0)           5.9 us ( 1.0)          42.6 us ( 1.0)           0.7 us ( 3.0)
+  5              102.4 us ( 2.0)           0.0 us ( 0.0)           0.0 us ( 0.0)           0.0 us ( 0.0)           0.0 us ( 0.0)
+  total         2491.6 us  23.4%        5578.5 us  52.4%         285.8 us   2.7%        2172.1 us  20.4%          46.5 us   0.4%
+  resto (control, Mat2 copias, returns): 77.3 us (0.7%)   [(n) = llamadas por hgcd]
+  V1         hgcd+restos   7701.2 us (1.38x frente a hgcd de la librería): caso base 2484; aplicar 3216; paso 278; mul_mat 2190; copias/div_xk 58;
+  V2         hgcd+restos   6588.6 us (1.61x frente a hgcd de la librería): caso base 2377; aplicar 2058; paso 268; mul_mat 1596; copias/div_xk 70;
+  V3         hgcd+restos   6150.1 us (1.72x frente a hgcd de la librería): caso base 2357; aplicar 1400; paso 259; mul_mat 2217; copias/div_xk 64;
+  V2 min128  hgcd+restos   5886.9 us (1.80x frente a hgcd de la librería): caso base 1407; aplicar 2414; paso 309; mul_mat 1742; copias/div_xk 76;
+  V2e        hgcd+restos   5559.4 us (1.91x frente a hgcd de la librería): caso base 2386; aplicar 2011; paso 249; mul_mat 963; copias/div_xk 54;
+  V3e        hgcd+restos   5254.1 us (2.02x frente a hgcd de la librería): caso base 2337; aplicar 1361; paso 246; mul_mat 1273; copias/div_xk 52;
+  V3e min128 hgcd+restos   5006.8 us (2.12x frente a hgcd de la librería): caso base 1455; aplicar 1700; paso 317; mul_mat 1624; copias/div_xk 80;
+
+== Micro: producto de matrices 2x2 y aplicar (us), F_998244353, matrices reales de hgcd ==
+     n    mul_mat  NTT reut.  NTT+envol   Winograd     x env. |    aplicar  NTT reut.  NTT+envol |    mul n/4
+   512       61.5       57.4       27.2       75.1      2.26x |       52.7       34.1       34.0 |       13.1
+  1024      121.3      112.9       52.1      148.2      2.33x |      114.4       74.2       74.2 |       28.2
+  2048      264.0      247.0      114.5      322.5      2.31x |      252.6      162.2      158.1 |       60.4
+  4096      574.5      530.0      242.4      684.7      2.37x |      529.1      349.3      351.4 |      131.4
+  8192     1288.7     1207.2      540.0     1549.3      2.39x |     1247.9      797.0      795.3 |      301.4
+
+== gcd, F_998244353 (us; umbral 0 = half-GCD en todo el tamaño; 8 pares variados) ==
+     n   clásico   lib hgcd         V1         V2         V3          W        V2e        V3e V3e min128 V3e min512   lib prod
+   256       99.1      367.0      195.1      173.7      173.7      194.9      175.2      172.9      188.4      203.0      100.0
+   384      204.3      666.2      369.3      342.2      340.6      368.6      344.1      342.2      435.7      415.1      207.4
+   512      348.3      978.5      601.9      542.5      547.8      606.1      528.8      526.5      484.1      541.0      356.8
+   768      761.8     1934.7     1173.8      954.7      961.6     1145.6      980.6      980.8     1198.3     1101.8      736.7
+  1000     1242.9     2581.6     1520.6     1346.2     1335.1     1527.5     1324.6     1321.8     1435.3     1709.0     1235.1
+  1024     1298.9     2721.6     1610.3     1410.1     1411.5     1624.3     1374.8     1332.0     1244.2     1656.4     1309.7
+  1536     2893.5     5018.3     3350.4     2544.8     2509.8     3259.6     2554.4     2475.8     3089.3     2845.4     2863.2
+  2048     5000.9     7066.7     4313.4     3576.3     3580.5     4369.4     3506.0     3363.8     3136.7     4330.2     5003.9
+  3072    11104.7    12217.0     8905.9     6484.1     6264.5     8847.2     6531.2     6233.8     7337.4     6924.9    11090.3
+  4096    19802.8    18117.7    10957.5     8743.8     8702.5    10999.6     8430.9     8054.6     7533.2    10066.3    15846.1
+  8192    85149.4    43867.8    26981.7    21039.8    20709.1    27853.2    20669.8    19394.8    18198.1    23542.0    45814.3
+(lib prod = P::gcd con el umbral de producción, 4096 en F_998244353)
+V3e con umbral exterior U (clásico en sitio por debajo de U):
+     n      U=512     U=1024     U=2048
+   256       99.4      100.1       99.8
+   384      205.4      209.0      209.8
+   512      422.1      357.2      358.1
+   768      795.3      744.4      740.4
+  1000     1132.8     1244.9     1254.8
+  1024     1183.5     1161.8     1290.6
+  1536     2387.2     2310.9     2907.4
+  2048     3209.9     3309.1     3303.4
+  3072     6158.4     6120.1     6705.4
+  4096     8014.3     8148.6     9807.8
+  8192    19276.6    19562.0    20989.7
+
+== gcd_ext, F_998244353 (us; umbral 0 salvo indicación; 8 pares variados) ==
+     n   clásico   lib hgcd         V1         V2         V3    V3+cola   V3e+cola V3e+c min128   V3e+c u512   V3e+c u256   lib prod
+   256      332.5      615.4      485.7      428.9      427.5      426.2      404.0        421.0        330.3        322.7      332.9
+   384      707.3     1220.6      975.2      826.2      812.5      812.7      816.1        928.7        693.7        666.3      690.7
+   512     1210.0     1739.9     1415.1     1148.3     1155.9     1161.5     1076.9       1054.4       1065.4       1079.0     1193.9
+   768     2640.2     3743.5     3130.1     2152.5     2116.6     2116.3     2101.6       2378.8       2221.4       1892.7     2600.7
+  1000     4445.2     4962.2     4069.1     2569.1     2521.8     2508.7     2523.5       2687.3       3441.2       2730.7     4512.1
+  1024     4494.2     5092.5     4150.3     2929.6     2884.9     2893.6     2716.6       2574.8       3630.6       2916.2     4537.8
+  1536    10218.9     9582.1     8226.4     5475.8     5315.0     5330.6     5337.2       5876.4       6023.6       5023.6    10219.9
+  2048    17583.2    12665.4    10348.5     6981.2     7090.7     7133.1     6758.4       6360.4       9459.5       7376.9    45833.2
+  4096    70425.9    31924.4    26264.3    17676.8    17423.8    17269.0    15608.4      15228.1      21342.5      16368.2   171746.7
+(lib prod = P::gcd_ext con el umbral de producción, 2048 en F_998244353)
+copia de gcd_ext de la librería con umbral 128 (como calibra_hgcd -DALCP_HGCD_UMBRAL=128): 986.8 1546.5 2501.5 4411.2 6602.7 6652.1 11159.1 16144.6 37735.3
+
+checksum 23329472096587
+
+python-flint 0.9.0 - F_998244353, us por llamada (incluye la sobrecarga de Python)
+     n        gcd       xgcd    mul n*n
+   256       63.5      223.5       11.0
+   384      123.3      434.4       20.0
+   512      201.9      657.1       28.9
+   768      404.1     1226.4       52.2
+  1000      662.1     1773.3       71.8
+  1024      683.7     1860.8       75.3
+  1536     1479.0     3641.8      129.5
+  2048     2897.4     5368.1      184.1
+  3072     5318.4     9689.1      313.8
+  4096     8608.1    14174.7      452.7
+  8192    22834.9    38109.5     1521.3

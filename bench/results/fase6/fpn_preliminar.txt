@@ -1,0 +1,182 @@
+# Fase 6, tema fpn — mediciones PRELIMINARES (7-11-2026, portátil enchufado, otros 5 agentes compilando/midiendo a la vez).
+# Binario: build/fase6/fpn/fpn_bench.exe (g++ 15.2 -std=c++23 -O3 -static, sin -march=native). ALCP_THREADS=1.
+# Comandos: ver cabecera de bench/experimentos/fase6/fpn/fpn_bench.cpp y flint_fp127.py
+
+########## ALCP_THREADS=1 ./build/fase6/fpn/fpn_bench.exe   (asignador de GMP normal)
+fpn_bench (fase 6, tema fpn) — asignador de GMP: malloc; ALCP_THREADS=1
+
+== 1. Elementos de F_p, p = 170141183460469231731687303715884105727 (ns por operación, 1024 entradas rotando)
+operación                           Fp (mpz)       FpN2   factor
+mul (devuelve elemento nuevo)            69.6       11.2     6.2x
+add                                      43.2        1.2    36.7x
+sub                                      46.3        1.0    46.8x
+inv                                     714.1      670.1     1.1x
+mul en cadena (latencia)                 72.3       12.0     6.0x
+20 acc_fma + acc_reduce                 424.6       80.9     5.2x
+  por acc_fma (aprox. /20)               21.2        4.0     5.2x
+acc_fma (acumulador ya reservado)        13.1        3.4     3.9x
+acc_reduce (suma de 20 productos)        57.2       10.1     5.7x
+acc_set                                   3.2        0.6     5.3x
+inv(1)                                   88.8       58.5     1.5x
+malloc+free 16-32 B (referencia)         27.4
+
+== 2. Polinomios de grado 20 en F_(2^127-1) (us, 16 entradas rotando)
+operación                           Poly<Fp> Poly<FpN2>   factor
+producto 19x19 (escolar)                10.91       1.77     6.2x
+resto 38 / 20 (escolar)                 13.39       2.02     6.6x
+gcd grado 19 / 20                       61.92      18.93     3.3x
+pow_mod exponente q (127 bits)        6339.24     973.36     6.5x
+pow_mod exponente (q-1)/2             6259.89     978.61     6.4x
+
+== 3. factor() de 16 polinomios mónicos aleatorios de grado 20 en F_(2^127-1)
+  grados de los factores: [119] [14510] [218] [11189] [2513] [2810] [122456] [416] [11113346] [812] [11369] [119] [112511] [11414] [20] [12413]
+  factor() total (us/llamada): Poly<Fp> 16030.1   Poly<FpN2> 2772.6   factor 5.78x
+  Desglose (ms por llamada, media de 48):
+  Fp         total   15.445 ms | radical 0.095 (1%) | DDF pow_mod 14.233 (92%) | DDF composición 0.037 (0%) | DDF MCD 0.392 (3%) | DDF otros 0.047 (0%) | EDF pow_mod 0.582 (4%) | EDF resto 0.011 (0%) | multiplicidad 0.046 (0%) |
+             por llamada: 2.50 pow_mod DDF, 4.56 composiciones, 7.06 MCD DDF, 0.94 pow_mod EDF (0.62 divisiones)
+  FpN2       total    2.565 ms | radical 0.044 (2%) | DDF pow_mod 2.225 (87%) | DDF composición 0.007 (0%) | DDF MCD 0.141 (5%) | DDF otros 0.008 (0%) | EDF pow_mod 0.129 (5%) | EDF resto 0.004 (0%) | multiplicidad 0.007 (0%) |
+             por llamada: 2.50 pow_mod DDF, 4.56 composiciones, 7.06 MCD DDF, 0.94 pow_mod EDF (0.62 divisiones)
+  Recuento por llamada (media de 16; Fp contado con FpCont):
+  fase                  mul  add/sub    inv  acc_fma  reduce     set |  res. GMP   new Fp |  new FpN2 | medido ms  arit.est
+  radical               148       84     28      420     314     314 |      1389       82 |        82 |     0.095     0.058
+  DDF pow_mod         11144    11144    665   417056   46064   22965 |    177115     3387 |      3387 |    14.233     9.909
+  DDF composición        0        0      0     1456      83       0 |       299        9 |         9 |     0.037     0.024
+  DDF MCD               255      255    128     2188    1335    1335 |      5135      385 |       385 |     0.392     0.229
+  DDF otros              89       45     10      281     111     111 |       574       30 |        30 |     0.047     0.026
+  EDF pow_mod           534      534    266     5109    2669    1333 |      9893     1340 |      1340 |     0.582     0.474
+  EDF resto              53        4      9        6       7       7 |       130       27 |        27 |     0.011     0.011
+  multiplicidad          98       98      7      306     129     129 |       785       31 |        31 |     0.046     0.028
+  TOTAL               12321    12165   1113   426821   50711   26193 |    195319     5290 |      5290 |    15.445    10.758
+  Reservas de GMP en Poly<FpN2>: 956 por llamada.  Estimación de reservas en Poly<Fp>: 195319 x 27.4 ns (malloc+free) = 5.356 ms; operator new: 5290 x 27.4 ns = 0.145 ms
+
+== 4. DDF (us/llamada): distinct_degree de la librería frente a componer desde el primer paso
+  Poly<Fp>:   librería 14993.8   compone 7736.9   (1.94x)
+  Poly<FpN2>: librería 2371.5   compone 1257.2   (1.89x)
+
+== 5. Escenario fp127.factor.d20 (la entrada de compare_libs.py; grados: 1 1 2 6 10)
+  factor() total (ms): Poly<Fp> 18.94   Poly<FpN2> 3.16   (5.98x)
+  DDF (ms): Poly<Fp> librería 17.99 / compone 7.90;  Poly<FpN2> librería 2.89 / compone 1.26
+  Estimación FpN2 + DDF que compone: 1.54 ms (factor FpN2 - DDF librería + DDF compone)
+
+== 1. Elementos de F_p, p = 1267650600228229401496703205653 (ns por operación, 1024 entradas rotando)
+operación                           Fp (mpz)       FpN2   factor
+mul (devuelve elemento nuevo)            70.6       11.3     6.2x
+add                                      44.3        1.2    37.6x
+sub                                      43.8        1.0    44.7x
+inv                                     437.5      392.2     1.1x
+mul en cadena (latencia)                 71.5       12.2     5.9x
+20 acc_fma + acc_reduce                 390.9       77.4     5.0x
+  por acc_fma (aprox. /20)               19.5        3.9     5.0x
+acc_fma (acumulador ya reservado)        13.1        3.4     3.9x
+acc_reduce (suma de 20 productos)        54.8        8.0     6.8x
+acc_set                                   3.0        0.6     5.0x
+inv(1)                                   90.2       60.4     1.5x
+malloc+free 16-32 B (referencia)         26.9
+
+== 1. Elementos de F_p, p = 18446744073709551629 (ns por operación, 1024 entradas rotando)
+operación                           Fp (mpz)       FpN2   factor
+mul (devuelve elemento nuevo)            65.1       11.3     5.8x
+add                                      64.4        1.2    55.8x
+sub                                      61.7        1.0    64.3x
+inv                                     202.8      173.9     1.2x
+mul en cadena (latencia)                 65.6       12.1     5.4x
+20 acc_fma + acc_reduce                 424.7       77.1     5.5x
+  por acc_fma (aprox. /20)               21.2        3.9     5.5x
+acc_fma (acumulador ya reservado)        10.7        3.4     3.2x
+acc_reduce (suma de 20 productos)        54.9        8.0     6.9x
+acc_set                                   2.7        0.6     4.6x
+inv(1)                                   91.3       60.6     1.5x
+malloc+free 16-32 B (referencia)         26.8
+
+Comprobaciones fallidas: 0   (suma de control 9271)
+
+########## ALCP_THREADS=1 ./build/fase6/fpn/fpn_bench.exe pool   (GMP con listas libres: mide el peso de las reservas de mpz)
+fpn_bench (fase 6, tema fpn) — asignador de GMP: listas libres (pool); ALCP_THREADS=1
+
+== 1. Elementos de F_p, p = 170141183460469231731687303715884105727 (ns por operación, 1024 entradas rotando)
+operación                           Fp (mpz)       FpN2   factor
+mul (devuelve elemento nuevo)            40.1       11.2     3.6x
+add                                      18.8        1.2    16.1x
+sub                                      17.1        0.9    18.0x
+inv                                     649.5      649.2     1.0x
+mul en cadena (latencia)                 49.9       12.1     4.1x
+20 acc_fma + acc_reduce                 313.0       83.3     3.8x
+  por acc_fma (aprox. /20)               15.6        4.2     3.8x
+acc_fma (acumulador ya reservado)        13.2        3.4     3.9x
+acc_reduce (suma de 20 productos)        32.0        9.9     3.2x
+acc_set                                   3.0        0.6     5.0x
+inv(1)                                   61.5       60.2     1.0x
+malloc+free 16-32 B (referencia)         27.2
+
+== 2. Polinomios de grado 20 en F_(2^127-1) (us, 16 entradas rotando)
+operación                           Poly<Fp> Poly<FpN2>   factor
+producto 19x19 (escolar)                 7.18       1.79     4.0x
+resto 38 / 20 (escolar)                  8.61       2.05     4.2x
+gcd grado 19 / 20                       36.95      20.19     1.8x
+pow_mod exponente q (127 bits)        4094.73    1004.87     4.1x
+pow_mod exponente (q-1)/2             3899.30     964.86     4.0x
+
+== 3. factor() de 16 polinomios mónicos aleatorios de grado 20 en F_(2^127-1)
+  grados de los factores: [119] [14510] [218] [11189] [2513] [2810] [122456] [416] [11113346] [812] [11369] [119] [112511] [11414] [20] [12413]
+  factor() total (us/llamada): Poly<Fp> 9943.9   Poly<FpN2> 2782.4   factor 3.57x
+  Desglose (ms por llamada, media de 48):
+  Fp         total    9.877 ms | radical 0.061 (1%) | DDF pow_mod 9.177 (93%) | DDF composición 0.028 (0%) | DDF MCD 0.245 (2%) | DDF otros 0.022 (0%) | EDF pow_mod 0.312 (3%) | EDF resto 0.008 (0%) | multiplicidad 0.023 (0%) |
+             por llamada: 2.50 pow_mod DDF, 4.56 composiciones, 7.06 MCD DDF, 0.94 pow_mod EDF (0.62 divisiones)
+  FpN2       total    2.682 ms | radical 0.035 (1%) | DDF pow_mod 2.336 (87%) | DDF composición 0.007 (0%) | DDF MCD 0.147 (5%) | DDF otros 0.009 (0%) | EDF pow_mod 0.134 (5%) | EDF resto 0.005 (0%) | multiplicidad 0.007 (0%) |
+             por llamada: 2.50 pow_mod DDF, 4.56 composiciones, 7.06 MCD DDF, 0.94 pow_mod EDF (0.62 divisiones)
+  Recuento por llamada (media de 16; Fp contado con FpCont):
+  fase                  mul  add/sub    inv  acc_fma  reduce     set |  res. GMP   new Fp |  new FpN2 | medido ms  arit.est
+  radical               148       84     28      420     314     314 |      1389       82 |        82 |     0.061     0.042
+  DDF pow_mod         11144    11144    665   417056   46064   22965 |    177115     3387 |      3387 |     9.177     8.133
+  DDF composición        0        0      0     1456      83       0 |       299        9 |         9 |     0.028     0.022
+  DDF MCD               255      255    128     2188    1335    1335 |      5135      385 |       385 |     0.245     0.174
+  DDF otros              89       45     10      281     111     111 |       574       30 |        30 |     0.022     0.019
+  EDF pow_mod           534      534    266     5109    2669    1333 |      9893     1340 |      1340 |     0.312     0.361
+  EDF resto              53        4      9        6       7       7 |       130       27 |        27 |     0.008     0.009
+  multiplicidad          98       98      7      306     129     129 |       785       31 |        31 |     0.023     0.019
+  TOTAL               12321    12165   1113   426821   50711   26193 |    195319     5290 |      5290 |     9.877     8.778
+  Reservas de GMP en Poly<FpN2>: 956 por llamada.  Estimación de reservas en Poly<Fp>: 195319 x 27.2 ns (malloc+free) = 5.322 ms; operator new: 5290 x 27.2 ns = 0.144 ms
+
+== 4. DDF (us/llamada): distinct_degree de la librería frente a componer desde el primer paso
+  Poly<Fp>:   librería 9469.6   compone 4831.4   (1.96x)
+  Poly<FpN2>: librería 2402.7   compone 1314.8   (1.83x)
+
+== 5. Escenario fp127.factor.d20 (la entrada de compare_libs.py; grados: 1 1 2 6 10)
+  factor() total (ms): Poly<Fp> 11.42   Poly<FpN2> 3.16   (3.61x)
+  DDF (ms): Poly<Fp> librería 11.14 / compone 4.99;  Poly<FpN2> librería 2.93 / compone 1.30
+  Estimación FpN2 + DDF que compone: 1.53 ms (factor FpN2 - DDF librería + DDF compone)
+
+== 1. Elementos de F_p, p = 1267650600228229401496703205653 (ns por operación, 1024 entradas rotando)
+operación                           Fp (mpz)       FpN2   factor
+mul (devuelve elemento nuevo)            43.6       11.4     3.8x
+add                                      20.1        1.2    16.5x
+sub                                      17.9        1.0    18.0x
+inv                                     413.1      410.2     1.0x
+mul en cadena (latencia)                 55.1       12.7     4.3x
+20 acc_fma + acc_reduce                 327.0       85.0     3.8x
+  por acc_fma (aprox. /20)               16.4        4.2     3.8x
+acc_fma (acumulador ya reservado)        14.5        3.6     4.0x
+acc_reduce (suma de 20 productos)        31.4        8.6     3.7x
+acc_set                                   3.2        0.7     4.9x
+inv(1)                                   66.2       64.1     1.0x
+malloc+free 16-32 B (referencia)         28.1
+
+== 1. Elementos de F_p, p = 18446744073709551629 (ns por operación, 1024 entradas rotando)
+operación                           Fp (mpz)       FpN2   factor
+mul (devuelve elemento nuevo)            40.8       11.6     3.5x
+add                                      23.1        1.2    18.8x
+sub                                      21.7        1.0    21.2x
+inv                                     182.8      175.0     1.0x
+mul en cadena (latencia)                 45.7       12.5     3.7x
+20 acc_fma + acc_reduce                 269.5       84.8     3.2x
+  por acc_fma (aprox. /20)               13.5        4.2     3.2x
+acc_fma (acumulador ya reservado)        11.8        3.6     3.3x
+acc_reduce (suma de 20 productos)        33.8        8.5     4.0x
+acc_set                                   3.0        0.6     4.7x
+inv(1)                                   64.8       63.1     1.0x
+malloc+free 16-32 B (referencia)         28.1
+
+Comprobaciones fallidas: 0   (suma de control 14069)
+
+########## .venv/Scripts/python.exe bench/experimentos/fase6/fpn/flint_fp127.py   (referencia FLINT, misma entrada que compare_libs)
+python-flint 0.9.0: factor() fp127.factor.d20 (grados [1, 1, 2, 6, 10]): 3.12 ms

@@ -35,6 +35,7 @@ Cobertura C++ (tests C++ + pytest), tras la fase 3: 94,4 % de líneas, 98,4 % de
 ## Pendiente
 
 - Fase 5 hecha (propuestas 1 a 3 de [optimizacion/investigacion-fase5.md](optimizacion/investigacion-fase5.md)); quedan las propuestas 4 a 10.
+- **Regresión de `gcd_ext` en Fp64 desde grado 2048** (2,6x más lento que el clásico; tras el primer `hgcd` sigue con `paso` sobre `Poly`). Corrección y resto de propuestas en [optimizacion/investigacion-fase6.md](optimizacion/investigacion-fase6.md).
 - Half-GCD: acelerar los productos de matrices; con el Euclides en sitio solo gana desde grado 2048-4096 en Fp64.
 - Repetir la suite y la comparativa de la fase 5 enchufado (se midieron con batería).
 - Investigar el `gcd` de grado 500 en Fp64, a 0,78x en la suite, que no se reproduce aislado.

@@ -1,0 +1,112 @@
+# fase 6, tema ntt (prototipos fuera de la librería)
+# hilos alcp: 1 (debe ser 1: ALCP_THREADS=1)   AVX2 en esta CPU: sí
+# 16 entradas rotando, mejor de 3 tandas de >= 30 ms
+
+# comprobación contra fft::convolve (p = 998244353 y p = 4611615649683210241): 572 pruebas, 0 distintas
+
+== Producto de grado 100 (L = 201, n = 2^8 = 256) ==
+Poly<Fp64> a*b (librería)                  6.2 us
+fft::convolve (librería)                   6.3 us
+copia de convolve_word                     6.3 us
+-- 1) perfil por partes (us por convolución; x3 = dos directas + una inversa)
+  reservas + conversión de entrada       0.1 us
+  permutación t.swaps         x3         0.2 us  (0.1 us cada una)
+  etapa half = 1              x3         0.8 us  (2.05 ns/mariposa)
+  etapa half = 2              x3         0.7 us  (1.76 ns/mariposa)
+  resto de etapas ( 6)        x3         3.6 us  (1.56 ns/mariposa)
+  normalización final directa x2         0.3 us
+  producto punto a punto (mul_mod)       0.4 us  (1.62 ns/elemento)
+  escalado por n^-1 (inversa)            0.2 us
+  vector de salida                       0.1 us
+  suma de las partes                     6.4 us  (convolve medido: 6.3 us)
+  word::transform entera                 1.8 us  (1.77 ns/mariposa)
+  [alternativa] punto a punto Montgomery + n^-1 fusionado: 0.4 us (1.74 ns/elemento)
+-- 2) transformada directa suelta (us; ns/mariposa)
+  librería (swaps + DIT + norm.)         1.8 us  1.77
+  A: DIF radix 2 sin permutación         1.9 us  1.82
+  B4: DIF radix 4                        1.4 us  1.32
+  B4e: DIF radix 4, len=4 especial       1.2 us  1.18
+  B4e inversa DIT (sin norm.)            1.2 us  1.19
+  AVX2: DIF 8x32 bits                    0.2 us  0.22
+  AVX2: DIT 8x32 bits (sin norm.)        0.2 us  0.22
+-- 2) convolución completa (us; aceleración frente a fft::convolve)
+  A   DIF+DIT sin permutación            6.2 us  1.02x
+  A+M + Montgomery fusionado             6.2 us  1.02x
+  B4  radix 4 + M                        4.8 us  1.32x
+  B4e radix 4 + len=4 especial + M       4.2 us  1.49x
+  AVX AVX2 8x32 (DIF+DIT+Montgomery)      0.9 us  7.10x
+
+== Producto de grado 1000 (L = 2001, n = 2^11 = 2048) ==
+Poly<Fp64> a*b (librería)                 69.5 us
+fft::convolve (librería)                  67.7 us
+copia de convolve_word                    68.6 us
+-- 1) perfil por partes (us por convolución; x3 = dos directas + una inversa)
+  reservas + conversión de entrada       0.7 us
+  permutación t.swaps         x3         2.4 us  (0.8 us cada una)
+  etapa half = 1              x3         6.3 us  (2.04 ns/mariposa)
+  etapa half = 2              x3         5.4 us  (1.76 ns/mariposa)
+  resto de etapas ( 9)        x3        46.3 us  (1.68 ns/mariposa)
+  normalización final directa x2         2.3 us
+  producto punto a punto (mul_mod)       3.5 us  (1.73 ns/elemento)
+  escalado por n^-1 (inversa)            1.6 us
+  vector de salida                       0.5 us
+  suma de las partes                    68.9 us  (convolve medido: 67.7 us)
+  word::transform entera                20.7 us  (1.83 ns/mariposa)
+  [alternativa] punto a punto Montgomery + n^-1 fusionado: 3.2 us (1.54 ns/elemento)
+-- 2) transformada directa suelta (us; ns/mariposa)
+  librería (swaps + DIT + norm.)        20.7 us  1.83
+  A: DIF radix 2 sin permutación        18.5 us  1.64
+  B4: DIF radix 4                       14.2 us  1.26
+  B4e: DIF radix 4, len=4 especial      12.9 us  1.15
+  B4e inversa DIT (sin norm.)           13.8 us  1.22
+  AVX2: DIF 8x32 bits                    2.3 us  0.20
+  AVX2: DIT 8x32 bits (sin norm.)        2.2 us  0.20
+-- 2) convolución completa (us; aceleración frente a fft::convolve)
+  A   DIF+DIT sin permutación           63.3 us  1.07x
+  A+M + Montgomery fusionado            63.3 us  1.07x
+  B4  radix 4 + M                       51.1 us  1.32x
+  B4e radix 4 + len=4 especial + M      45.3 us  1.49x
+  AVX AVX2 8x32 (DIF+DIT+Montgomery)      8.4 us  8.02x
+
+== Producto de grado 10000 (L = 20001, n = 2^15 = 32768) ==
+Poly<Fp64> a*b (librería)               1841.9 us
+fft::convolve (librería)                1934.8 us
+copia de convolve_word                  1850.7 us
+-- 1) perfil por partes (us por convolución; x3 = dos directas + una inversa)
+  reservas + conversión de entrada       9.1 us
+  permutación t.swaps         x3       299.7 us  (99.9 us cada una)
+  etapa half = 1              x3        93.1 us  (1.89 ns/mariposa)
+  etapa half = 2              x3        83.9 us  (1.71 ns/mariposa)
+  resto de etapas (13)        x3      1025.7 us  (1.61 ns/mariposa)
+  normalización final directa x2        35.6 us
+  producto punto a punto (mul_mod)      55.1 us  (1.68 ns/elemento)
+  escalado por n^-1 (inversa)           25.3 us
+  vector de salida                       4.7 us
+  suma de las partes                  1632.3 us  (convolve medido: 1934.8 us)
+  word::transform entera               523.8 us  (2.13 ns/mariposa)
+  [alternativa] punto a punto Montgomery + n^-1 fusionado: 48.1 us (1.47 ns/elemento)
+-- 2) transformada directa suelta (us; ns/mariposa)
+  librería (swaps + DIT + norm.)       523.8 us  2.13
+  A: DIF radix 2 sin permutación       388.2 us  1.58
+  B4: DIF radix 4                      293.4 us  1.19
+  B4e: DIF radix 4, len=4 especial     285.2 us  1.16
+  B4e inversa DIT (sin norm.)          298.2 us  1.21
+  AVX2: DIF 8x32 bits                   53.0 us  0.22
+  AVX2: DIT 8x32 bits (sin norm.)       54.8 us  0.22
+-- 2) convolución completa (us; aceleración frente a fft::convolve)
+  A   DIF+DIT sin permutación         1261.2 us  1.53x
+  A+M + Montgomery fusionado          1274.0 us  1.52x
+  B4  radix 4 + M                     1025.5 us  1.89x
+  B4e radix 4 + len=4 especial + M     964.5 us  2.01x
+  AVX AVX2 8x32 (DIF+DIT+Montgomery)    181.3 us  10.67x
+
+== Salto de potencia de 2 (librería): L = 2048 frente a 2049, 4096 frente a 4097 ==
+  L =  2048      63.9 us
+  L =  2049     134.6 us
+  L =  4096     146.1 us
+  L =  4097     321.9 us
+
+# sumidero 6502082757673376
+# referencia python-flint 0.9.0 y alcp desde Python, F_998244353
+grado  1000: flint nmod_poly mul      70.9 us   alcp (Python)      61.8 us   alcp/flint  0.87x
+grado 10000: flint nmod_poly mul    1656.7 us   alcp (Python)    1567.0 us   alcp/flint  0.95x
