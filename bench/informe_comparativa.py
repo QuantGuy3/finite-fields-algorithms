@@ -8,8 +8,8 @@ import math
 import sys
 from pathlib import Path
 
-ORDEN = ["alcp_original", "alcp_native", "alcp_native_1h", "alcp", "flint", "galois", "sympy", "sympy_flint"]
-CORTO = {"alcp_original": "alcp original", "alcp_native": "alcp final", "alcp_native_1h": "alcp final, 1 hilo",
+ORDEN = ["alcp_original", "alcp_fase3", "alcp_native", "alcp_native_1h", "alcp", "flint", "galois", "sympy", "sympy_flint"]
+CORTO = {"alcp_original": "alcp original", "alcp_fase3": "alcp fase 3, 1 hilo", "alcp_native": "alcp fase 4", "alcp_native_1h": "alcp fase 4, 1 hilo",
          "alcp": "alcp paquete", "flint": "python-flint", "galois": "galois", "sympy": "SymPy puro",
          "sympy_flint": "SymPy + FLINT"}
 

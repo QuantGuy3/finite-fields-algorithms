@@ -9,6 +9,8 @@ python bench/compare_libs.py --json bench/results/comparativa/comparativa.json
 python bench/informe_comparativa.py bench/results/comparativa/comparativa.json docs/optimizacion/comparativa-tabla.md
 ```
 
+> **Actualización (fase 4).** La tabla completa, [comparativa-tabla.md](comparativa-tabla.md), ya incluye la fase 4, la variante «alcp fase 3, 1 hilo» y dos escenarios de grado alto (16 en total). Con un hilo, la distancia media a FLINT pasa de 7,2x (fase 3) a 5,9x (fase 4). El análisis está en [fase4.md](fase4.md). El texto de abajo describe la comparativa de la fase 3.
+
 ## 1. Qué se compara
 
 | Variante | Qué es |

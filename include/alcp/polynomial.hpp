@@ -274,7 +274,22 @@ public:
     // ---- Euclidean division ------------------------------------------------
     // Returns (q, r) with *this = q*o + r and (r == 0 or deg r < deg o).
     // Dividir por el polinomio cero lanza alcp::division_by_zero.
+    // Despacho (fase 4): con divisor y cociente grandes (prefer_newton) se usa
+    // la división por inversión de Newton (divmod_newton); si no, la división
+    // escolar de siempre (divmod_school).  El cociente y el resto son únicos,
+    // así que el resultado es idéntico por los dos caminos.
     std::pair<Poly, Poly> divmod(const Poly& o) const {
+        require_same_field(o);
+        if (o.is_zero()) throw division_by_zero("division by zero polynomial");
+        if (degree() < o.degree()) return {zero(*K_), *this};
+        if (prefer_newton(*K_, static_cast<std::size_t>(o.degree()),
+                          static_cast<std::size_t>(degree() - o.degree()) + 1))
+            return divmod_newton(o);
+        return divmod_school(o);
+    }
+
+    // División escolar (el algoritmo original, port de divmod de cuerpos_finitos.py).
+    std::pair<Poly, Poly> divmod_school(const Poly& o) const {
         require_same_field(o);
         if (o.is_zero()) throw division_by_zero("division by zero polynomial");
         if (degree() < o.degree()) return {zero(*K_), *this};
@@ -321,6 +336,60 @@ public:
             --dr;
         }
         return {Poly(*K_, std::move(q)), Poly(*K_, std::move(r))};
+    }
+
+    // División por inversión de Newton (fase 4), con las piezas de la
+    // Práctica 3 (algoritmos_rapidos.py): con m = deg f, n = deg g y
+    // d = m - n, los coeficientes invertidos cumplen
+    //     rev(q) = rev(f) · rev(g)^{-1}   (mod x^{d+1}),
+    // donde rev(g)^{-1} es el inverso de una serie de potencias, que se calcula
+    // con la iteración de Newton de fp_toep_inf_inv (inverse_series).  Después,
+    // r = f - g·q.  Coste O(M(d) + M(n, d)) en lugar de O(n·d).
+    std::pair<Poly, Poly> divmod_newton(const Poly& o) const {
+        require_same_field(o);
+        if (o.is_zero()) throw division_by_zero("division by zero polynomial");
+        if (degree() < o.degree()) return {zero(*K_), *this};
+        const std::size_t d1 = static_cast<std::size_t>(degree() - o.degree()) + 1;
+        return divmod_with_inverse(o, inverse_series(*K_, reversed_head(o, d1), d1));
+    }
+
+    // Inverso de la serie de potencias a módulo x^n (a[0] != 0): la iteración
+    // de Newton de fp_toep_inf_inv / fq_toep_inf_inv (Práctica 3) con la misma
+    // recursión, k = ceil(n/2) y x_n = x_k·(2 - a·x_k) mod x^n.  Solo se usan
+    // los n primeros coeficientes de a (los demás no influyen módulo x^n).
+    // Los productos internos no adelantan el cálculo de la raíz de la FFT
+    // (mul_no_rng), para conservar la secuencia del generador aleatorio.
+    static std::vector<Elem> inverse_series(const Field& K, const std::vector<Elem>& a, std::size_t n) {
+        if (n == 0) return {};
+        if (a.empty() || K.is_zero(a[0]))
+            throw division_by_zero("inverse_series: a[0] es cero (serie no invertible)");
+        if (n == 1) return {K.inv(a[0])};
+        const std::size_t k = (n + 1) / 2;
+        std::vector<Elem> xk = inverse_series(K, a, k);
+        Poly X(K, xk);
+        Poly A(K, std::vector<Elem>(a.begin(), a.begin() + static_cast<std::ptrdiff_t>(std::min(n, a.size()))));
+        Poly T(K, head(K, A.mul_no_rng(X), n));
+        Poly R = constant(K, K.add(K.one(), K.one())) - T;   // 2 - T
+        return head(K, R.mul_no_rng(X), n);
+    }
+
+    // División de *this entre o dado ginv = rev(o)^{-1} mod x^{d1}, con
+    // d1 = deg(*this) - deg(o) + 1 (deg(*this) >= deg(o)): sirve para dividir
+    // muchas veces entre el mismo o calculando el inverso una sola vez (lo
+    // que hace Reducer).  Precondición: ginv.size() == d1 exactamente.
+    std::pair<Poly, Poly> divmod_with_inverse(const Poly& o, const std::vector<Elem>& ginv) const {
+        const Field& K = *K_;
+        const std::size_t m1 = c_.size(), d1 = ginv.size();
+        std::vector<Elem> frev;
+        frev.reserve(d1);
+        for (std::size_t i = 0; i < d1; ++i) frev.push_back(c_[m1 - 1 - i]);
+        const Poly F(K, std::move(frev)), G(K, ginv);
+        const Poly FG = F.mul_no_rng(G);
+        std::vector<Elem> qrev = head(K, FG, d1);
+        std::reverse(qrev.begin(), qrev.end());
+        Poly q(K, std::move(qrev));
+        Poly r = *this - o.mul_no_rng(q);
+        return {std::move(q), std::move(r)};
     }
     Poly operator/(const Poly& o) const { return divmod(o).first; }
     Poly operator%(const Poly& o) const { return divmod(o).second; }
@@ -428,16 +497,57 @@ public:
     }
 
     // a^k mod m.
+    // Fase 4: las reducciones módulo m de los productos (grado <= 2·deg m - 2)
+    // usan un Reducer, que precalcula UNA vez el inverso de rev(m) si conviene
+    // la división de Newton; si no, es el % de siempre.  Los productos y la
+    // cadena de cuadrados no cambian.
     static Poly pow_mod(Poly a, BigInt k, const Poly& m) {
+        a.require_same_field(m);
+        if (m.is_zero()) throw division_by_zero("division by zero polynomial");
+        return pow_mod(std::move(a), std::move(k), Reducer(m));
+    }
+
+    // Reducción repetida módulo un m fijo (ver pow_mod).  La primera vez que
+    // prefer_newton lo aconseja (con el inverso amortizado), calcula y guarda
+    // rev(m)^{-1} mod x^{deg m}; desde entonces reduce(a) divide con ese
+    // inverso (a de grado <= 2·deg m - 1, el caso de los productos de
+    // pow_mod).  El cálculo es perezoso porque la decisión depende de que el
+    // cuerpo ya tenga tablas FFT, que los productos de pow_mod construyen.
+    class Reducer {
+    public:
+        explicit Reducer(const Poly& m) : m_(m) {}
+        const Poly& modulus() const { return m_; }
+        Poly reduce(const Poly& a) const {
+            const int n = m_.degree();
+            if (a.degree() < n) return a;
+            const std::size_t nn = static_cast<std::size_t>(n);
+            const std::size_t d1 = static_cast<std::size_t>(a.degree() - n) + 1;
+            if (d1 <= nn && prefer_newton(m_.field(), nn, d1, true)) {
+                if (inv_.empty()) inv_ = inverse_series(m_.field(), reversed_head(m_, nn), nn);
+                return a.divmod_with_inverse(
+                            m_, std::vector<Elem>(inv_.begin(), inv_.begin() + static_cast<std::ptrdiff_t>(d1)))
+                    .second;
+            }
+            return a.divmod_school(m_).second;
+        }
+    private:
+        Poly m_;
+        mutable std::vector<Elem> inv_;  // rev(m)^{-1} mod x^{deg m}, o vacío si aún no hace falta
+    };
+
+    // pow_mod con un Reducer ya construido (is_irreducible y distinct_degree
+    // reducen muchas veces módulo el mismo polinomio).
+    static Poly pow_mod(Poly a, BigInt k, const Reducer& red) {
+        const Poly& m = red.modulus();
         a.require_same_field(m);
         const Field& K = a.field();
         if (k < 0) { a = inv_mod(a, m); k = -k; }
-        Poly result = one(K) % m;
+        Poly result = red.reduce(one(K));
         a = a % m;
         while (k > 0) {
-            if (mpz_odd_p(k.get_mpz_t())) result = (result * a) % m;
+            if (mpz_odd_p(k.get_mpz_t())) result = red.reduce(result * a);
             k >>= 1;
-            if (k > 0) a = (a * a) % m;
+            if (k > 0) a = red.reduce(a * a);
         }
         return result;
     }
@@ -446,23 +556,26 @@ public:
     // f de grado n es irreducible sobre F_q  <=>  no tiene ningún factor
     // irreducible de grado i <= n/2  <=>  gcd(f, x^{q^i} - x) = 1 para todo
     // i = 1..floor(n/2) (x^{q^i} - x es el producto de todos los irreducibles
-    // mónicos de grado divisor de i).  Tras el bucle se comprueba además que
-    // x^{q^n} == x (mod f), condición necesaria que con lo anterior es
-    // redundante pero inofensiva.  (No es el test de Rabin, que usa los
+    // mónicos de grado divisor de i).  (No es el test de Rabin, que usa los
     // divisores primos de n.)
+    // Fase 4: el original (y la práctica de Python) comprobaba además, tras el
+    // bucle, que x^{q^n} == x (mod f) calculando esa potencia desde cero.  Con
+    // el bucle completo esa condición es redundante (lo anterior ya prueba la
+    // irreducibilidad) y costaba unos dos tercios del tiempo con entradas
+    // irreducibles: se suprime.  Las reducciones usan un Reducer (pow_mod).
     bool is_irreducible() const {
         const int n = degree();
         if (n <= 0) return false;
         const BigInt q = K_->cardinality();
         Poly f = *this;
         Poly x = variable(*K_);
+        const Reducer red(f);
         Poly H = x % f;                       // H = x^{q^0}
         for (int i = 1; i <= n / 2; ++i) {
-            H = pow_mod(H, q, f);             // H = x^{q^i} (mod f)
+            H = pow_mod(H, q, red);           // H = x^{q^i} (mod f)
             if (gcd(f, H - x).degree() != 0) return false;
         }
-        Poly Hn = pow_mod(x, ipow(q, static_cast<unsigned long>(n)), f);
-        return (Hn - x) % f == zero(*K_);
+        return true;
     }
 
     // ---- factorization (Cantor-Zassenhaus) ---------------------------------
@@ -529,14 +642,16 @@ public:
         Poly g = monic();
         Poly x = variable(K);
         Poly H = x % g;  // x^{q^0}
+        Reducer red(g);  // fase 4: inverso de rev(g) precalculado (ver pow_mod)
         int d = 1;
         while (g.degree() >= 2 * d) {
-            H = pow_mod(H, q, g);            // H = x^{q^d} (mod g)
+            H = pow_mod(H, q, red);          // H = x^{q^d} (mod g)
             Poly hd = gcd(H - x, g);
             if (hd.degree() > 0) {
                 out.emplace_back(d, hd.monic());
                 g = g / hd;
                 H = H % g;
+                red = Reducer(g);
             }
             ++d;
         }
@@ -715,6 +830,76 @@ private:
             case fft::Backend::Generic:
             default: return small >= 64 || (small >= 32 && large <= 2 * small);
         }
+    }
+
+    // ---- División de Newton (fase 4) ----------------------------------------
+    // ¿Conviene la división de Newton para un divisor de grado n y un cociente
+    // de d1 coeficientes?  La escolar (con acumulación perezosa) cuesta ~n·d1
+    // productos de elementos; Newton, unos pocos productos de polinomios de
+    // tamaño max(n, d1): 2 con el inverso ya calculado (`amortizado`, Reducer)
+    // y unos 6 si cada división lo calcula (divmod).  Solo compensa con
+    // productos subcuadráticos rápidos, y el punto de corte depende de si hay
+    // FFT y de lo que cueste cada producto de elementos.  Umbrales medidos con
+    // bench/calibra_newton.cpp en Zen 3 CON ENTRADAS VARIADAS (con una entrada
+    // repetida el predictor de saltos acelera la NTT hasta 3 veces y Newton
+    // parece mejor de lo que es; ver docs/optimizacion/fase4.md):
+    //   * Fp64 (palabras): con NTT, 512 amortizado y 1536 aislada; sin NTT
+    //     (Karatsuba), 1536 amortizado y nunca aislada.
+    //   * Fp (GMP): con NTT multi-limb, 256 amortizado y 768 aislada; sin NTT,
+    //     768 amortizado y 1536 aislada.
+    //   * F_q (vectores de e coeficientes): el producto de elementos cuesta
+    //     ~e^2 y Karatsuba ahorra más cuanto más caro es: ~3500/e amortizado y
+    //     ~6000/e aislada (F_256: 437 / 750; F_(3^30): 116 / 200; F_9: 1750 /
+    //     3000).  Con FFT de F_q (genérica, lenta con elementos baratos: en
+    //     F_((2^61-1)^2) Newton aún perdía a 2048) el umbral se duplica.
+    static constexpr std::size_t kNunca = static_cast<std::size_t>(-1);
+    static bool prefer_newton(const Field& K, std::size_t n, std::size_t d1, bool amortizado = false) {
+        const std::size_t small = std::min(n, d1);
+        if (small < 64) return false;  // por debajo, la escolar gana en todos los cuerpos medidos
+        const bool fft = !K.fft_cache_.empty() && fft::fft_exponent(K, 2 * std::max(n, d1)) >= 0;
+        std::size_t umbral = kNunca;
+        if constexpr (fft::NativeWordField<Field>) {
+            umbral = fft ? (amortizado ? 512 : 1536) : (amortizado ? 1536 : kNunca);
+        } else if constexpr (std::is_same_v<Elem, BigInt>) {
+            umbral = fft ? (amortizado ? 256 : 768) : (amortizado ? 768 : 1536);
+        } else if constexpr (requires { K.extension_degree(); }) {
+            const std::size_t e = std::max<std::size_t>(1, K.extension_degree());
+            umbral = (amortizado ? 3500 : 6000) / e * (fft ? 2 : 1);
+        }
+        return small >= umbral;
+    }
+
+    // Los d1 primeros coeficientes de rev(g) (de mayor a menor grado de g),
+    // rellenando con ceros si d1 > deg g + 1.
+    static std::vector<Elem> reversed_head(const Poly& g, std::size_t d1) {
+        const Field& K = g.field();
+        std::vector<Elem> r;
+        r.reserve(d1);
+        const std::size_t n1 = g.c_.size();
+        for (std::size_t j = 0; j < d1; ++j) r.push_back(j < n1 ? g.c_[n1 - 1 - j] : K.zero());
+        return r;
+    }
+
+    // Los n primeros coeficientes de P (rellenando con ceros).
+    static std::vector<Elem> head(const Field& K, const Poly& P, std::size_t n) {
+        std::vector<Elem> r(P.c_.begin(), P.c_.begin() + static_cast<std::ptrdiff_t>(std::min(n, P.c_.size())));
+        r.resize(n, K.zero());
+        return r;
+    }
+
+    // Producto con la regla Auto pero SIN adelantar el cálculo de la raíz de la
+    // FFT: solo usa la FFT si las tablas del cuerpo ya existen.  Los productos
+    // de la división de Newton no estaban en el original y no deben consumir el
+    // generador aleatorio en otro momento (ver mul).
+    Poly mul_no_rng(const Poly& o) const {
+        if (is_zero() || o.is_zero()) return zero(*K_);
+        const std::size_t na = c_.size(), nb = o.c_.size();
+        const std::size_t L = na + nb - 1, small = std::min(na, nb);
+        const bool use_fft = !K_->fft_cache_.empty() && fft::fft_exponent(*K_, L) >= 0 &&
+                             prefer_fft(*K_, small, std::max(na, nb), L);
+        if (use_fft) return Poly(*K_, fft::convolve(*K_, c_, o.c_));
+        if (small >= kKaratsubaCutoff) return mul_karatsuba(o);
+        return mul_school(o);
     }
 
     // ---- Karatsuba sobre vistas -------------------------------------------

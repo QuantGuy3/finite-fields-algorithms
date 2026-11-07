@@ -37,6 +37,7 @@ Trabajo sobre el port C++ y el binding pybind11. Las prácticas originales de `p
 | Ejemplos | Recorrido didáctico por la librería | [python-bindings/ejemplos.py](python-bindings/ejemplos.py) |
 | Velocidad | Mismos algoritmos, 24,4x más rápido de media en la suite C++ (128 escenarios) y 9,7x en el módulo Python | [docs/optimizacion/README.md](docs/optimizacion/README.md) |
 | Comparativa | Frente a python-flint, galois y SymPy | [docs/optimizacion/comparativa.md](docs/optimizacion/comparativa.md) |
+| Fase 4 (nivel A) | División de Newton, inverso en F_q por Euclides y test de irreducibilidad sin la comprobación redundante: 27,7x frente al original y distancia media a FLINT de 7,2x a 5,9x | [docs/optimizacion/fase4.md](docs/optimizacion/fase4.md) |
 
 ### Uso rápido
 

@@ -13,6 +13,8 @@ Librerías (las que no estén instaladas se omiten y se indica):
 
 * ``alcp_original``: el binding del código ORIGINAL (etiqueta ``baseline-original``),
   para ver cuánto ha avanzado la fase 3.
+* ``alcp_fase3``: el binding de la fase 3 (rama ``mejoras-cpp-pybind`` antes de la
+  fase 4), con un hilo, para medir lo que aporta la fase 4 frente a ``alcp_native_1h``.
 * ``alcp_native``: el binding pybind11 directo del núcleo C++ de este repositorio.
 * ``alcp``: el paquete Python de alto nivel (``GF``, ``K["x"]``) sobre el anterior.
 * ``flint``: python-flint (FLINT 3, en C).  ``nmod_poly`` cuando p cabe en 64 bits
@@ -48,16 +50,23 @@ REPO = BENCH_DIR.parent
 sys.path.insert(0, str(BENCH_DIR))
 sys.path.insert(0, str(REPO / "python-bindings"))
 
-MODULO_ORIGINAL = (REPO / "build" / "bench" / "final-mod-ref" / "module").resolve()
+# Módulos de versiones anteriores, compilados con ``run_bench.py module``:
+#   final-mod-ref: cabeceras y bindings.cpp de baseline-original (bench/results/fase3/scripts/final.sh)
+#   fase3-mod:     cabeceras y bindings.cpp de mejoras-cpp-pybind antes de la fase 4
+MODULOS_EXTERNOS = {
+    "alcp_original": (REPO / "build" / "bench" / "final-mod-ref" / "module").resolve(),
+    "alcp_fase3": (REPO / "build" / "bench" / "fase3-mod" / "module").resolve(),
+}
 P_NTT = 998244353
 P_M127 = 2**127 - 1
 # Módulo de AES para F_(2^8) y módulo fijo de F_(3^30) (el de bench_suite.cpp).
 MOD_2_8 = [1, 1, 0, 1, 1, 0, 0, 0, 1]
 MOD_3_30 = [2, 0, 2, 0, 1, 0, 1, 1, 1, 1, 0, 0, 2, 1, 1, 0, 2, 2, 1, 0, 1, 1, 0, 1, 0, 2, 1, 0, 1, 0, 1]
 
-LIBRERIAS = ["alcp_original", "alcp_native", "alcp_native_1h", "alcp", "flint", "galois", "sympy", "sympy_flint"]
+LIBRERIAS = ["alcp_original", "alcp_fase3", "alcp_native", "alcp_native_1h", "alcp", "flint", "galois", "sympy", "sympy_flint"]
 NOMBRES = {
     "alcp_original": "alcp original (antes de la fase 3)",
+    "alcp_fase3": "alcp fase 3, 1 hilo",
     "alcp_native": "alcp (binding C++)",
     "alcp_native_1h": "alcp (binding C++, 1 hilo)",
     "alcp": "alcp (paquete Python)",
@@ -128,6 +137,22 @@ def construir_escenarios() -> list[Escenario]:
     @add("fp30.gcd.d1000", "F_998244353", "mcd de dos polinomios de grado 1000", P_NTT, 1, None, "gcd")
     def _(rng, q):
         return [_aleatorio(rng, q, 1000), _aleatorio(rng, q, 1000)]
+
+    # Grado alto (fase 4): aquí actúa la división de Newton con el inverso amortizado.
+    @add("fp30.irred.d400", "F_998244353", "test de irreducibilidad de un polinomio IRREDUCIBLE de grado 400",
+         P_NTT, 1, None, "irred")
+    def _(rng, q):
+        from alcp import alcp_native as nat
+        F = nat.Fp(P_NTT)
+        while True:
+            c = _aleatorio(rng, q, 400, monico=True)
+            if F.poly(c).is_irreducible():
+                return [c]
+
+    @add("fp30.factor.d300", "F_998244353", "factor() de un polinomio mónico aleatorio de grado 300",
+         P_NTT, 1, None, "factor")
+    def _(rng, q):
+        return [_aleatorio(rng, q, 300, monico=True)]
 
     # ---- F_101 (primo pequeño): factorización e irreducibilidad ----
     @add("fp101.factor.d40", "F_101", "factor() de un producto conocido de grado 40 con multiplicidades",
@@ -217,15 +242,17 @@ def adaptador_alcp_native(sc: Escenario, args, nat=None):
                    gcd=lambda f, g: f.gcd(g), divmod_=lambda f, g: f.divmod(g))
 
 
-def adaptador_alcp_original(sc: Escenario, args):
-    """Módulo compilado desde baseline-original (bench/results/fase3/scripts/final.sh lo genera
-    en build/bench/final-mod-ref/module): misma API básica que el binding actual."""
-    import importlib
-    sys.path.insert(0, str(MODULO_ORIGINAL))
-    nat = importlib.import_module("alcp_native")
-    if not Path(nat.__file__).resolve().is_relative_to(MODULO_ORIGINAL):
-        raise ImportError("no se encontró el módulo original en " + str(MODULO_ORIGINAL))
-    return adaptador_alcp_native(sc, args, nat)
+def adaptador_externo(lib: str):
+    """Adaptador para un módulo de otra versión (MODULOS_EXTERNOS), con la misma API básica."""
+    def adaptador(sc: Escenario, args):
+        import importlib
+        carpeta = MODULOS_EXTERNOS[lib]
+        sys.path.insert(0, str(carpeta))
+        nat = importlib.import_module("alcp_native")
+        if not Path(nat.__file__).resolve().is_relative_to(carpeta):
+            raise ImportError("no se encontró el módulo en " + str(carpeta))
+        return adaptador_alcp_native(sc, args, nat)
+    return adaptador
 
 
 def adaptador_alcp(sc: Escenario, args):
@@ -296,7 +323,8 @@ def adaptador_sympy(sc: Escenario, args):
 
 
 ADAPTADORES = {
-    "alcp_original": adaptador_alcp_original,
+    "alcp_original": adaptador_externo("alcp_original"),
+    "alcp_fase3": adaptador_externo("alcp_fase3"),
     "alcp_native": adaptador_alcp_native,
     "alcp_native_1h": adaptador_alcp_native,
     "alcp": adaptador_alcp,
@@ -368,6 +396,8 @@ def version(lib: str) -> str:
     try:
         if lib == "alcp_original":
             return "baseline-original (67331a2)"
+        if lib == "alcp_fase3":
+            return "mejoras-cpp-pybind antes de la fase 4 (ALCP_THREADS=1)"
         if lib.startswith("alcp"):
             return "rama local" + (" (ALCP_THREADS=1)" if lib.endswith("_1h") else "")
         mod = {"flint": "flint", "galois": "galois", "sympy": "sympy", "sympy_flint": "sympy"}[lib]
@@ -387,7 +417,7 @@ def entorno(lib: str) -> dict:
     env["SYMPY_GROUND_TYPES"] = "flint" if lib == "sympy_flint" else "python"
     env["PYTHONIOENCODING"] = "utf-8"
     # alcp paraleliza Karatsuba y la NTT; las demás librerías usan un solo hilo.
-    if lib == "alcp_native_1h":
+    if lib in ("alcp_native_1h", "alcp_fase3"):
         env["ALCP_THREADS"] = "1"
     else:
         env.pop("ALCP_THREADS", None)
