@@ -8,11 +8,15 @@
 //      2^16 (hasta la capacidad FFT del cuerpo), con operandos equilibrados,
 //      desequilibrados y de un solo coeficiente, y con coeficientes todos p - 1.
 //   2. Cuerpos Fp64: F_998244353, F_7681, F_65537, F_193, F_257, F_577, F_17,
-//      F_5, F_3, F_2 y el primo de 62 bits 4179340454199820289; y Fp (GMP)
+//      F_5, F_3, F_2, F_1004535809 (< 2^30, cerca de la cota del camino AVX2),
+//      F_2013265921 (> 2^30: camino escalar) y el primo de 62 bits 4179340454199820289; y Fp (GMP)
 //      con 998244353 y el primo de 62 bits (comparten convolve_word).
 //   3. fft::transform (API pública, orden natural) sigue siendo la DFT: se
 //      compara con la definición en tamaños pequeños e ida y vuelta.
-//   4. Generador aleatorio en frío: el producto por FFT en un cuerpo recién
+//   4. Camino AVX2 (p < 2^30, n >= 16, si la CPU lo tiene) frente al camino
+//      escalar radix 4 forzado y frente a la convolución anterior; las tablas
+//      de 32 bits solo existen si el camino se usa.
+//   5. Generador aleatorio en frío: el producto por FFT en un cuerpo recién
 //      creado consume el generador igual que antes (lo único que lo consume es
 //      la primera llamada a fft::tables) y la división (mul_no_rng) en frío
 //      no construye tablas.
@@ -50,6 +54,21 @@ V conv_anterior(const Field& K, const V& A, const V& B) {
     return wa;
 }
 
+// Camino escalar radix 4 forzado: copia de las tablas sin la parte de 32 bits
+// (en una CPU con AVX2 fft::convolve usa el camino vectorial cuando p < 2^30 y
+// n >= 16).  B puede ser el mismo objeto que A (cuadrado).
+V conv_escalar(const Fp64& K, const V& A, const V& B) {
+    const std::size_t L = A.size() + B.size() - 1;
+    const unsigned long k = fft::ceil_log2(L);
+    FFTTables<u64> t = fft::tables(K, k);
+    t.word.w32 = Word32NTTTables{};
+    return fft::detail::convolve_word(t, A, B, std::size_t(1) << k, L);
+}
+
+bool usa_avx2(const Fp64& K, std::size_t L) {
+    return fft::tables(K, fft::ceil_log2(L)).word.w32.p != 0;
+}
+
 // Producto escolar directo (referencia independiente de la NTT).
 V school(u64 p, const V& A, const V& B) {
     V r(A.size() + B.size() - 1, 0);
@@ -80,7 +99,7 @@ std::vector<std::size_t> longitudes(const Fp64& K) {
 // ----------------------------------------------------- 1-2. Fp64: producto y cuadrado
 void test_fp64(const Fp64& K, const char* nombre) {
     const u64 p = K.modulus64();
-    int pruebas = 0, fallos = 0;
+    int pruebas = 0, fallos = 0, vectoriales = 0;
     auto cmp = [&](const V& r, const V& ref, const char* que, std::size_t L) {
         ++pruebas;
         if (r != ref) {
@@ -98,6 +117,8 @@ void test_fp64(const Fp64& K, const char* nombre) {
                 const V A = aleatorio(K, la, modo), B = aleatorio(K, lb, modo);
                 const V r = fft::convolve(K, A, B);
                 cmp(r, conv_anterior(K, A, B), "producto/anterior", L);
+                cmp(conv_escalar(K, A, B), r, "producto/escalar", L);
+                vectoriales += usa_avx2(K, L);
                 if (L <= 2048) cmp(r, school(p, A, B), "producto/escolar", L);
             }
             // Cuadrado (mismo objeto: una sola transformada directa).
@@ -107,6 +128,7 @@ void test_fp64(const Fp64& K, const char* nombre) {
                 const V copia = A;
                 cmp(r, conv_anterior(K, A, copia), "cuadrado/anterior", L);
                 cmp(r, fft::convolve(K, A, copia), "cuadrado/producto", L);
+                cmp(conv_escalar(K, A, A), r, "cuadrado/escalar", L);
                 if (L <= 2048) cmp(r, school(p, A, A), "cuadrado/escolar", L);
             }
         }
@@ -118,7 +140,8 @@ void test_fp64(const Fp64& K, const char* nombre) {
         ++pruebas;
         if (a * b != a.mul_school(b) || a * a != a.mul_school(a)) ++fallos;
     }
-    std::printf("  %s: %d comparaciones, %d distintas\n", nombre, pruebas, fallos);
+    std::printf("  %s: %d comparaciones, %d distintas (%d productos por AVX2)\n", nombre, pruebas, fallos,
+                vectoriales);
     CHECK_MSG(fallos == 0, (std::string("convolve Fp64 ") + nombre).c_str());
 }
 
@@ -173,7 +196,28 @@ void test_transform(const Fp64& K, const char* nombre) {
     CHECK_MSG(ok, (std::string("fft::transform natural ") + nombre).c_str());
 }
 
-// ----------------------------------------------------- 4. generador en frío
+// ----------------------------------------------------- 4. tablas de 32 bits
+void test_tablas32() {
+    const bool avx2 = fft::word::avx2_disponible();
+    std::printf("  AVX2 disponible y activo: %s\n", avx2 ? "sí" : "no");
+    bool ok = true;
+    for (const char* q : {"998244353", "7681", "65537", "4179340454199820289", "1004535809", "2013265921"}) {
+        const Fp64 K{BigInt(q)};
+        const bool pequeno = K.modulus64() < (u64(1) << 30);
+        for (unsigned k = 0; k <= std::min<unsigned long>(K.fft_capacity(), 6); ++k) {
+            const auto& W = fft::tables(K, k).word;
+            const bool espera = avx2 && pequeno && k >= 4;
+            ok = ok && ((W.w32.p != 0) == espera);
+            if (W.w32.p != 0) {  // mismos twiddles que las tablas de 64 bits
+                for (std::size_t i = 0; i < W.fwd.size(); ++i)
+                    ok = ok && W.w32.fwd[i] == W.fwd[i] && W.w32.inv[i] == W.inv[i];
+            }
+        }
+    }
+    CHECK_MSG(ok, "tablas de 32 bits: solo con AVX2, p < 2^30 y n >= 16; mismos twiddles");
+}
+
+// ----------------------------------------------------- 5. generador en frío
 void test_generador() {
     for (unsigned long p : {998244353UL, 193UL, 257UL, 577UL, 101UL}) {
         // a) Producto por FFT en un cuerpo recién creado frente a pedir las
@@ -213,7 +257,7 @@ void test_generador() {
 
 int main() {
     set_seed(20261108);
-    const char* primos[] = {"998244353", "7681", "65537", "193", "257", "577", "17", "5", "3", "2",
+    const char* primos[] = {"998244353", "7681", "65537", "193", "257", "577", "17", "5", "3", "2", "1004535809", "2013265921",
                             "4179340454199820289"};
     for (const char* q : primos) {
         const Fp64 K{BigInt(q)};
@@ -222,6 +266,7 @@ int main() {
     }
     test_fp("998244353");
     test_fp("4179340454199820289");
+    test_tablas32();
     test_generador();
     return check::summary("fase7_ntt");
 }
