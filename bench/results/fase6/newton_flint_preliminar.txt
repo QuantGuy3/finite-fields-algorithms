@@ -1,0 +1,7 @@
+python-flint 0.9.0 — F_998244353, us (mejor de 3 tandas, 16 entradas)
+  flint divmod 4000/2000     :     718.5
+  flint pow_mod deg m =  300 :    1564.1
+  flint pow_mod deg m =  300 (con mod_rev_inv precalculado):    1546.3
+  flint pow_mod deg m = 1000 :   10215.9
+  flint pow_mod deg m = 1000 (con mod_rev_inv precalculado):   10197.5
+  (binding de alcp no disponible: No module named 'alcp' )
