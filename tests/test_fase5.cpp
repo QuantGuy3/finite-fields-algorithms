@@ -81,9 +81,9 @@ typename Poly<Field>::ExtGcd gcd_ext_ref(const Poly<Field>& a, const Poly<Field>
 
 bool igual(const Poly<Fp64>& a, const Poly<Fp64>& b) {
     using P = Poly<Fp64>;
-    const auto e1 = P::gcd_ext_classic(a, b), e2 = gcd_ext_ref(a, b);
+    const auto e1 = P::gcd_ext_classic(a, b), e2 = gcd_ext_ref(a, b), e3 = P::gcd_ext(a, b);
     return P::gcd_classic(a, b) == gcd_ref(a, b) && P::gcd(a, b) == gcd_ref(a, b) && e1.g == e2.g &&
-           e1.x == e2.x && e1.y == e2.y && P::gcd_ext(a, b).x == e2.x;
+           e1.x == e2.x && e1.y == e2.y && e3.g == e2.g && e3.x == e2.x && e3.y == e2.y;
 }
 
 void test_euclides(const Fp64& K, const char* nombre) {
@@ -211,6 +211,26 @@ int main() {
         (void)(P::random(wntt, 600) * P::random(wntt, 600));  // con tablas FFT
         ok = ok && igual(P::random(wntt, 2100), P::random(wntt, 2090));
         CHECK_MSG(ok, "half-GCD Fp64 (F_3, F_101, F_998244353)");
+    }
+
+    // Fase 6: gcd_ext por encima del umbral de entrada (1024 / 2048 / 4096
+    // según p) sigue con hgcd y termina con la cola en sitio (cola_ext_w).
+    // Mismos mcd y cofactores que el original, con varias sucesiones: normal,
+    // mcd grande, a < b, b = 0 y b constante.
+    {
+        using P = Poly<Fp64>;
+        (void)(P::random(wm61, 600) * P::random(wm61, 600));  // con tablas FFT
+        bool ok = true;
+        for (const Fp64* K : {&w101, &wntt, &wm61}) {
+            const int n = K == &w101 ? 1100 : K == &wntt ? 2100 : 4200;
+            ok = ok && igual(P::random(*K, n), P::random(*K, n - 1));
+            ok = ok && igual(P::random(*K, n), P::random(*K, n - 300));
+            ok = ok && igual(P::random(*K, n / 2), P::random(*K, n));
+            P g = P::random(*K, n / 3);
+            ok = ok && igual(g * P::random(*K, n - n / 3), g * P::random(*K, n - n / 3 - 5));
+            ok = ok && igual(P::random(*K, n), P::zero(*K)) && igual(P::random(*K, n), P::one(*K));
+        }
+        CHECK_MSG(ok, "gcd_ext con cola en sitio (F_101, F_998244353, F_(2^61-1))");
     }
 
     test_rng();

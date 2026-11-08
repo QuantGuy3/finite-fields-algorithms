@@ -179,6 +179,42 @@ sale igual.
 - `python/` intacto.
 - No se ha vuelto a medir la cobertura de líneas C++ (`build.py cov-cpp`).
 
+## Corrección posterior: cola de `gcd_ext` en Fp64
+
+La investigación de la fase 6 encontró una regresión de esta fase. Con los umbrales de
+arriba, `gcd_ext` entraba en half-GCD, el primer `hgcd` dejaba `r0` por debajo del umbral
+y el resto de la sucesión seguía con `paso` sobre `Poly`, que no es en sitio. Resultado:
+de 0,39x a 0,74x frente al Euclides clásico desde el umbral de entrada.
+
+- **Corrección.** El umbral solo decide la entrada. Después, `gcd_ext` sigue con `hgcd`
+  mientras el grado sea mayor o igual que `umbral_cola_ext` y termina con
+  `gcd_ext_classic_w` (en sitio). Los cofactores se combinan con la matriz acumulada:
+  x = x'·m00 + y'·m10 e y = x'·m01 + y'·m11 (`cola_ext_w`).
+- **Mismo resultado.** La sucesión de cocientes no cambia, así que mcd y cofactores son
+  los del clásico. `test_fase5` lo comprueba por encima del umbral en F_101, F_998244353 y
+  F_(2^61−1), con mcd grande, a < b, b = 0 y b constante (27 comprobaciones).
+- **Generador aleatorio.** Sin cambios: el camino rápido solo se usa con la caché FFT
+  llena o sin FFT posible, como antes.
+- **Umbral de cola.** Medido con `-DALCP_HGCD_COLA=256/512/1024`: el mejor es un cuarto
+  del umbral de entrada de `gcd_ext` (256, 512 y 1024 según p), nunca menos que
+  `kHgcdMin`.
+- **Medidas** (enchufado; `bench/results/fase5/gcd_ext_cola.txt`): ver la tabla.
+
+| p | n | Clásico | `gcd_ext` antes | `gcd_ext` ahora | Ahora frente a antes | Ahora frente al clásico |
+|---|---|---|---|---|---|---|
+| 101 | 1024 | 4,6 ms | 11,6 ms | 1,94 ms | 6,0x | 2,4x |
+| 101 | 2048 | 17,5 ms | 43,1 ms | 5,1 ms | 8,5x | 3,4x |
+| 101 | 4096 | 68,9 ms | 96,4 ms | 13,6 ms | 7,1x | 5,1x |
+| 998244353 | 2048 | 17,5 ms | 45,8 ms | 7,9 ms | 5,8x | 2,2x |
+| 998244353 | 4096 | 68,2 ms | 175,9 ms | 21,0 ms | 8,4x | 3,2x |
+| 2^61 − 1 | 4096 | 69,2 ms | 170,8 ms | 49,1 ms | 3,5x | 1,4x |
+
+«Antes» es la tanda del commit `8a5a28e`; «clásico» y «ahora», la repetición de la tanda
+final. Por debajo del umbral de entrada no cambia nada (mismo código); las diferencias
+de esas filas en el fichero son ruido de la máquina.
+
+`gcd` no tenía el problema: por debajo del umbral ya terminaba con `gcd_classic`.
+
 ## Pendiente y siguientes pasos
 
 - **Half-GCD.** Su coste está en los productos de matrices (`aplicar`, `mul_mat`). Con el

@@ -620,13 +620,20 @@ public:
         // M acumula la matriz de cocientes: (r0, r1) = M·(a, b) en todo momento.
         Poly r0 = a, r1 = b;
         Mat2 M = identidad(K);
+        // Fase 6: en Fp64, el umbral solo decide la entrada.  Después se sigue
+        // con hgcd mientras r0 tenga grado >= `cola` y el resto de la sucesión
+        // se hace con el Euclides extendido en sitio (antes seguía con `paso`
+        // sobre Poly, 2,6x más lento que el clásico en grado 2048).
+        const int cola = fft::NativeWordField<Field> ? static_cast<int>(umbral_cola_ext(K)) : umbral;
         while (!r1.is_zero()) {
-            if (r0.degree() > r1.degree() && r0.degree() >= umbral) {
+            if (r0.degree() > r1.degree() && r0.degree() >= cola) {
                 const Mat2 R = hgcd(r0, r1);
                 aplicar(R, r0, r1);
                 M = mul_mat(R, M);
                 if (r1.is_zero()) break;
             }
+            if constexpr (fft::NativeWordField<Field>)
+                if (r0.degree() < cola) return cola_ext_w(r0, r1, M);
             paso(r0, r1, M);
         }
         if (r0.is_zero()) return {zero(K), zero(K), zero(K)};
@@ -1404,6 +1411,20 @@ private:
 #else
     static constexpr std::size_t kHgcdMin = fft::NativeWordField<Field> ? 256 : 128;
 #endif
+    // Fase 6: en Fp64, una vez que gcd_ext ha entrado en half-GCD, sigue con
+    // hgcd mientras el grado sea >= este valor y termina con el Euclides
+    // extendido en sitio (cola_ext_w).  Medido con bench/calibra_hgcd.cpp y
+    // -DALCP_HGCD_COLA=256/512/1024: el mejor es 256 con p = 101, 512 con
+    // p = 998244353 y 1024 con p = 2^61 - 1, es decir, un cuarto del umbral
+    // de entrada de gcd_ext (nunca menos que kHgcdMin).
+    static std::size_t umbral_cola_ext(const Field& K) {
+#ifdef ALCP_HGCD_COLA
+        (void)K;
+        return ALCP_HGCD_COLA;  // solo para calibrar (bench/calibra_hgcd.cpp)
+#else
+        return std::max(kHgcdMin, umbral_hgcd(K, true) / 4);
+#endif
+    }
     // Grado a partir del cual gcd (ext = false) o gcd_ext (ext = true) usan
     // half-GCD.  Medido con bench/calibra_hgcd.cpp (Zen 3, entradas variadas):
     // gcd_ext gana antes porque el clásico también arrastra los cofactores.
@@ -1462,6 +1483,19 @@ private:
         M.m01 = std::move(M.m11);
         M.m10 = std::move(n10);
         M.m11 = std::move(n11);
+    }
+    // Cola de gcd_ext en Fp64 (fase 6).  Con (r0, r1) = M·(a, b), el Euclides
+    // extendido en sitio da g = x'·r0 + y'·r1 (ya normalizados por el inverso
+    // del coeficiente principal), luego g = (x'·m00 + y'·m10)·a +
+    // (x'·m01 + y'·m11)·b.  La sucesión de cocientes es la misma que la del
+    // clásico, así que g, x e y son idénticos a los de gcd_ext_classic.
+    // Solo se llega aquí con la caché FFT llena o sin FFT posible, de modo que
+    // ni la cola ni mul_no_rng consumen el generador aleatorio.
+    static ExtGcd cola_ext_w(const Poly& r0, const Poly& r1, const Mat2& M) {
+        ExtGcd t = gcd_ext_classic_w(r0, r1);
+        if (t.g.is_zero()) return t;
+        return {std::move(t.g), t.x.mul_no_rng(M.m00) + t.y.mul_no_rng(M.m10),
+                t.x.mul_no_rng(M.m01) + t.y.mul_no_rng(M.m11)};
     }
     // Caso base de hgcd en Fp64 (fase 5): los pasos clásicos de `paso`, con el
     // resto y la matriz acumulada en vectores de palabras (ver euclides::).

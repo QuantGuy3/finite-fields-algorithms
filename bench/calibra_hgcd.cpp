@@ -5,6 +5,8 @@
 //
 // Para que gcd/gcd_ext usen half-GCD en todos los tamaños medidos, compilar con
 // -DALCP_HGCD_UMBRAL=128 (fase 5); -DSOLO_FP64 limita la tabla a Fp64.
+// -DALCP_HGCD_COLA=n fija el grado por debajo del cual gcd_ext en Fp64 pasa
+// del half-GCD al Euclides extendido en sitio (corrección de la fase 5).
 //
 //   g++ -std=c++23 -O3 -DALCP_HGCD_UMBRAL=128 -Iinclude bench/calibra_hgcd.cpp -lgmpxx -lgmp -static -o build/calibra_hgcd.exe
 #include "alcp/alcp.hpp"
