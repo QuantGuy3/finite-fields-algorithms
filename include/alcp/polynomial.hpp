@@ -876,11 +876,13 @@ public:
     // gasto acumulado (gastado_): si ya compensaba comprar y q no es diminuto
     // (compone_ya), se compone desde el primer paso con el nuevo módulo
     // (DDF 1,7-2,3x más rápida en F_(2^127-1), 1,4-1,5x en F_998244353,
-    // 1,2-1,3x en F_101, hasta 1,1x en F_9; F_2 y F_3 no cambian).  Esos pasos, que antes eran pow_mod
-    // (productos con operator*, que la primera vez pueden pedir la raíz de la
-    // FFT al generador), pasan a ser composiciones (mul_no_rng); por eso solo
-    // se adelanta la composición cuando ese pow_mod no habría tocado el
-    // generador (rng_intacto).  Los H_i son los mismos.
+    // 1,2-1,3x en F_101, hasta 1,1x en F_9; F_2 y F_3 no cambian).  Esos
+    // pasos, que antes eran pow_mod (productos con operator*, que la primera
+    // vez pueden pedir la raíz de la FFT al generador), pasan a ser
+    // composiciones (mul_no_rng); por eso solo se adelanta la composición
+    // cuando ese pow_mod no habría tocado el generador (rng_intacto, que es
+    // imprescindible: hay DDF reales en que sin ella cambia el consumo del
+    // generador).  Los H_i son los mismos.
     class Frobenius {
     public:
         Frobenius(const Poly& f, FrobeniusAlgo algo = FrobeniusAlgo::Auto)
@@ -958,10 +960,21 @@ public:
         // L <= 2·deg - 1 coeficientes y solo piden la raíz de la FFT si la
         // caché del cuerpo está vacía, el cuerpo admite una FFT de 64 y
         // L >= 64 (regla original de mul).  Basta con que falle una de las
-        // tres para que la secuencia aleatoria sea la de antes.  En la DDF de
-        // hoy siempre se cumple (un cuerpo con FFT de 64 tiene q >= 193, y el
-        // primer pow_mod con grado >= 33 ya eleva x^32 al cuadrado, L = 65, y
-        // construye las tablas), pero se comprueba por si cambian los usos.
+        // tres para que la secuencia aleatoria sea la de antes.  La condición
+        // es conservadora (puede bloquear casos en que el pow_mod no habría
+        // tocado el generador), pero es IMPRESCINDIBLE: en la DDF real la
+        // caché sigue vacía con módulos de grado >= 33 al menos en dos casos,
+        // y sin esta comprobación cambiaba el consumo del generador:
+        //   - cuerpos con FFT de 64 pero no de 128 (v2(q-1) = 6: q = 193,
+        //     449, 577, F_961): los productos de L = 65..127 no usan la NTT ni
+        //     construyen tablas, solo los de L = 64 exactos lo harían;
+        //   - Fp GMP: mul elige Kronecker cuando prefer_fft es cierto y
+        //     entonces no llama a fft::tables (comportamiento previo), así que
+        //     la caché puede seguir vacía tras pow_mod de grado 42 en
+        //     F_(2^64-2^32+1) y un pow_mod posterior con entradas dispersas sí
+        //     la pediría.
+        // tests/test_fase6_ddf.cpp (sección 4) tiene casos en frío que fallan
+        // si se retira (F_577 de grado 80, F_961 y F_(2^64-2^32+1) dispersos).
         bool rng_intacto() const {
             const Field& K = red_.modulus().field();
             if (!K.fft_cache_.empty() || fft::fft_exponent(K, 64) < 0) return true;

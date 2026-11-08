@@ -13,11 +13,15 @@
 //      (mismo rand_below posterior, misma caché FFT vacía o no), en cuerpos
 //      con FFT (998244353, 193, 257) y sin ella (101, 2^127-1, F_9).
 //   3. factor() sigue reconstruyendo la entrada con factores irreducibles.
+//   4. La salvaguarda del generador (rng_intacto) es necesaria: casos en frío
+//      y en caliente de F_193, F_449, F_577, F_961 y F_(2^64-2^32+1) (Fp GMP)
+//      en que, sin ella, el consumo del generador cambiaría.
 #include "alcp/alcp.hpp"
 #include "check.hpp"
 
 #include <optional>
 #include <string>
+#include <tuple>
 #include <type_traits>
 #include <vector>
 
@@ -211,6 +215,78 @@ void test_rng(Crea crea, const char* nombre) {
     CHECK_MSG(ok, nombre);
 }
 
+// ---------------------------- 4. salvaguarda del generador (rng_intacto)
+// Casos en que, con la caché FFT aún vacía y módulos de grado >= 33, el
+// pow_mod que la composición adelantada sustituiría sí pediría la raíz de la
+// FFT: cuerpos con FFT de 64 pero no de 128 (v2(q-1) = 6: 193, 449, 577,
+// F_961) y Fp GMP, donde mul elige Kronecker sin construir tablas
+// (F_(2^64-2^32+1)).  Sin rng_intacto() estos casos cambian el consumo del
+// generador (encontrados por la revisión adversaria con una batería
+// diferencial de 6552 casos); esta sección falla si alguien la retira.
+//
+// Como en esa batería: la entrada se construye con la semilla s en un cuerpo
+// K1 y la DDF se ejecuta tras set_seed(s·7919 + 13), en un cuerpo nuevo K2
+// (frío) o en el mismo K1 (caliente).  Devuelve si la versión nueva y la copia
+// dejan igual la caché FFT, el rand_below siguiente y la salida.
+template <class Field, class Crea, class Entrada>
+bool salvaguarda_igual(Crea crea, Entrada entrada, unsigned long s, bool frio) {
+    using P = Poly<Field>;
+    auto ejecuta = [&](bool nueva) {
+        set_seed(s);
+        Field K1 = crea();
+        P f = entrada(K1);
+        auto coefs = f.coeffs();
+        set_seed(s * 7919 + 13);
+        Field K2 = crea();
+        const Field& K = frio ? K2 : K1;
+        P g(K, coefs);
+        auto d = nueva ? g.distinct_degree_classic() : ddf_anterior(g);
+        const bool vacia = K.fft_cache_.empty();
+        const BigInt r = rand_below(BigInt(1000000007));
+        // La salida se guarda como texto: los cuerpos K1 y K2 no sobreviven
+        // a la lambda.
+        std::string t;
+        for (auto& [e, h] : d) t += std::to_string(e) + ":" + h.to_string() + ";";
+        return std::tuple<bool, BigInt, std::string>(vacia, r, t);
+    };
+    return ejecuta(true) == ejecuta(false);
+}
+
+void test_salvaguarda() {
+    using P64 = Poly<Fp64>;
+    // Los cinco casos exactos de la revisión (semillas de su batería).
+    auto f577 = [] { return Fp64(BigInt(577)); };
+    auto fgold = [] { return Fp(BigInt("18446744069414584321")); };
+    auto f961 = [] { return Fq64(Fp64(BigInt(31)), std::vector<BigInt>{28, 0, 1}); };
+    CHECK_MSG((salvaguarda_igual<Fp64>(f577, [](const Fp64& K) { return P64::random(K, 80).monic().radical(); },
+                                        243, true)),
+              "salvaguarda F_577 grado 80 en frío");
+    CHECK_MSG((salvaguarda_igual<Fp>(fgold, [](const Fp& K) { return dispersa(K, 39, 3); }, 82, false)),
+              "salvaguarda F_(2^64-2^32+1) dispersa grado 42 en caliente");
+    CHECK_MSG((salvaguarda_igual<Fp>(fgold, [](const Fp& K) { return dispersa(K, 39, 3); }, 83, true)),
+              "salvaguarda F_(2^64-2^32+1) dispersa grado 42 en frío");
+    CHECK_MSG((salvaguarda_igual<Fq64>(f961, [](const Fq64& K) { return dispersa(K, 50, 3); }, 214, false)),
+              "salvaguarda F_961 dispersa grado 53");
+    CHECK_MSG((salvaguarda_igual<Fq64>(f961, [](const Fq64& K) { return dispersa(K, 58, 6); }, 229, true)),
+              "salvaguarda F_961 dispersa grado 64 en frío");
+
+    // Barrido alrededor de esos casos (otras semillas y grados), para no
+    // depender solo de las semillas exactas.
+    bool ok = true;
+    for (unsigned long s = 300; s < 306; ++s) {
+        for (unsigned long p : {193ul, 449ul, 577ul})
+            for (int n : {65, 72, 80})
+                ok = ok && salvaguarda_igual<Fp64>([p] { return Fp64(BigInt(p)); },
+                                                   [n](const Fp64& K) { return P64::random(K, n).monic().radical(); },
+                                                   s, true);
+        for (int n : {50, 56, 64})
+            ok = ok && salvaguarda_igual<Fq64>(f961, [n](const Fq64& K) { return dispersa(K, n, 3); }, s, s % 2);
+        for (int n : {38, 39, 40})
+            ok = ok && salvaguarda_igual<Fp>(fgold, [n](const Fp& K) { return dispersa(K, n, 3); }, s, s % 2);
+    }
+    CHECK_MSG(ok, "salvaguarda: barrido F_193/449/577, F_961 y F_(2^64-2^32+1)");
+}
+
 // ------------------------------------------------------------- 3. factor
 template <class Field>
 void test_factor(const Field& K, const char* nombre) {
@@ -256,6 +332,8 @@ int main() {
     test_rng<Fp64>([] { return Fp64(101); }, "RNG en frío F_101 (sin FFT)");
     test_rng<Fp>([] { return Fp((BigInt(1) << 127) - 1); }, "RNG en frío F_(2^127-1) (sin FFT)");
     test_rng<Fq64>([] { return Fq64(Fp64(BigInt(3)), std::vector<BigInt>{1, 0, 1}); }, "RNG en frío F_9 (sin FFT)");
+
+    test_salvaguarda();
 
     test_factor(w2, "factor F_2");
     test_factor(w101, "factor F_101");
