@@ -32,11 +32,12 @@ Cobertura C++ (tests C++ + pytest), tras la fase 3: 94,4 % de líneas, 98,4 % de
 | 4. Nivel B | Kronecker sobre Z (`kronecker.hpp`), half-GCD en `gcd`/`gcd_ext`, Frobenius por composición modular; umbrales de Newton recalibrados. Informe en [optimizacion/fase4.md](optimizacion/fase4.md) | Suite 1,25x sobre el nivel A (36,8x frente al original, 128 checksums iguales); `test_nivel_b` 31 bloques; distancia a FLINT 5,9x → 2,7x |
 | 5 | NTT perezosa sin saltos, Euclides en sitio en Fp64 (también en el caso base de half-GCD) y DDF de Kaltofen–Shoup; despacho, Newton y half-GCD recalibrados. Informe en [optimizacion/fase5.md](optimizacion/fase5.md) | Suite 1,14x sobre el nivel B (128 checksums iguales); `test_fase5` 26 comprobaciones; distancia a FLINT 2,7x → 1,66x (medido con batería) |
 | 5. Corrección | `gcd_ext` en Fp64 por encima del umbral de half-GCD: sigue con `hgcd` y termina con el Euclides extendido en sitio (`cola_ext_w`), en lugar de `paso` sobre `Poly`. Detalle en [optimizacion/fase5.md](optimizacion/fase5.md) | De 0,39-0,74x a 1,4-5,1x frente al clásico (3,5-8,5x sobre la versión anterior) en grados 1024-4096; `test_fase5` 27 comprobaciones |
+| 6 | Propuestas 1, 5, 6 y 8 de la investigación: Newton con producto medio y `Reducer`/`Composer` con transformadas precalculadas; Fp64 con p < 2^32 (acumulador de 64 bits, Barrett, Kronecker directo); DDF de la fase 4 sin `pow_mod` repetido; conversión directa en el binding. Informe en [optimizacion/fase6.md](optimizacion/fase6.md) | Suite 1,17x sobre la fase 5 (128 checksums iguales; con batería); binding 4-11x en conversiones; tests `test_fase6_*` (121 comprobaciones) y `test_fase6_conversiones.py` |
 
 ## Pendiente
 
 - Fase 5 hecha (propuestas 1 a 3 de [optimizacion/investigacion-fase5.md](optimizacion/investigacion-fase5.md)); quedan las propuestas 4 a 10.
-- Fase 6: propuestas en [optimizacion/investigacion-fase6.md](optimizacion/investigacion-fase6.md). La regresión de `gcd_ext` (punto 0) ya está corregida.
+- Fase 6: hechas las propuestas 0, 1, 5, 6 y 8; quedan la 2, 3, 4 y 7 de [optimizacion/investigacion-fase6.md](optimizacion/investigacion-fase6.md). Regresión menor conocida: `fp.m61.divmod.d2000_1000` a 0,95-0,96x.
 - Half-GCD: acelerar los productos de matrices; con el Euclides en sitio solo gana desde grado 2048-4096 en Fp64.
 - Repetir la suite y la comparativa de la fase 5 enchufado (se midieron con batería).
 - Investigar el `gcd` de grado 500 en Fp64, a 0,78x en la suite, que no se reproduce aislado.

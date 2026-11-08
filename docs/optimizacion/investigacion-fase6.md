@@ -1,7 +1,10 @@
 # Investigación: siguientes optimizaciones (propuesta de fase 6)
 
 Fecha: 7 de noviembre de 2026. Punto de partida: `mejoras-cpp-pybind` en `8a5a28e` (fase 5).
-Rama de la investigación: `investigacion-fase6`. **No cambia el código de la librería.**
+Rama de la investigación: `investigacion-fase6`.
+
+> **Estado:** las propuestas 1, 5, 6 y 8 están implementadas en la rama `fase6`; resultados en [fase6.md](fase6.md).
+ **No cambia el código de la librería.**
 
 ## Método
 
@@ -36,7 +39,7 @@ detalle completo, con las reservas de cada revisor, está en
      terminar la cola con el Euclides en sitio arrastrando los cofactores de la matriz.
    - **Ganancia medida con el prototipo V3e:** 7,1x en grado 2048 y 11x en grado 4096.
    - **Prioridad máxima.** El resultado es correcto; solo es lento.
-   - **Corregido** en mejoras-cpp-pybind (commit `2b36cde`): cola en sitio; ver [fase5.md](fase5.md).
+   - **Corregido** en `mejoras-cpp-pybind` (commit `2b36cde`): cola en sitio; ver [fase5.md](fase5.md).
 2. **La DDF de la fase 4 rehace un `pow_mod` tras cada factor encontrado.**
    - **Causa.** `cambiar_modulo` pone `pasos_ = 0`, y `quiere_componer` exige al menos un
      `pow_mod` antes de volver a componer.
