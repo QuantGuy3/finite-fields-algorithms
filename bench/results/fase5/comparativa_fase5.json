@@ -1,0 +1,801 @@
+{
+ "maquina": {
+  "cpu": "AMD Ryzen 7 7730U with Radeon Graphics",
+  "logical_cpus": 16,
+  "physical_cores": 8,
+  "os": "Windows-11-10.0.26300-SP0",
+  "machine": "AMD64",
+  "python": "3.15.1",
+  "python_executable": "~\\Documents\\Archivos\\Proyectos\\finite-fields-algorithms\\.venv\\Scripts\\python.exe",
+  "power_plan": "Power Scheme GUID: 381b4222-f694-41f0-9685-ff5bb260df2e  (Balanced)",
+  "power": {
+   "ac_online": false,
+   "battery_percent": 70,
+   "battery_saver": false,
+   "no_battery": false
+  },
+  "date": "2026-11-07T21:34:37+01:00"
+ },
+ "versiones": {
+  "alcp_nivel_a": "fase4-nivel-a (ALCP_THREADS=1)",
+  "alcp_nivel_b": "fase 4 nivel B, 7880a88 (ALCP_THREADS=1)",
+  "alcp_native_1h": "rama local (ALCP_THREADS=1)",
+  "alcp_native": "rama local",
+  "flint": "0.9.0"
+ },
+ "parametros": {
+  "reps": 5,
+  "min_time": 0.5,
+  "timeout": 180
+ },
+ "escenarios": [
+  {
+   "escenario": "fp30.mul.d100",
+   "grupo": "F_998244353",
+   "descripcion": "producto de dos polinomios de grado 100",
+   "coinciden": true,
+   "resultados": {
+    "alcp_nivel_a": {
+     "estado": "ok",
+     "min_s": 1.4499993994832039e-05,
+     "mediana_s": 1.4699995517730713e-05,
+     "reps": 500,
+     "preparacion_s": 0.010865800082683563,
+     "checksum": "b114213b41a4315b"
+    },
+    "alcp_nivel_b": {
+     "estado": "ok",
+     "min_s": 1.4399993233382702e-05,
+     "mediana_s": 1.4699995517730713e-05,
+     "reps": 500,
+     "preparacion_s": 0.012948299990966916,
+     "checksum": "b114213b41a4315b"
+    },
+    "alcp_native_1h": {
+     "estado": "ok",
+     "min_s": 1.5900004655122757e-05,
+     "mediana_s": 1.610000617802143e-05,
+     "reps": 500,
+     "preparacion_s": 0.08255140006076545,
+     "checksum": "b114213b41a4315b"
+    },
+    "alcp_native": {
+     "estado": "ok",
+     "min_s": 1.5700003132224083e-05,
+     "mediana_s": 1.6000005416572094e-05,
+     "reps": 500,
+     "preparacion_s": 0.08675520005635917,
+     "checksum": "b114213b41a4315b"
+    },
+    "flint": {
+     "estado": "ok",
+     "min_s": 8.79995059221983e-06,
+     "mediana_s": 8.900067768990993e-06,
+     "reps": 500,
+     "preparacion_s": 0.1509889999870211,
+     "checksum": "b114213b41a4315b"
+    }
+   }
+  },
+  {
+   "escenario": "fp30.mul.d1000",
+   "grupo": "F_998244353",
+   "descripcion": "producto de dos polinomios de grado 1000",
+   "coinciden": true,
+   "resultados": {
+    "alcp_nivel_a": {
+     "estado": "ok",
+     "min_s": 0.0002893999917432666,
+     "mediana_s": 0.0003131499979645014,
+     "reps": 500,
+     "preparacion_s": 0.009862700011581182,
+     "checksum": "9ac84640941f412d"
+    },
+    "alcp_nivel_b": {
+     "estado": "ok",
+     "min_s": 0.00025610008742660284,
+     "mediana_s": 0.00026604998856782913,
+     "reps": 500,
+     "preparacion_s": 0.011721299961209297,
+     "checksum": "9ac84640941f412d"
+    },
+    "alcp_native_1h": {
+     "estado": "ok",
+     "min_s": 0.00014409993309527636,
+     "mediana_s": 0.00014610006473958492,
+     "reps": 500,
+     "preparacion_s": 0.08540179999545217,
+     "checksum": "9ac84640941f412d"
+    },
+    "alcp_native": {
+     "estado": "ok",
+     "min_s": 0.00014400004874914885,
+     "mediana_s": 0.00014539994299411774,
+     "reps": 500,
+     "preparacion_s": 0.08243499998934567,
+     "checksum": "9ac84640941f412d"
+    },
+    "flint": {
+     "estado": "ok",
+     "min_s": 0.0001666999887675047,
+     "mediana_s": 0.0001674999948590994,
+     "reps": 500,
+     "preparacion_s": 0.16646999993827194,
+     "checksum": "9ac84640941f412d"
+    }
+   }
+  },
+  {
+   "escenario": "fp30.mul.d10000",
+   "grupo": "F_998244353",
+   "descripcion": "producto de dos polinomios de grado 10000",
+   "coinciden": true,
+   "resultados": {
+    "alcp_nivel_a": {
+     "estado": "ok",
+     "min_s": 0.010020000045187771,
+     "mediana_s": 0.010533699998632073,
+     "reps": 48,
+     "preparacion_s": 0.013211900019086897,
+     "checksum": "c15ad70226e92353"
+    },
+    "alcp_nivel_b": {
+     "estado": "ok",
+     "min_s": 0.009979599970392883,
+     "mediana_s": 0.010635800077579916,
+     "reps": 47,
+     "preparacion_s": 0.013658899930305779,
+     "checksum": "c15ad70226e92353"
+    },
+    "alcp_native_1h": {
+     "estado": "ok",
+     "min_s": 0.0036733000306412578,
+     "mediana_s": 0.0038081000093370676,
+     "reps": 121,
+     "preparacion_s": 0.08713749994058162,
+     "checksum": "c15ad70226e92353"
+    },
+    "alcp_native": {
+     "estado": "ok",
+     "min_s": 0.0030596000142395496,
+     "mediana_s": 0.0034263000125065446,
+     "reps": 140,
+     "preparacion_s": 0.08912199991755188,
+     "checksum": "c15ad70226e92353"
+    },
+    "flint": {
+     "estado": "ok",
+     "min_s": 0.0040889999363571405,
+     "mediana_s": 0.004358700010925531,
+     "reps": 109,
+     "preparacion_s": 0.1404257999965921,
+     "checksum": "c15ad70226e92353"
+    }
+   }
+  },
+  {
+   "escenario": "fp30.divmod.d4000",
+   "grupo": "F_998244353",
+   "descripcion": "división con resto de grado 4000 entre grado 2000",
+   "coinciden": true,
+   "resultados": {
+    "alcp_nivel_a": {
+     "estado": "ok",
+     "min_s": 0.007329199928790331,
+     "mediana_s": 0.00785410008393228,
+     "reps": 63,
+     "preparacion_s": 0.010182800004258752,
+     "checksum": "56f1631511a58669"
+    },
+    "alcp_nivel_b": {
+     "estado": "ok",
+     "min_s": 0.007822299958206713,
+     "mediana_s": 0.009100699971895665,
+     "reps": 56,
+     "preparacion_s": 0.012866499950177968,
+     "checksum": "56f1631511a58669"
+    },
+    "alcp_native_1h": {
+     "estado": "ok",
+     "min_s": 0.003125899937003851,
+     "mediana_s": 0.003281799959950149,
+     "reps": 143,
+     "preparacion_s": 0.08239230001345277,
+     "checksum": "56f1631511a58669"
+    },
+    "alcp_native": {
+     "estado": "ok",
+     "min_s": 0.0031267000595107675,
+     "mediana_s": 0.0032498000655323267,
+     "reps": 141,
+     "preparacion_s": 0.0826484999852255,
+     "checksum": "56f1631511a58669"
+    },
+    "flint": {
+     "estado": "ok",
+     "min_s": 0.0016235000221058726,
+     "mediana_s": 0.0016684000147506595,
+     "reps": 275,
+     "preparacion_s": 0.13207749999128282,
+     "checksum": "56f1631511a58669"
+    }
+   }
+  },
+  {
+   "escenario": "fp30.gcd.d1000",
+   "grupo": "F_998244353",
+   "descripcion": "mcd de dos polinomios de grado 1000",
+   "coinciden": true,
+   "resultados": {
+    "alcp_nivel_a": {
+     "estado": "ok",
+     "min_s": 0.010546899982728064,
+     "mediana_s": 0.011199899949133396,
+     "reps": 45,
+     "preparacion_s": 0.00965539994649589,
+     "checksum": "080a9ed428559ef6"
+    },
+    "alcp_nivel_b": {
+     "estado": "ok",
+     "min_s": 0.010569100035354495,
+     "mediana_s": 0.011406400008127093,
+     "reps": 44,
+     "preparacion_s": 0.009895200026221573,
+     "checksum": "080a9ed428559ef6"
+    },
+    "alcp_native_1h": {
+     "estado": "ok",
+     "min_s": 0.0029519000090658665,
+     "mediana_s": 0.003001699922606349,
+     "reps": 153,
+     "preparacion_s": 0.0805970000801608,
+     "checksum": "080a9ed428559ef6"
+    },
+    "alcp_native": {
+     "estado": "ok",
+     "min_s": 0.00294410006608814,
+     "mediana_s": 0.0029993000207468867,
+     "reps": 155,
+     "preparacion_s": 0.0891148999799043,
+     "checksum": "080a9ed428559ef6"
+    },
+    "flint": {
+     "estado": "ok",
+     "min_s": 0.001451199990697205,
+     "mediana_s": 0.0015041499864310026,
+     "reps": 308,
+     "preparacion_s": 0.14832929999101907,
+     "checksum": "080a9ed428559ef6"
+    }
+   }
+  },
+  {
+   "escenario": "fp30.irred.d400",
+   "grupo": "F_998244353",
+   "descripcion": "test de irreducibilidad de un polinomio IRREDUCIBLE de grado 400",
+   "coinciden": true,
+   "resultados": {
+    "alcp_nivel_a": {
+     "estado": "ok",
+     "min_s": 3.893204699968919,
+     "mediana_s": 3.9264409999595955,
+     "reps": 5,
+     "preparacion_s": 0.008471500012092292,
+     "checksum": "3cbc87c7681f34db"
+    },
+    "alcp_nivel_b": {
+     "estado": "ok",
+     "min_s": 0.6913939999649301,
+     "mediana_s": 0.7035718000261113,
+     "reps": 5,
+     "preparacion_s": 0.007349600084125996,
+     "checksum": "3cbc87c7681f34db"
+    },
+    "alcp_native_1h": {
+     "estado": "ok",
+     "min_s": 0.3605029000900686,
+     "mediana_s": 0.3657093000365421,
+     "reps": 5,
+     "preparacion_s": 0.0002125999890267849,
+     "checksum": "3cbc87c7681f34db"
+    },
+    "alcp_native": {
+     "estado": "ok",
+     "min_s": 0.35277479991782457,
+     "mediana_s": 0.35737890005111694,
+     "reps": 5,
+     "preparacion_s": 0.0001713000237941742,
+     "checksum": "3cbc87c7681f34db"
+    },
+    "flint": {
+     "estado": "ok",
+     "min_s": 0.5749228000640869,
+     "mediana_s": 0.5860758000053465,
+     "reps": 5,
+     "preparacion_s": 0.19258709996938705,
+     "checksum": "3cbc87c7681f34db"
+    }
+   }
+  },
+  {
+   "escenario": "fp30.factor.d300",
+   "grupo": "F_998244353",
+   "descripcion": "factor() de un polinomio mónico aleatorio de grado 300",
+   "coinciden": true,
+   "resultados": {
+    "alcp_nivel_a": {
+     "estado": "ok",
+     "min_s": 0.905635799979791,
+     "mediana_s": 0.9151975999120623,
+     "reps": 5,
+     "preparacion_s": 0.011787800001911819,
+     "checksum": "2a631a3edb0cf14d"
+    },
+    "alcp_nivel_b": {
+     "estado": "ok",
+     "min_s": 0.34779189992696047,
+     "mediana_s": 0.35208360000979155,
+     "reps": 5,
+     "preparacion_s": 0.012275299988687038,
+     "checksum": "2a631a3edb0cf14d"
+    },
+    "alcp_native_1h": {
+     "estado": "ok",
+     "min_s": 0.10863799997605383,
+     "mediana_s": 0.11066919995937496,
+     "reps": 5,
+     "preparacion_s": 0.07494690001476556,
+     "checksum": "2a631a3edb0cf14d"
+    },
+    "alcp_native": {
+     "estado": "ok",
+     "min_s": 0.1087052000220865,
+     "mediana_s": 0.11210190004203469,
+     "reps": 5,
+     "preparacion_s": 0.08689479995518923,
+     "checksum": "2a631a3edb0cf14d"
+    },
+    "flint": {
+     "estado": "ok",
+     "min_s": 0.059712199959903955,
+     "mediana_s": 0.0618114999961108,
+     "reps": 9,
+     "preparacion_s": 0.14371410000603646,
+     "checksum": "2a631a3edb0cf14d"
+    }
+   }
+  },
+  {
+   "escenario": "fp101.factor.d40",
+   "grupo": "F_101",
+   "descripcion": "factor() de un producto conocido de grado 40 con multiplicidades",
+   "coinciden": true,
+   "resultados": {
+    "alcp_nivel_a": {
+     "estado": "ok",
+     "min_s": 0.0004450998967513442,
+     "mediana_s": 0.0004981500096619129,
+     "reps": 500,
+     "preparacion_s": 0.008119400008581579,
+     "checksum": "beac702719576ae9"
+    },
+    "alcp_nivel_b": {
+     "estado": "ok",
+     "min_s": 0.0005008999723941088,
+     "mediana_s": 0.000555549981072545,
+     "reps": 500,
+     "preparacion_s": 0.005880899960175157,
+     "checksum": "beac702719576ae9"
+    },
+    "alcp_native_1h": {
+     "estado": "ok",
+     "min_s": 0.00042619998566806316,
+     "mediana_s": 0.0004663499421440065,
+     "reps": 500,
+     "preparacion_s": 2.729997504502535e-05,
+     "checksum": "beac702719576ae9"
+    },
+    "alcp_native": {
+     "estado": "ok",
+     "min_s": 0.00042420008685439825,
+     "mediana_s": 0.0004634000360965729,
+     "reps": 500,
+     "preparacion_s": 2.5399960577487946e-05,
+     "checksum": "beac702719576ae9"
+    },
+    "flint": {
+     "estado": "ok",
+     "min_s": 0.00016830000095069408,
+     "mediana_s": 0.00017329998081550002,
+     "reps": 500,
+     "preparacion_s": 0.12314919999334961,
+     "checksum": "beac702719576ae9"
+    }
+   }
+  },
+  {
+   "escenario": "fp101.factor.d100",
+   "grupo": "F_101",
+   "descripcion": "factor() de un polinomio mónico aleatorio de grado 100",
+   "coinciden": true,
+   "resultados": {
+    "alcp_nivel_a": {
+     "estado": "ok",
+     "min_s": 0.017904500011354685,
+     "mediana_s": 0.018568499945104122,
+     "reps": 27,
+     "preparacion_s": 0.010715699987486005,
+     "checksum": "424a0ca9965fddc2"
+    },
+    "alcp_nivel_b": {
+     "estado": "ok",
+     "min_s": 0.010951699921861291,
+     "mediana_s": 0.012357000028714538,
+     "reps": 41,
+     "preparacion_s": 0.010050400043837726,
+     "checksum": "424a0ca9965fddc2"
+    },
+    "alcp_native_1h": {
+     "estado": "ok",
+     "min_s": 0.0032612000359222293,
+     "mediana_s": 0.0033200999605469406,
+     "reps": 142,
+     "preparacion_s": 0.07780209998600185,
+     "checksum": "424a0ca9965fddc2"
+    },
+    "alcp_native": {
+     "estado": "ok",
+     "min_s": 0.0032673999667167664,
+     "mediana_s": 0.0033765999833121896,
+     "reps": 136,
+     "preparacion_s": 0.0805881000123918,
+     "checksum": "424a0ca9965fddc2"
+    },
+    "flint": {
+     "estado": "ok",
+     "min_s": 0.0010842999909073114,
+     "mediana_s": 0.001114749989937991,
+     "reps": 402,
+     "preparacion_s": 0.14042770001105964,
+     "checksum": "424a0ca9965fddc2"
+    }
+   }
+  },
+  {
+   "escenario": "fp101.irred.d200",
+   "grupo": "F_101",
+   "descripcion": "test de irreducibilidad de un polinomio IRREDUCIBLE de grado 200",
+   "coinciden": true,
+   "resultados": {
+    "alcp_nivel_a": {
+     "estado": "ok",
+     "min_s": 0.20113679999485612,
+     "mediana_s": 0.2077280000085011,
+     "reps": 5,
+     "preparacion_s": 0.007191000040620565,
+     "checksum": "3cbc87c7681f34db"
+    },
+    "alcp_nivel_b": {
+     "estado": "ok",
+     "min_s": 0.07870199996978045,
+     "mediana_s": 0.07940360007341951,
+     "reps": 7,
+     "preparacion_s": 0.006535899941809475,
+     "checksum": "3cbc87c7681f34db"
+    },
+    "alcp_native_1h": {
+     "estado": "ok",
+     "min_s": 0.033629999961704016,
+     "mediana_s": 0.035228900029323995,
+     "reps": 14,
+     "preparacion_s": 0.00011409993749111891,
+     "checksum": "3cbc87c7681f34db"
+    },
+    "alcp_native": {
+     "estado": "ok",
+     "min_s": 0.03601949999574572,
+     "mediana_s": 0.0372388000250794,
+     "reps": 14,
+     "preparacion_s": 9.600003249943256e-05,
+     "checksum": "3cbc87c7681f34db"
+    },
+    "flint": {
+     "estado": "ok",
+     "min_s": 0.019368299981579185,
+     "mediana_s": 0.020318199996836483,
+     "reps": 25,
+     "preparacion_s": 0.12599289999343455,
+     "checksum": "3cbc87c7681f34db"
+    }
+   }
+  },
+  {
+   "escenario": "fp127.mul.d500",
+   "grupo": "F_(2^127-1)",
+   "descripcion": "producto de dos polinomios de grado 500",
+   "coinciden": true,
+   "resultados": {
+    "alcp_nivel_a": {
+     "estado": "ok",
+     "min_s": 0.007585300016216934,
+     "mediana_s": 0.008561049995478243,
+     "reps": 60,
+     "preparacion_s": 0.013332500006072223,
+     "checksum": "6dea94a57c709dd7"
+    },
+    "alcp_nivel_b": {
+     "estado": "ok",
+     "min_s": 0.0007282999577000737,
+     "mediana_s": 0.0007405000505968928,
+     "reps": 500,
+     "preparacion_s": 0.011309299967251718,
+     "checksum": "6dea94a57c709dd7"
+    },
+    "alcp_native_1h": {
+     "estado": "ok",
+     "min_s": 0.0007302999729290605,
+     "mediana_s": 0.0007416000007651746,
+     "reps": 500,
+     "preparacion_s": 0.08149060001596808,
+     "checksum": "6dea94a57c709dd7"
+    },
+    "alcp_native": {
+     "estado": "ok",
+     "min_s": 0.0007323999889194965,
+     "mediana_s": 0.000748349993955344,
+     "reps": 500,
+     "preparacion_s": 0.07988199999090284,
+     "checksum": "6dea94a57c709dd7"
+    },
+    "flint": {
+     "estado": "ok",
+     "min_s": 0.0007895000744611025,
+     "mediana_s": 0.0008014499908313155,
+     "reps": 500,
+     "preparacion_s": 0.18508480000309646,
+     "checksum": "6dea94a57c709dd7"
+    }
+   }
+  },
+  {
+   "escenario": "fp127.factor.d20",
+   "grupo": "F_(2^127-1)",
+   "descripcion": "factor() de un polinomio mónico aleatorio de grado 20",
+   "coinciden": true,
+   "resultados": {
+    "alcp_nivel_a": {
+     "estado": "ok",
+     "min_s": 0.07537350000347942,
+     "mediana_s": 0.07707809994462878,
+     "reps": 7,
+     "preparacion_s": 0.00926709990017116,
+     "checksum": "73c30342b7641448"
+    },
+    "alcp_nivel_b": {
+     "estado": "ok",
+     "min_s": 0.04458009998779744,
+     "mediana_s": 0.0478285999270156,
+     "reps": 11,
+     "preparacion_s": 0.012182299979031086,
+     "checksum": "73c30342b7641448"
+    },
+    "alcp_native_1h": {
+     "estado": "ok",
+     "min_s": 0.0464080999372527,
+     "mediana_s": 0.047721599927172065,
+     "reps": 11,
+     "preparacion_s": 0.07968740002252162,
+     "checksum": "73c30342b7641448"
+    },
+    "alcp_native": {
+     "estado": "ok",
+     "min_s": 0.04680200002621859,
+     "mediana_s": 0.048123400076292455,
+     "reps": 11,
+     "preparacion_s": 0.08437479997519404,
+     "checksum": "73c30342b7641448"
+    },
+    "flint": {
+     "estado": "ok",
+     "min_s": 0.006268500001169741,
+     "mediana_s": 0.006968849978875369,
+     "reps": 68,
+     "preparacion_s": 0.1440829000202939,
+     "checksum": "73c30342b7641448"
+    }
+   }
+  },
+  {
+   "escenario": "f2e8.mul.d1000",
+   "grupo": "F_(2^8)",
+   "descripcion": "producto de grado 1000 en F_256 (módulo de AES)",
+   "coinciden": true,
+   "resultados": {
+    "alcp_nivel_a": {
+     "estado": "ok",
+     "min_s": 0.039378899964503944,
+     "mediana_s": 0.039968500030227005,
+     "reps": 13,
+     "preparacion_s": 0.013607400003820658,
+     "checksum": "c5bea53df6403519"
+    },
+    "alcp_nivel_b": {
+     "estado": "ok",
+     "min_s": 0.0024894000962376595,
+     "mediana_s": 0.002573350036982447,
+     "reps": 174,
+     "preparacion_s": 0.014012199942953885,
+     "checksum": "c5bea53df6403519"
+    },
+    "alcp_native_1h": {
+     "estado": "ok",
+     "min_s": 0.0025146999396383762,
+     "mediana_s": 0.0026140999980270863,
+     "reps": 175,
+     "preparacion_s": 0.07893109996803105,
+     "checksum": "c5bea53df6403519"
+    },
+    "alcp_native": {
+     "estado": "ok",
+     "min_s": 0.0025173999601975083,
+     "mediana_s": 0.002607000060379505,
+     "reps": 180,
+     "preparacion_s": 0.08136289997491986,
+     "checksum": "c5bea53df6403519"
+    },
+    "flint": {
+     "estado": "ok",
+     "min_s": 0.001873500063084066,
+     "mediana_s": 0.001953900035005063,
+     "reps": 230,
+     "preparacion_s": 0.20630530000198632,
+     "checksum": "c5bea53df6403519"
+    }
+   }
+  },
+  {
+   "escenario": "f2e8.factor.d30",
+   "grupo": "F_(2^8)",
+   "descripcion": "factor() de un polinomio mónico aleatorio de grado 30 en F_256",
+   "coinciden": true,
+   "resultados": {
+    "alcp_nivel_a": {
+     "estado": "ok",
+     "min_s": 0.03250610001850873,
+     "mediana_s": 0.03361299994867295,
+     "reps": 15,
+     "preparacion_s": 0.01041580003220588,
+     "checksum": "031d51f4b83860a1"
+    },
+    "alcp_nivel_b": {
+     "estado": "ok",
+     "min_s": 0.020371800055727363,
+     "mediana_s": 0.02106270001968369,
+     "reps": 24,
+     "preparacion_s": 0.011364800040610135,
+     "checksum": "031d51f4b83860a1"
+    },
+    "alcp_native_1h": {
+     "estado": "ok",
+     "min_s": 0.020367200020700693,
+     "mediana_s": 0.02089595003053546,
+     "reps": 24,
+     "preparacion_s": 0.08079060004092753,
+     "checksum": "031d51f4b83860a1"
+    },
+    "alcp_native": {
+     "estado": "ok",
+     "min_s": 0.019798399996943772,
+     "mediana_s": 0.020852799993008375,
+     "reps": 24,
+     "preparacion_s": 0.07335710001643747,
+     "checksum": "031d51f4b83860a1"
+    },
+    "flint": {
+     "estado": "ok",
+     "min_s": 0.0221174000762403,
+     "mediana_s": 0.02448509994428605,
+     "reps": 21,
+     "preparacion_s": 0.14880490000359714,
+     "checksum": "031d51f4b83860a1"
+    }
+   }
+  },
+  {
+   "escenario": "f3e30.mul.d200",
+   "grupo": "F_(3^30)",
+   "descripcion": "producto de grado 200 en F_(3^30)",
+   "coinciden": true,
+   "resultados": {
+    "alcp_nivel_a": {
+     "estado": "ok",
+     "min_s": 0.031670100055634975,
+     "mediana_s": 0.032956100010778755,
+     "reps": 16,
+     "preparacion_s": 0.012218799907714128,
+     "checksum": "065a5139db7ab635"
+    },
+    "alcp_nivel_b": {
+     "estado": "ok",
+     "min_s": 0.0022966000251471996,
+     "mediana_s": 0.0023615999380126595,
+     "reps": 199,
+     "preparacion_s": 0.012037900043651462,
+     "checksum": "065a5139db7ab635"
+    },
+    "alcp_native_1h": {
+     "estado": "ok",
+     "min_s": 0.0023044999688863754,
+     "mediana_s": 0.002380399964749813,
+     "reps": 185,
+     "preparacion_s": 0.08183180005289614,
+     "checksum": "065a5139db7ab635"
+    },
+    "alcp_native": {
+     "estado": "ok",
+     "min_s": 0.0023035999620333314,
+     "mediana_s": 0.002363799954764545,
+     "reps": 197,
+     "preparacion_s": 0.07852470001671463,
+     "checksum": "065a5139db7ab635"
+    },
+    "flint": {
+     "estado": "ok",
+     "min_s": 0.0012552000116556883,
+     "mediana_s": 0.001283499994315207,
+     "reps": 355,
+     "preparacion_s": 0.14019409997854382,
+     "checksum": "065a5139db7ab635"
+    }
+   }
+  },
+  {
+   "escenario": "f3e30.factor.d5",
+   "grupo": "F_(3^30)",
+   "descripcion": "factor() de un polinomio mónico aleatorio de grado 5 en F_(3^30)",
+   "coinciden": true,
+   "resultados": {
+    "alcp_nivel_a": {
+     "estado": "ok",
+     "min_s": 0.013569599948823452,
+     "mediana_s": 0.015148349979426712,
+     "reps": 34,
+     "preparacion_s": 0.01151629991363734,
+     "checksum": "e46efbed64da114c"
+    },
+    "alcp_nivel_b": {
+     "estado": "ok",
+     "min_s": 0.014382599969394505,
+     "mediana_s": 0.015385200036689639,
+     "reps": 33,
+     "preparacion_s": 0.011686500045470893,
+     "checksum": "e46efbed64da114c"
+    },
+    "alcp_native_1h": {
+     "estado": "ok",
+     "min_s": 0.014323699986562133,
+     "mediana_s": 0.015476799919269979,
+     "reps": 33,
+     "preparacion_s": 0.08574150002095848,
+     "checksum": "e46efbed64da114c"
+    },
+    "alcp_native": {
+     "estado": "ok",
+     "min_s": 0.014426800073124468,
+     "mediana_s": 0.015295700053684413,
+     "reps": 33,
+     "preparacion_s": 0.08681370003614575,
+     "checksum": "e46efbed64da114c"
+    },
+    "flint": {
+     "estado": "ok",
+     "min_s": 0.0050762000028043985,
+     "mediana_s": 0.005325599922798574,
+     "reps": 89,
+     "preparacion_s": 0.14805929991416633,
+     "checksum": "e46efbed64da114c"
+    }
+   }
+  }
+ ]
+}

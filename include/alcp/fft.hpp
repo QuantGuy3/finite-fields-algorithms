@@ -88,8 +88,9 @@ namespace alcp::fft {
 // x = x + v; escalado final por n^{-1}).  Solo cambia cómo se hace cada
 // operación: sobre uint64_t en lugar de mpz (sin reservas de memoria), con el
 // producto por un twiddle fijo reducido mediante el cociente precalculado de
-// Shoup.  Todas las operaciones devuelven el representante canónico en
-// [0, p), así que el resultado es idéntico bit a bit.
+// Shoup.  Desde la fase 5 los valores intermedios de la transformada viven en
+// [0, 4p) (mariposas perezosas, ver word::transform) y se normalizan al final;
+// el resultado es idéntico bit a bit.
 namespace word {
 
 // Disponible si los limbs de GMP son de 64 bits sin «nails».
@@ -163,6 +164,20 @@ void transform(const FFTTables<Elem>& t, u64* a, std::size_t n, bool inverse) {
 
     for (const auto& [i, j] : t.swaps) std::swap(a[i], a[j]);
 
+    // Fase 5: mariposas perezosas de Harvey ("Faster arithmetic for
+    // number-theoretic transforms", 2014) y sin saltos.  Antes cada mariposa
+    // hacía tres comparaciones con datos impredecibles y el predictor de saltos
+    // fallaba la mitad de las veces (14 ns por mariposa; ver
+    // docs/optimizacion/investigacion-fase5.md).  Ahora:
+    //   * los valores viven en [0, 4p) entre etapas (4p < 2^64 porque p < 2^62);
+    //   * u se lleva a [0, 2p) con una única corrección por máscara;
+    //   * v = w·y con Shoup SIN la corrección final está en [0, 2p) para
+    //     cualquier y < 2^64;
+    //   * x' = u + v e y' = u - v + 2p quedan en [0, 4p).
+    // La aritmética es la misma módulo p: solo cambia el representante
+    // intermedio, y al final se normaliza a [0, p).  El resultado es idéntico
+    // bit a bit al de la versión anterior.
+    const u64 p2 = 2 * p;
     for (std::size_t len = 2; len <= n; len <<= 1) {
         const std::size_t half = len >> 1;
         const u64* tw = tw_all + (half - 1);
@@ -171,17 +186,27 @@ void transform(const FFTTables<Elem>& t, u64* a, std::size_t n, bool inverse) {
             u64* x = a + i;
             u64* y = a + i + half;
             for (std::size_t j = 0; j < half; ++j) {
-                const u64 v = mul_shoup(tw[j], ts[j], y[j], p);
-                const u64 u = x[j];
-                const u64 s = u + v;
-                x[j] = (s >= p) ? s - p : s;
-                y[j] = (u >= v) ? u - v : u + p - v;
+                u64 u = x[j];
+                u -= p2 & (0 - static_cast<u64>(u >= p2));  // u en [0, 2p)
+                const u64 q = static_cast<u64>((static_cast<u128>(ts[j]) * y[j]) >> 64);
+                const u64 v = tw[j] * y[j] - q * p;          // v ≡ w·y, en [0, 2p)
+                x[j] = u + v;
+                y[j] = u - v + p2;
             }
         }
     }
 
-    if (inverse)
+    if (inverse) {
+        // mul_shoup admite cualquier entrada < 2^64 y devuelve [0, p).
         for (std::size_t i = 0; i < n; ++i) a[i] = mul_shoup(W.inv_n, W.inv_n_sh, a[i], p);
+    } else {
+        for (std::size_t i = 0; i < n; ++i) {
+            u64 z = a[i];
+            z -= p2 & (0 - static_cast<u64>(z >= p2));
+            z -= p & (0 - static_cast<u64>(z >= p));
+            a[i] = z;
+        }
+    }
 }
 
 }  // namespace word
