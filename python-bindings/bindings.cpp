@@ -20,7 +20,9 @@
 //   camino rápido para valores de 64 bits y, para el resto, la magnitud en bytes
 //   (int.to_bytes / int.from_bytes) con mpz_import / mpz_export.  Se acepta
 //   cualquier objeto con __index__ (bool, numpy.int64, ...); los float se
-//   rechazan con TypeError.
+//   rechazan con TypeError.  Desde la fase 6, los elementos y las listas de
+//   coeficientes que son int exactos de 64 bits no pasan por mpz con Fp64
+//   (EntInt, SalInt, ListaInt y ListaSal, más abajo); el resto sigue este camino.
 //
 // Excepciones del núcleo -> Python (traductor registrado en PYBIND11_MODULE)
 //   alcp::division_by_zero -> ZeroDivisionError   (se comprueba ANTES que
@@ -54,6 +56,7 @@
 
 #include <concepts>
 #include <cstddef>
+#include <cstdint>
 #include <exception>
 #include <forward_list>
 #include <memory>
@@ -85,6 +88,19 @@ inline py::object propio(PyObject* o) {
     return py::reinterpret_steal<py::object>(o);
 }
 
+// Entero de 64 bits con signo -> mpz.
+inline void i64_a_mpz(long long v, mpz_ptr z) {
+    if (std::in_range<long>(v)) {
+        mpz_set_si(z, static_cast<long>(v));
+    } else {
+        // long de 32 bits (Windows): se importa la magnitud como una palabra de 64 bits.
+        const unsigned long long mag = v < 0 ? 0ULL - static_cast<unsigned long long>(v)
+                                             : static_cast<unsigned long long>(v);
+        mpz_import(z, 1, -1, sizeof mag, 0, 0, &mag);
+        if (v < 0) mpz_neg(z, z);
+    }
+}
+
 // int de Python (tipo exacto int) -> mpz.
 inline void pylong_a_mpz(PyObject* o, mpz_ptr z) {
     int desborde = 0;
@@ -92,15 +108,7 @@ inline void pylong_a_mpz(PyObject* o, mpz_ptr z) {
     const long long v = PyLong_AsLongLongAndOverflow(o, &desborde);
     if (desborde == 0) {
         // Camino rápido: el valor cabe en 64 bits con signo.
-        if (std::in_range<long>(v)) {
-            mpz_set_si(z, static_cast<long>(v));
-        } else {
-            // long de 32 bits (Windows): se importa la magnitud como una palabra de 64 bits.
-            const unsigned long long mag = v < 0 ? 0ULL - static_cast<unsigned long long>(v)
-                                                 : static_cast<unsigned long long>(v);
-            mpz_import(z, 1, -1, sizeof mag, 0, 0, &mag);
-            if (v < 0) mpz_neg(z, z);
-        }
+        i64_a_mpz(v, z);
         return;
     }
     // Camino general (|v| >= 2^63): magnitud en bytes little-endian e importación
@@ -134,6 +142,67 @@ inline py::object mpz_a_pylong(mpz_srcptr z) {
     return r;
 }
 
+// ---------------------------------------------------------------------------
+// Conversión directa int <-> u64 (fase 6, propuesta 8)
+//
+// Medido en la fase 6 (bench/results/fase6/python.txt): con Fp64, pasar cada
+// coeficiente por std::vector<BigInt> y un mpz costaba más que el propio
+// núcleo (K.poly de grado 1000: 47 µs frente a 3,4 µs con conversión directa;
+// coeffs(): 4,4x; operaciones de elementos: 1,8x).  Estos tipos son la entrada
+// y la salida de las funciones expuestas en lugar de BigInt/vector<BigInt>:
+//   * Solo aceptan por el camino rápido un int EXACTO que cabe en 64 bits con
+//     signo (PyLong_AsLongLongAndOverflow, que existe en todas las versiones de
+//     CPython; no se usa PyUnstable_Long_IsCompact, que exige 3.12).
+//   * Todo lo demás (enteros grandes, bool, subclases de int, numpy.int64,
+//     objetos con __index__, float, str, None...) va al caster de siempre
+//     (type_caster<mpz_class> o el de std::vector<BigInt>), así que las
+//     excepciones, sus mensajes y el orden en que se detectan son los mismos.
+//   * Sus casters declaran el MISMO nombre de tipo que los originales: las
+//     firmas de los docstrings no cambian.
+// La reducción módulo p de un valor corto (reducir_i64) da lo mismo que
+// Fp64::from_int (mpz_fdiv_r: resto en [0, p) también para negativos).
+// ---------------------------------------------------------------------------
+
+// v mod p en [0, p), como mpz_fdiv_r.  |v| se calcula en u64 (también para
+// LLONG_MIN, cuyo opuesto no cabe en long long).
+inline std::uint64_t reducir_i64(long long v, std::uint64_t p) {
+    if (v >= 0) return static_cast<std::uint64_t>(v) % p;
+    const std::uint64_t r = (0ULL - static_cast<std::uint64_t>(v)) % p;
+    return r == 0 ? 0 : p - r;
+}
+
+// Entero de entrada: corto (cabe en long long) o, si no, ya convertido a mpz.
+struct EntInt {
+    bool corto = false;
+    long long v = 0;
+    BigInt grande;
+    BigInt big() const {
+        if (!corto) return grande;
+        BigInt r;
+        i64_a_mpz(v, r.get_mpz_t());
+        return r;
+    }
+};
+
+// Entero de salida: u64 (elemento de Fp64) o BigInt (resto de cuerpos).
+struct SalInt {
+    bool corto = false;
+    std::uint64_t v = 0;
+    BigInt grande;
+};
+
+// Lista de enteros de entrada: todos cortos (en v) o la conversión de siempre.
+struct ListaInt {
+    bool corta = false;
+    std::vector<long long> v;
+    std::vector<BigInt> grandes;
+};
+
+// Lista de salida ya construida como list de Python.
+struct ListaSal {
+    py::object l;
+};
+
 }  // namespace alcp_py
 
 // type_caster de pybind11 para alcp::BigInt (= mpz_class): cualquier parámetro
@@ -166,6 +235,85 @@ struct type_caster<mpz_class> {
 
     static handle cast(const mpz_class& v, return_value_policy /*policy*/, handle /*parent*/) {
         return alcp_py::mpz_a_pylong(v.get_mpz_t()).release();
+    }
+};
+
+// Casters de la conversión directa (fase 6, propuesta 8; ver alcp_py::EntInt).
+template <>
+struct type_caster<alcp_py::EntInt> {
+    PYBIND11_TYPE_CASTER(alcp_py::EntInt, make_caster<mpz_class>::name);
+
+    bool load(handle src, bool convert) {
+        if (src.ptr() != nullptr && PyLong_CheckExact(src.ptr())) {
+            int desborde = 0;  // int exacto: no puede fallar, solo desbordar
+            const long long v = PyLong_AsLongLongAndOverflow(src.ptr(), &desborde);
+            if (desborde == 0) {
+                value.corto = true;
+                value.v = v;
+                return true;
+            }
+        }
+        // Cualquier otro caso: el caster de siempre (mismos errores).
+        make_caster<mpz_class> c;
+        if (!c.load(src, convert)) return false;
+        value.grande = std::move(cast_op<mpz_class&>(c));
+        return true;
+    }
+    // Solo se usa como parámetro: no hace falta cast().
+};
+
+template <>
+struct type_caster<alcp_py::SalInt> {
+    PYBIND11_TYPE_CASTER(alcp_py::SalInt, make_caster<mpz_class>::name);
+    // Solo se usa como valor devuelto: no hace falta load().
+    static handle cast(const alcp_py::SalInt& v, return_value_policy /*policy*/, handle /*parent*/) {
+        if (v.corto) return alcp_py::propio(PyLong_FromUnsignedLongLong(v.v)).release();
+        return alcp_py::mpz_a_pylong(v.grande.get_mpz_t()).release();
+    }
+};
+
+template <>
+struct type_caster<alcp_py::ListaInt> {
+    using Generico = make_caster<std::vector<alcp::BigInt>>;
+    PYBIND11_TYPE_CASTER(alcp_py::ListaInt, Generico::name);
+
+    bool load(handle src, bool convert) {
+        PyObject* o = src.ptr();
+        // Camino rápido: list o tuple exactos cuyos elementos son todos int
+        // exactos de 64 bits.  Mientras se recorre no se ejecuta código Python
+        // (ni __index__ ni __len__), así que la lista no puede cambiar.
+        if (o != nullptr && (PyList_CheckExact(o) || PyTuple_CheckExact(o)) && cortos(o)) return true;
+        // Si no, la conversión de siempre (mismos errores, mismo orden).
+        value.corta = false;
+        value.v.clear();
+        Generico c;
+        if (!c.load(src, convert)) return false;
+        value.grandes = std::move(cast_op<std::vector<alcp::BigInt>&>(c));
+        return true;
+    }
+
+private:
+    bool cortos(PyObject* o) {
+        const Py_ssize_t n = PySequence_Fast_GET_SIZE(o);
+        PyObject** items = PySequence_Fast_ITEMS(o);
+        value.v.resize(static_cast<std::size_t>(n));
+        for (Py_ssize_t i = 0; i < n; ++i) {
+            if (!PyLong_CheckExact(items[i])) return false;
+            int desborde = 0;
+            value.v[static_cast<std::size_t>(i)] = PyLong_AsLongLongAndOverflow(items[i], &desborde);
+            if (desborde != 0) return false;
+        }
+        value.corta = true;
+        return true;
+    }
+};
+
+template <>
+struct type_caster<alcp_py::ListaSal> {
+    PYBIND11_TYPE_CASTER(alcp_py::ListaSal, make_caster<std::vector<alcp::BigInt>>::name);
+    // Solo se usa como valor devuelto: no hace falta load().
+    static handle cast(const alcp_py::ListaSal& v, return_value_policy /*policy*/, handle /*parent*/) {
+        return v.l.inc_ref();
     }
 };
 }  // namespace pybind11::detail
@@ -316,6 +464,49 @@ std::vector<BigInt> elems_out(const Field& K, const std::vector<typename Field::
     return std::vector<BigInt>(vista.begin(), vista.end());
 }
 
+// Conversión directa (fase 6, propuesta 8).  Con Fp64, un entero corto se
+// reduce módulo p sin pasar por mpz y la salida es el u64 tal cual; con los
+// demás cuerpos (Fp de GMP, Fq) se sigue usando el BigInt de siempre.
+inline Fp64::Elem elem_in(const Fp64& K, const EntInt& x) {
+    return x.corto ? reducir_i64(x.v, K.modulus64()) : K.from_int(x.grande);
+}
+template <class Field>
+typename Field::Elem elem_in(const Field& K, const EntInt& x) { return elem_in(K, x.big()); }
+
+// Inmersión de un entero (K.from_int): (a mod p)·1.  Con Fp64 coincide con
+// elem_in; con Fq NO (elem_in es un índice que se reduce módulo q), así que
+// los demás cuerpos llaman a K.from_int como antes.
+inline Fp64::Elem desde_int(const Fp64& K, const EntInt& x) { return elem_in(K, x); }
+template <class Field>
+typename Field::Elem desde_int(const Field& K, const EntInt& x) { return K.from_int(x.big()); }
+
+inline SalInt elem_sal(const Fp64& /*K*/, const Fp64::Elem& e) { return SalInt{true, e, {}}; }
+template <class Field>
+SalInt elem_sal(const Field& K, const typename Field::Elem& e) { return SalInt{false, 0, elem_out(K, e)}; }
+
+inline std::vector<Fp64::Elem> elems_in(const Fp64& K, const ListaInt& l) {
+    if (!l.corta) return elems_in(K, l.grandes);
+    const std::uint64_t p = K.modulus64();
+    const auto vista = l.v | std::views::transform([p](long long x) { return reducir_i64(x, p); });
+    return std::vector<Fp64::Elem>(vista.begin(), vista.end());
+}
+template <class Field>
+std::vector<typename Field::Elem> elems_in(const Field& K, const ListaInt& l) {
+    if (!l.corta) return elems_in(K, l.grandes);
+    const auto vista = l.v | std::views::transform([&K](long long x) { return elem_in(K, EntInt{true, x, {}}); });
+    return std::vector<typename Field::Elem>(vista.begin(), vista.end());
+}
+
+// Lista de salida: con Fp64, cada int se crea directamente desde el u64.
+inline py::object lista_sal(const Fp64& /*K*/, const std::vector<Fp64::Elem>& v) {
+    py::list l(v.size());
+    for (std::size_t i = 0; i < v.size(); ++i)
+        PyList_SET_ITEM(l.ptr(), static_cast<py::ssize_t>(i), propio(PyLong_FromUnsignedLongLong(v[i])).release().ptr());
+    return l;
+}
+template <class Field>
+py::object lista_sal(const Field& K, const std::vector<typename Field::Elem>& v) { return py::cast(elems_out(K, v)); }
+
 // Identidad de un cuerpo (para __hash__): sus parámetros, como en operator==.
 // No depende del backend (dos cuerpos que solo difieren en él tienen el mismo
 // hash aunque no sean iguales, lo que está permitido).
@@ -384,7 +575,7 @@ struct PolyW {
     // crear el envoltorio (el código original hacía PolyW(std::move(k),
     // Poly(*k, ...)), con orden de evaluación no especificado: podía
     // desreferenciar un puntero ya movido).
-    static PolyW desde_lista(const std::shared_ptr<W>& f, const std::vector<BigInt>& cs) {
+    static PolyW desde_lista(const std::shared_ptr<W>& f, const ListaInt& cs) {
         return en(*f, [&](const auto& K) {
             using Field = std::decay_t<decltype(K)>;
             alcp::Poly<Field> poly(K, elems_in(K, cs));
@@ -396,8 +587,9 @@ struct PolyW {
     template <class Field>
     PolyW mismo(alcp::Poly<Field> q) const { return PolyW(F, std::move(q)); }
 
-    std::vector<BigInt> coeffs() const {
-        return con([](const auto& x) { return elems_out(x.field(), x.coeffs()); });
+    // Coeficientes como list de Python (conversión directa con Fp64).
+    py::object coeffs() const {
+        return con([](const auto& x) { return lista_sal(x.field(), x.coeffs()); });
     }
 };
 
@@ -609,27 +801,29 @@ struct OpsCuerpo {
     static std::shared_ptr<W> copia(const std::shared_ptr<W>& f) { return f; }
     static std::shared_ptr<W> copia_profunda(const std::shared_ptr<W>& f, const py::dict& /*memo*/) { return f; }
     static unsigned long fft_capacity(const W& f) { return en(f, [](const auto& K) { return K.fft_capacity(); }); }
-    static BigInt fft_base_root(const W& f) { return en(f, [](const auto& K) { return elem_out(K, K.fft_base_root()); }); }
-    static BigInt from_int(const W& f, const BigInt& a) { return en(f, [&](const auto& K) { return elem_out(K, K.from_int(a)); }); }
-    static BigInt random(const W& f) { return en(f, [](const auto& K) { return elem_out(K, K.random()); }); }
-    static BigInt add(const W& f, const BigInt& a, const BigInt& b) {
-        return en(f, [&](const auto& K) { return elem_out(K, K.add(elem_in(K, a), elem_in(K, b))); });
+    static SalInt fft_base_root(const W& f) { return en(f, [](const auto& K) { return elem_sal(K, K.fft_base_root()); }); }
+    // Los elementos entran como EntInt y salen como SalInt (conversión directa
+    // de la fase 6).
+    static SalInt from_int(const W& f, const EntInt& a) { return en(f, [&](const auto& K) { return elem_sal(K, desde_int(K, a)); }); }
+    static SalInt random(const W& f) { return en(f, [](const auto& K) { return elem_sal(K, K.random()); }); }
+    static SalInt add(const W& f, const EntInt& a, const EntInt& b) {
+        return en(f, [&](const auto& K) { return elem_sal(K, K.add(elem_in(K, a), elem_in(K, b))); });
     }
-    static BigInt sub(const W& f, const BigInt& a, const BigInt& b) {
-        return en(f, [&](const auto& K) { return elem_out(K, K.sub(elem_in(K, a), elem_in(K, b))); });
+    static SalInt sub(const W& f, const EntInt& a, const EntInt& b) {
+        return en(f, [&](const auto& K) { return elem_sal(K, K.sub(elem_in(K, a), elem_in(K, b))); });
     }
-    static BigInt neg(const W& f, const BigInt& a) { return en(f, [&](const auto& K) { return elem_out(K, K.neg(elem_in(K, a))); }); }
-    static BigInt mul(const W& f, const BigInt& a, const BigInt& b) {
-        return en(f, [&](const auto& K) { return elem_out(K, K.mul(elem_in(K, a), elem_in(K, b))); });
+    static SalInt neg(const W& f, const EntInt& a) { return en(f, [&](const auto& K) { return elem_sal(K, K.neg(elem_in(K, a))); }); }
+    static SalInt mul(const W& f, const EntInt& a, const EntInt& b) {
+        return en(f, [&](const auto& K) { return elem_sal(K, K.mul(elem_in(K, a), elem_in(K, b))); });
     }
-    static BigInt div(const W& f, const BigInt& a, const BigInt& b) {
-        return en(f, [&](const auto& K) { return elem_out(K, K.div(elem_in(K, a), elem_in(K, b))); });
+    static SalInt div(const W& f, const EntInt& a, const EntInt& b) {
+        return en(f, [&](const auto& K) { return elem_sal(K, K.div(elem_in(K, a), elem_in(K, b))); });
     }
-    static BigInt inv(const W& f, const BigInt& a) { return en(f, [&](const auto& K) { return elem_out(K, K.inv(elem_in(K, a))); }); }
-    static BigInt pow(const W& f, const BigInt& a, const BigInt& k) {
-        return en(f, [&](const auto& K) { return elem_out(K, K.pow(elem_in(K, a), k)); });
+    static SalInt inv(const W& f, const EntInt& a) { return en(f, [&](const auto& K) { return elem_sal(K, K.inv(elem_in(K, a))); }); }
+    static SalInt pow(const W& f, const EntInt& a, const BigInt& k) {
+        return en(f, [&](const auto& K) { return elem_sal(K, K.pow(elem_in(K, a), k)); });
     }
-    static PW poly(std::shared_ptr<W> f, const std::vector<BigInt>& cs) { return PW::desde_lista(f, cs); }
+    static PW poly(std::shared_ptr<W> f, const ListaInt& cs) { return PW::desde_lista(f, cs); }
     static PW random_poly(std::shared_ptr<W> f, const BigInt& d) {
         // d < 0 da el polinomio cero.  El núcleo reserva d + 1 coeficientes en
         // un int: con d = INT_MAX se desbordaría, así que se exige d + 1 <= INT_MAX.
@@ -683,17 +877,17 @@ template <class W>
 struct OpsPoli {
     using PW = PolyW<W>;
 
-    static PW crear(std::shared_ptr<W> f, const std::vector<BigInt>& cs) { return PW::desde_lista(f, cs); }
+    static PW crear(std::shared_ptr<W> f, const ListaInt& cs) { return PW::desde_lista(f, cs); }
     static std::shared_ptr<W> field(const PW& a) { return a.F; }
-    static std::vector<BigInt> coeffs(const PW& a) { return a.coeffs(); }
-    static BigInt coeff(const PW& a, const BigInt& i) {
+    static ListaSal coeffs(const PW& a) { return ListaSal{a.coeffs()}; }
+    static SalInt coeff(const PW& a, const BigInt& i) {
         const auto k = a_maquina<std::size_t>(i, "i");
-        return a.con([&](const auto& x) { return elem_out(x.field(), x.coeff(k)); });
+        return a.con([&](const auto& x) { return elem_sal(x.field(), x.coeff(k)); });
     }
     static int degree(const PW& a) { return a.con([](const auto& x) { return x.degree(); }); }
     static bool is_zero(const PW& a) { return a.con([](const auto& x) { return x.is_zero(); }); }
     static bool is_one(const PW& a) { return a.con([](const auto& x) { return x.is_one(); }); }
-    static BigInt leading(const PW& a) { return a.con([](const auto& x) { return elem_out(x.field(), x.lead()); }); }
+    static SalInt leading(const PW& a) { return a.con([](const auto& x) { return elem_sal(x.field(), x.lead()); }); }
     // Con distinto backend son cuerpos distintos: False, como en el núcleo.
     static bool eq(const PW& a, const PW& b) {
         return a.con([&](const auto& x) {
@@ -702,7 +896,7 @@ struct OpsPoli {
         });
     }
     static py::ssize_t hash(const PW& a) {
-        return py::hash(py::make_tuple(en(*a.F, [](const auto& K) { return clave(K); }), py::tuple(py::cast(a.coeffs()))));
+        return py::hash(py::make_tuple(en(*a.F, [](const auto& K) { return clave(K); }), py::tuple(a.coeffs())));
     }
     static PW copia(const PW& a) { return a; }
     static PW copia_profunda(const PW& a, const py::dict& /*memo*/) { return a; }
@@ -723,13 +917,13 @@ struct OpsPoli {
         const alcp::MulAlgo al = algoritmo(algo);
         return a.con([&](const auto& x) { return a.mismo(x.mul(PW::par(x, b), al)); });
     }
-    static PW scalar_mul(const PW& a, const BigInt& e) {
+    static PW scalar_mul(const PW& a, const EntInt& e) {
         return a.con([&](const auto& x) { return a.mismo(x.scalar_mul(elem_in(x.field(), e))); });
     }
     static PW derivative(const PW& a) { return a.con([&](const auto& x) { return a.mismo(x.derivative()); }); }
     static PW monic(const PW& a) { return a.con([&](const auto& x) { return a.mismo(x.monic()); }); }
-    static BigInt evaluate(const PW& a, const BigInt& v) {
-        return a.con([&](const auto& x) { return elem_out(x.field(), x.evaluate(elem_in(x.field(), v))); });
+    static SalInt evaluate(const PW& a, const EntInt& v) {
+        return a.con([&](const auto& x) { return elem_sal(x.field(), x.evaluate(elem_in(x.field(), v))); });
     }
     static PW compose(const PW& a, const PW& g) { return a.con([&](const auto& x) { return a.mismo(x.compose(PW::par(x, g))); }); }
     static bool is_irreducible(const PW& a) { return a.con([](const auto& x) { return x.is_irreducible(); }); }
