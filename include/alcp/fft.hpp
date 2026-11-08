@@ -16,6 +16,7 @@
 #include "fp.hpp"
 
 #include <algorithm>
+#include <bit>
 #include <concepts>
 #include <cstdint>
 #include <cstdlib>
@@ -151,6 +152,15 @@ void build_tables(FFTTables<Elem>& t, u64 p) {
     for (std::size_t i = 0; i < w.inv.size(); ++i) w.inv_sh[i] = shoup(w.inv[i], p);
     w.inv_n = to_word(t.inv_n);
     w.inv_n_sh = shoup(w.inv_n, p);
+    // Fase 7: constantes de Montgomery para la convolución radix 4 (solo p
+    // impar; p = 2 solo admite n = 1 y sigue el camino anterior).
+    if (p & 1) {
+        u64 x = p;  // p·p ≡ 1 mod 8; cada paso de Newton duplica los bits
+        for (int i = 0; i < 6; ++i) x *= 2 - p * x;
+        w.pinv = 0 - x;
+        w.mont_c = static_cast<u64>((static_cast<u128>(w.inv_n) << 64) % p);
+        w.mont_c_sh = shoup(w.mont_c, p);
+    }
     w.p = p;
 }
 
@@ -207,6 +217,161 @@ void transform(const FFTTables<Elem>& t, u64* a, std::size_t n, bool inverse) {
             a[i] = z;
         }
     }
+}
+
+// ---------------------------------------------------------------------------
+// Convolución radix 4 sin permutación (fase 7)
+// ---------------------------------------------------------------------------
+// Rutinas PROPIAS de la convolución (transform, que es API pública vía
+// fft::transform y devuelve el orden natural, no cambia).  En una convolución
+// el orden de los valores transformados da igual mientras el producto punto a
+// punto empareje los mismos índices, así que:
+//   * la directa es DIF (Gentleman-Sande): entrada natural, salida en orden de
+//     bits invertido, sin la permutación t.swaps;
+//   * la inversa es DIT sobre esa entrada en orden de bits invertido y deja la
+//     salida en orden natural, también sin permutación;
+//   * las etapas se agrupan de dos en dos (radix 4: cuatro valores en registros
+//     por cada pasada de memoria) y la última pareja (len = 4), cuyos twiddles
+//     son 1 salvo uno, se especializa;
+//   * el producto punto a punto es de Montgomery y lleva fusionado el factor
+//     n^{-1} (desaparece la pasada de escalado de la inversa).
+// Mismos twiddles que transform (tablas fwd/inv por etapas).  La aritmética es
+// exacta módulo p y la salida se normaliza a [0, p): el resultado es idéntico
+// al del camino anterior.  Medido en la fase 6 (bench/results/fase6/ntt.txt,
+// variante «B4e»): 1,5-1,8x en la convolución completa.
+//
+// Representantes perezosos (Harvey): la directa trabaja en [0, 2p), el producto
+// devuelve [0, 2p) y la inversa trabaja en [0, 4p); 4p < 2^64 porque p < 2^62.
+
+// x en [0, 2m) -> [0, m) sin saltos.
+inline u64 red(u64 x, u64 m) { return x - (m & (0 - static_cast<u64>(x >= m))); }
+// w·y mod p con Shoup SIN la corrección final: en [0, 2p) para cualquier y < 2^64.
+inline u64 shoup_lazy(u64 w, u64 ws, u64 y, u64 p) {
+    return w * y - static_cast<u64>((static_cast<u128>(ws) * y) >> 64) * p;
+}
+
+// Directa DIF radix 4 en sitio: a[0..n) en [0, 2p) (o [0, p)) en orden
+// natural -> transformada en orden de bits invertido, en [0, 2p).
+inline void dif_r4(const WordNTTTables& W, u64* a, std::size_t n) {
+    const u64 p = W.p, p2 = 2 * p;
+    const u64* TW = W.fwd.data();
+    const u64* TS = W.fwd_sh.data();
+    std::size_t len = n;
+    if (n >= 2 && (std::countr_zero(n) & 1)) {
+        // k impar: una etapa radix 2 (len = n) y el resto, de dos en dos.
+        const std::size_t half = n >> 1;
+        const u64* tw = TW + (half - 1);
+        const u64* ts = TS + (half - 1);
+        for (std::size_t j = 0; j < half; ++j) {
+            const u64 u = a[j], v = a[j + half];
+            a[j] = red(u + v, p2);
+            a[j + half] = shoup_lazy(tw[j], ts[j], u - v + p2, p);
+        }
+        len = half;
+    }
+    for (; len > 4; len >>= 2) {
+        // Etapas len (twiddles w1, half = 2q) y len/2 (w2, half = q) fusionadas.
+        const std::size_t q = len >> 2;
+        const u64 *w1 = TW + (2 * q - 1), *s1 = TS + (2 * q - 1);
+        const u64 *w2 = TW + (q - 1), *s2 = TS + (q - 1);
+        for (std::size_t i = 0; i < n; i += len) {
+            u64* x = a + i;
+            for (std::size_t j = 0; j < q; ++j) {
+                const u64 a0 = x[j], a1 = x[j + q], a2 = x[j + 2 * q], a3 = x[j + 3 * q];
+                const u64 b0 = red(a0 + a2, p2), b2 = shoup_lazy(w1[j], s1[j], a0 - a2 + p2, p);
+                const u64 b1 = red(a1 + a3, p2), b3 = shoup_lazy(w1[j + q], s1[j + q], a1 - a3 + p2, p);
+                x[j] = red(b0 + b1, p2);
+                x[j + q] = shoup_lazy(w2[j], s2[j], b0 - b1 + p2, p);
+                x[j + 2 * q] = red(b2 + b3, p2);
+                x[j + 3 * q] = shoup_lazy(w2[j], s2[j], b2 - b3 + p2, p);
+            }
+        }
+    }
+    if (len == 4) {
+        // Última pareja de etapas: w_4^0 = w_2^0 = 1, una sola multiplicación
+        // (por w_4^1) por cada cuatro valores.
+        const u64 w4 = TW[2], w4s = TS[2];
+        for (std::size_t i = 0; i < n; i += 4) {
+            const u64 a0 = a[i], a1 = a[i + 1], a2 = a[i + 2], a3 = a[i + 3];
+            const u64 b0 = red(a0 + a2, p2), b2 = red(a0 - a2 + p2, p2);
+            const u64 b1 = red(a1 + a3, p2), b3 = shoup_lazy(w4, w4s, a1 - a3 + p2, p);
+            a[i] = red(b0 + b1, p2);
+            a[i + 1] = red(b0 - b1 + p2, p2);
+            a[i + 2] = red(b2 + b3, p2);
+            a[i + 3] = red(b2 - b3 + p2, p2);
+        }
+    }
+}
+
+// Inversa DIT radix 4 en sitio SIN el factor n^{-1} (va en el producto punto a
+// punto): a[0..n) en [0, 4p) en orden de bits invertido -> orden natural, en
+// [0, 4p).  Es la exacta inversa de dif_r4 salvo el factor n.
+inline void dit_r4(const WordNTTTables& W, u64* a, std::size_t n) {
+    const u64 p = W.p, p2 = 2 * p;
+    const u64* TW = W.inv.data();
+    const u64* TS = W.inv_sh.data();
+    std::size_t len = 4;
+    if (n >= 4) {
+        const u64 w4 = TW[2], w4s = TS[2];
+        for (std::size_t i = 0; i < n; i += 4) {
+            const u64 a0 = red(a[i], p2), a1 = red(a[i + 1], p2);
+            const u64 a2 = red(a[i + 2], p2), a3 = red(a[i + 3], p2);
+            const u64 b0 = a0 + a1, b1 = a0 - a1 + p2;  // [0, 4p)
+            const u64 b2 = a2 + a3, b3 = a2 - a3 + p2;
+            const u64 u0 = red(b0, p2), v2 = red(b2, p2);
+            a[i] = u0 + v2;
+            a[i + 2] = u0 - v2 + p2;
+            const u64 u1 = red(b1, p2), v3 = shoup_lazy(w4, w4s, b3, p);
+            a[i + 1] = u1 + v3;
+            a[i + 3] = u1 - v3 + p2;
+        }
+        len = 16;
+    }
+    for (; len <= n; len <<= 2) {
+        const std::size_t q = len >> 2;
+        const u64 *w1 = TW + (2 * q - 1), *s1 = TS + (2 * q - 1);  // half 2q
+        const u64 *w2 = TW + (q - 1), *s2 = TS + (q - 1);          // half q
+        for (std::size_t i = 0; i < n; i += len) {
+            u64* x = a + i;
+            for (std::size_t j = 0; j < q; ++j) {
+                const u64 a0 = red(x[j], p2), a2 = red(x[j + 2 * q], p2);
+                u64 v = shoup_lazy(w2[j], s2[j], x[j + q], p);
+                const u64 b0 = a0 + v, b1 = a0 - v + p2;
+                v = shoup_lazy(w2[j], s2[j], x[j + 3 * q], p);
+                const u64 b2 = a2 + v, b3 = a2 - v + p2;
+                const u64 u0 = red(b0, p2), u1 = red(b1, p2);
+                v = shoup_lazy(w1[j], s1[j], b2, p);
+                x[j] = u0 + v;
+                x[j + 2 * q] = u0 - v + p2;
+                v = shoup_lazy(w1[j + q], s1[j + q], b3, p);
+                x[j + q] = u1 + v;
+                x[j + 3 * q] = u1 - v + p2;
+            }
+        }
+    }
+    if (n >= 2 && (std::countr_zero(n) & 1)) {
+        // k impar: falta la última etapa radix 2 (len = n).
+        const std::size_t half = n >> 1;
+        const u64* tw = TW + (half - 1);
+        const u64* ts = TS + (half - 1);
+        for (std::size_t j = 0; j < half; ++j) {
+            const u64 u = red(a[j], p2);
+            const u64 v = shoup_lazy(tw[j], ts[j], a[j + half], p);
+            a[j] = u + v;
+            a[j + half] = u - v + p2;
+        }
+    }
+}
+
+// a[i] <- a[i]·b[i]·n^{-1} mod p, en [0, 2p), con a[i], b[i] en [0, 2p).
+// REDC(a·b) = a·b·2^{-64} está en [0, 2p) porque a·b < 4p^2 y 4p < 2^64; el
+// producto por mont_c = n^{-1}·2^64 (Shoup perezoso) quita el 2^{-64} y pone
+// el n^{-1}.  Requiere p impar (W.pinv != 0).
+inline u64 mul_mont_n(const WordNTTTables& W, u64 a, u64 b) {
+    const u128 t = static_cast<u128>(a) * b;
+    const u64 m = static_cast<u64>(t) * W.pinv;
+    const u64 u = static_cast<u64>((t + static_cast<u128>(m) * W.p) >> 64);
+    return shoup_lazy(W.mont_c, W.mont_c_sh, u, W.p);
 }
 
 }  // namespace word
@@ -608,6 +773,32 @@ std::vector<Elem> convolve_word(const FFTTables<Elem>& t, const std::vector<Elem
     const u64 p = t.word.p;
     std::vector<u64> wa(n, 0);
     for (std::size_t i = 0; i < A.size(); ++i) wa[i] = word::to_word(A[i]);
+    if (t.word.pinv != 0) {
+        // Fase 7: directa DIF radix 4, producto de Montgomery con n^{-1} e
+        // inversa DIT radix 4, sin permutaciones (ver «Convolución radix 4»).
+        const WordNTTTables& W = t.word;
+        if (&A == &B) {  // cuadrado: una sola transformada directa
+            word::dif_r4(W, wa.data(), n);
+            for (std::size_t i = 0; i < n; ++i) wa[i] = word::mul_mont_n(W, wa[i], wa[i]);
+        } else {
+            std::vector<u64> wb(n, 0);
+            for (std::size_t i = 0; i < B.size(); ++i) wb[i] = word::to_word(B[i]);
+            if (n >= kParWordMin && par::max_threads() > 1) {
+                auto fb = std::async(std::launch::async, [&] { word::dif_r4(W, wb.data(), n); });
+                word::dif_r4(W, wa.data(), n);
+                fb.get();
+            } else {
+                word::dif_r4(W, wa.data(), n);
+                word::dif_r4(W, wb.data(), n);
+            }
+            for (std::size_t i = 0; i < n; ++i) wa[i] = word::mul_mont_n(W, wa[i], wb[i]);
+        }
+        word::dit_r4(W, wa.data(), n);
+        // Solo hacen falta los L primeros coeficientes: se normalizan al copiar.
+        std::vector<Elem> out(L);
+        for (std::size_t i = 0; i < L; ++i) word::set_word(out[i], word::red(word::red(wa[i], 2 * p), p));
+        return out;
+    }
     if (&A == &B) {  // cuadrado: una sola transformada directa
         word::transform(t, wa.data(), n, false);
         for (std::size_t i = 0; i < n; ++i) wa[i] = word::mul_mod(wa[i], wa[i], p);

@@ -40,6 +40,11 @@ struct WordNTTTables {
     std::uint64_t p = 0;
     std::vector<std::uint64_t> fwd, fwd_sh, inv, inv_sh;  // n - 1 entradas
     std::uint64_t inv_n = 0, inv_n_sh = 0;
+    // Fase 7 (convolución radix 4): constantes del producto punto a punto de
+    // Montgomery fusionado con n^{-1}.  pinv = -p^{-1} mod 2^64 (0 si p es par:
+    // entonces se usa el camino anterior); mont_c = n^{-1}·2^64 mod p y su
+    // cociente de Shoup.  Se derivan de inv_n: no se calcula ninguna raíz.
+    std::uint64_t pinv = 0, mont_c = 0, mont_c_sh = 0;
 };
 
 // Versión multi-limb (F_p con p >= 2^62): cada valor ocupa N limbs de 64 bits
