@@ -868,6 +868,19 @@ public:
     // potencias guardadas se limitan a kFrobPresupuesto coeficientes; con menos
     // potencias hacen falta pasos gigantes, y no se compone si serían más que
     // los productos de un pow_mod.
+    // Fase 6: al cambiar de módulo (distinct_degree) lo gastado en potencias
+    // ya no se olvida.  Antes cambiar_modulo ponía la cuenta a cero y cada
+    // factor encontrado costaba al menos un pow_mod más antes de volver a
+    // componer (con q grande, cerca de la mitad de la DDF por debajo de
+    // Kaltofen-Shoup).  Ahora la regla de alquilar o comprar se aplica con el
+    // gasto acumulado (gastado_): si ya compensaba comprar y q no es diminuto
+    // (compone_ya), se compone desde el primer paso con el nuevo módulo
+    // (DDF 1,7-2,3x más rápida en F_(2^127-1), 1,4-1,5x en F_998244353,
+    // 1,2-1,3x en F_101, hasta 1,1x en F_9; F_2 y F_3 no cambian).  Esos pasos, que antes eran pow_mod
+    // (productos con operator*, que la primera vez pueden pedir la raíz de la
+    // FFT al generador), pasan a ser composiciones (mul_no_rng); por eso solo
+    // se adelanta la composición cuando ese pow_mod no habría tocado el
+    // generador (rng_intacto).  Los H_i son los mismos.
     class Frobenius {
     public:
         Frobenius(const Poly& f, FrobeniusAlgo algo = FrobeniusAlgo::Auto)
@@ -879,11 +892,18 @@ public:
         const Reducer& reducer() const { return red_; }
         // Siguiente término: de H = H_{i-1} a H_i.
         Poly siguiente(const Poly& H) {
+            // Fase 6: tras un cambio de módulo (pasos_ < gastado_), componer ya
+            // si lo gastado en potencias con todos los módulos paga el
+            // precálculo con el nuevo (compone_ya) y el pow_mod sustituido no
+            // tocaría el generador.
+            if (!comp_ && h1_ && pasos_ < gastado_ && compone_ya() && rng_intacto())
+                comp_.emplace(*h1_, red_, k_);
             if (comp_) return comp_->compose(H);
             Poly r = pow_mod(H, q_, red_);
             ++pasos_;
+            ++gastado_;
             if (!h1_) h1_ = r;  // el primer término es H_1 = x^q mod f (se empieza en H_0 = x)
-            if (h1_ && quiere_componer()) comp_.emplace(*h1_, red_, k_);
+            if (h1_ && quiere_componer(pasos_)) comp_.emplace(*h1_, red_, k_);
             return r;
         }
         // f cambia por un divisor g (distinct_degree): H_1 mod g sigue siendo x^q mod g.
@@ -893,18 +913,20 @@ public:
             k_ = std::max<std::size_t>(1, std::min(n, kFrobPresupuesto / n));
             if (h1_) h1_ = *h1_ % g;
             comp_.reset();
-            pasos_ = 0;
+            pasos_ = 0;  // pow_mod con este módulo (la regla original); gastado_ se conserva
         }
 
     private:
         Reducer red_;
         BigInt q_;
         FrobeniusAlgo algo_;
-        std::size_t productos_q_ = 1, k_ = 1, pasos_ = 0;
+        // pasos_: pow_mod desde el último cambio de módulo (regla original);
+        // gastado_: pow_mod desde el principio (fase 6).
+        std::size_t productos_q_ = 1, k_ = 1, pasos_ = 0, gastado_ = 0;
         std::optional<Poly> h1_;
         std::optional<Composer> comp_;
 
-        bool quiere_componer() const {
+        bool quiere_componer(std::size_t pasos) const {
             if (algo_ == FrobeniusAlgo::Potencia) return false;
             if (algo_ == FrobeniusAlgo::Composicion) return true;
             if (productos_q_ < kFrobMinProductos) return false;
@@ -912,7 +934,38 @@ public:
             const std::size_t n = static_cast<std::size_t>(std::max(1, red_.modulus().degree()));
             const std::size_t gigantes = (n + k_ - 1) / k_;
             if (gigantes > productos_q_) return false;  // cada paso no ahorraría productos
-            return pasos_ * productos_q_ >= k_ + 1;
+            return pasos * productos_q_ >= k_ + 1;
+        }
+
+        // Regla de alquilar o comprar con el gasto acumulado (fase 6): se
+        // compra (precálculo de k productos más el paso gigante) cuando lo ya
+        // gastado en potencias con todos los módulos lo paga.  Un paso
+        // compuesto no es gratis (pasos gigantes más la combinación lineal,
+        // del orden de un producto), y con q diminuto un pow_mod cuesta casi
+        // lo mismo: medido con la regla sola, F_3 (3 productos por pow_mod)
+        // era un 8 % más lento con grado 20 y F_2 no cambiaba.  Por eso solo
+        // se adelanta cuando un pow_mod cuesta más del doble que un paso
+        // compuesto (F_9, F_101 y q mayores; no F_2, F_3, F_4 ni F_5).
+        bool compone_ya() const {
+            if (algo_ != FrobeniusAlgo::Auto) return algo_ == FrobeniusAlgo::Composicion;
+            const std::size_t n = static_cast<std::size_t>(std::max(1, red_.modulus().degree()));
+            const std::size_t paso = (n + k_ - 1) / k_ + 1;
+            return productos_q_ > 2 * paso && quiere_componer(gastado_);
+        }
+
+        // ¿El pow_mod que la composición adelantada sustituye habría dejado el
+        // generador aleatorio como estaba?  Sus productos (operator*) tienen
+        // L <= 2·deg - 1 coeficientes y solo piden la raíz de la FFT si la
+        // caché del cuerpo está vacía, el cuerpo admite una FFT de 64 y
+        // L >= 64 (regla original de mul).  Basta con que falle una de las
+        // tres para que la secuencia aleatoria sea la de antes.  En la DDF de
+        // hoy siempre se cumple (un cuerpo con FFT de 64 tiene q >= 193, y el
+        // primer pow_mod con grado >= 33 ya eleva x^32 al cuadrado, L = 65, y
+        // construye las tablas), pero se comprueba por si cambian los usos.
+        bool rng_intacto() const {
+            const Field& K = red_.modulus().field();
+            if (!K.fft_cache_.empty() || fft::fft_exponent(K, 64) < 0) return true;
+            return 2 * red_.modulus().degree() - 1 < 64;
         }
     };
 
