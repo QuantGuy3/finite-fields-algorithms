@@ -41,6 +41,7 @@
 #include <cstddef>
 #include <cstdint>
 #include <future>
+#include <memory>
 #include <optional>
 #include <stdexcept>
 #include <string>
@@ -137,6 +138,77 @@ inline std::vector<W> menos_producto(const std::vector<W>& x0, const std::vector
 }
 
 }  // namespace euclides
+
+// ---------------------------------------------------------------------------
+// Producto medio y transformadas fijas en Fp64 (fase 6)
+// ---------------------------------------------------------------------------
+// Piezas en palabras de máquina para la división de Newton, el Reducer y el
+// Composer (ver docs/optimizacion/investigacion-fase6.md, tema «newton», y el
+// prototipo bench/experimentos/fase6/newton/newton_proto.cpp).  Son la misma
+// NTT de fft.hpp (mismas tablas, mismas mariposas): lo que cambia es CUÁNTAS
+// transformadas se hacen y de qué tamaño, aprovechando que solo hacen falta
+// unos coeficientes concretos del producto (producto medio, resto módulo
+// x^N - 1) o que un operando se repite (transformada fija, el «FFTRep» de NTL).
+// La aritmética es exacta módulo p, así que los resultados son idénticos.
+//
+// Generador aleatorio: quien llama solo usa estas piezas si la caché FFT del
+// cuerpo ya tiene tablas (ntt_sin_rng en Poly), es decir, si la raíz base ya se
+// sacó del generador; pedir tablas de otro tamaño ya no lo consume.
+namespace medio {
+
+using W = std::uint64_t;
+using Tab = FFTTables<W>;
+
+// Tamaño mínimo (coeficientes) para usar estas rutas: por debajo la NTT no
+// gana al escolar con acumulación perezosa (prefer_fft de Fp64 exige 64).
+inline constexpr std::size_t kMin = 64;
+
+inline void directa(const Tab& t, std::vector<W>& a) { fft::word::transform(t, a.data(), a.size(), false); }
+inline void inversa(const Tab& t, std::vector<W>& a) { fft::word::transform(t, a.data(), a.size(), true); }
+
+// a[i] <- a[i]·b[i] mod p (producto punto a punto, como convolve_word).
+inline void producto(std::vector<W>& a, const std::vector<W>& b, W p) {
+    for (std::size_t i = 0; i < a.size(); ++i) a[i] = fft::word::mul_mod(a[i], b[i], p);
+}
+
+// Transformada de un operando que se reutiliza, con los cocientes de Shoup de
+// cada valor: el producto punto a punto por ella no divide.
+struct Fija {
+    std::vector<W> w, ws;
+    std::size_t len = 0;  // coeficientes del operando antes de transformar
+    bool vacia() const { return w.empty(); }
+};
+
+// Transforma a (ya rellenado con ceros hasta el tamaño de t) y prepara Shoup.
+inline Fija fija(const Tab& t, std::vector<W> a, std::size_t len, W p) {
+    directa(t, a);
+    Fija F;
+    F.ws.resize(a.size());
+    for (std::size_t i = 0; i < a.size(); ++i) F.ws[i] = fft::word::shoup(a[i], p);
+    F.w = std::move(a);
+    F.len = len;
+    return F;
+}
+
+// a[i] <- a[i]·F[i] mod p con los cocientes de Shoup de F.
+inline void aplica(const Fija& F, std::vector<W>& a, W p) {
+    for (std::size_t i = 0; i < a.size(); ++i) a[i] = fft::word::mul_shoup(F.w[i], F.ws[i], a[i], p);
+}
+
+// v[0..len) plegado módulo x^N - 1: r[i mod N] += v[i].  Con len <= N es la
+// copia rellenada con ceros.
+inline std::vector<W> pliega(const W* v, std::size_t len, std::size_t N, W p) {
+    std::vector<W> r(N, 0);
+    for (std::size_t i = 0; i < len; ++i) {
+        if (i < N) { r[i] = v[i]; continue; }
+        W s = r[i % N] + v[i];
+        s -= p & (0 - static_cast<W>(s >= p));
+        r[i % N] = s;
+    }
+    return r;
+}
+
+}  // namespace medio
 
 template <class Field>
 class Poly {
@@ -469,6 +541,10 @@ public:
         if (a.empty() || K.is_zero(a[0]))
             throw division_by_zero("inverse_series: a[0] es cero (serie no invertible)");
         if (n == 1) return {K.inv(a[0])};
+        if constexpr (fft::NativeWordField<Field>) {
+            // Fase 6: producto medio si la NTT ya está disponible (ver inverse_series_medio).
+            if (n >= medio::kMin && ntt_sin_rng(K, n)) return inverse_series_medio(K, a, n);
+        }
         const std::size_t k = (n + 1) / 2;
         std::vector<Elem> xk = inverse_series(K, a, k);
         Poly X(K, xk);
@@ -478,6 +554,89 @@ public:
         return head(K, R.mul_no_rng(X), n);
     }
 
+    // ¿Puede usarse la NTT en palabras para una convolución de longitud len sin
+    // tocar el generador aleatorio?  Solo si la caché ya tiene tablas (la raíz
+    // base ya se sacó del generador: pedir tablas de otro tamaño no lo consume)
+    // y el cuerpo admite ese tamaño.  Es la misma condición que mul_no_rng.
+    static bool ntt_sin_rng(const Field& K, std::size_t len) {
+        return !K.fft_cache_.empty() && fft::fft_exponent(K, len) >= 0;
+    }
+
+    // Fase 6 (Fp64 con tablas FFT): el mismo paso de Newton, k = ceil(n/2) y
+    // x_n = x_k - x^k·(x_k·e) mod x^n, con e = coeficientes k..n-1 de a·x_k
+    // (a·x_k ≡ 1 mod x^k).  (a mod x^n)·x_k tiene n + k - 1 coeficientes; con una
+    // convolución CÍCLICA de tamaño N = 2^ceil(log2 n) >= n lo que se solapa cae
+    // en los índices < k - 1 y los k..n-1 salen limpios (producto medio).  El
+    // segundo producto, x_k·e, tiene n - 1 <= N coeficientes y reutiliza la
+    // transformada de x_k.  En total 5 transformadas de tamaño N frente a 6 de
+    // 2^ceil(log2(n + k - 1)) (hasta el doble).  El inverso módulo x^n es único:
+    // el resultado es idéntico.  Medido en 4000/2000: la inversión, 2,6x.
+    static std::vector<Elem> inverse_series_medio(const Field& K, const std::vector<Elem>& a, std::size_t n) {
+        using medio::W;
+        const std::size_t k = (n + 1) / 2;
+        std::vector<Elem> x = inverse_series(K, a, k);  // k coeficientes exactos
+        const unsigned long l = fft::ceil_log2(n);
+        const std::size_t N = std::size_t(1) << l;
+        const auto& t = fft::tables(K, l);  // la caché no está vacía: no consume el generador
+        const W p = K.modulus64();
+        std::vector<W> fa(N, 0), fx(N, 0);
+        std::copy(a.begin(), a.begin() + static_cast<std::ptrdiff_t>(std::min(n, a.size())), fa.begin());
+        std::copy(x.begin(), x.end(), fx.begin());
+        medio::directa(t, fa);
+        medio::directa(t, fx);
+        medio::producto(fa, fx, p);
+        medio::inversa(t, fa);
+        std::vector<W> e(N, 0);
+        for (std::size_t i = k; i < n; ++i) e[i - k] = fa[i];
+        medio::directa(t, e);
+        medio::producto(e, fx, p);
+        medio::inversa(t, e);
+        x.resize(n);
+        for (std::size_t i = 0; i < n - k; ++i) x[k + i] = K.neg(e[i]);
+        return x;
+    }
+
+    // Fase 6 (Fp64 con tablas FFT): divmod_with_inverse en palabras.
+    //   * Cociente: rev(q) = rev(f)[0..d1)·ginv mod x^d1, producto corto con una
+    //     transformada de tamaño 2^ceil(log2(2·d1 - 1)) (igual que antes).
+    //   * Resto: r = f - g·q tiene grado < n = deg g, así que basta calcularlo
+    //     módulo x^N2 - 1 con N2 = 2^ceil(log2 n) >= n: f, g y q se pliegan a N2
+    //     y el producto es una convolución cíclica de la mitad de tamaño que
+    //     g·q completo.
+    // Cociente y resto son únicos: el resultado es idéntico.
+    std::pair<Poly, Poly> divmod_with_inverse_medio(const Poly& o, const std::vector<Elem>& ginv) const {
+        using medio::W;
+        const Field& K = *K_;
+        const W p = K.modulus64();
+        const std::size_t m1 = c_.size(), d1 = ginv.size(), n = o.c_.size() - 1;
+        const unsigned long l1 = fft::ceil_log2(2 * d1 - 1);
+        const std::size_t N1 = std::size_t(1) << l1;
+        const auto& t1 = fft::tables(K, l1);
+        std::vector<W> b(N1, 0), gb(N1, 0);
+        for (std::size_t i = 0; i < d1; ++i) b[i] = c_[m1 - 1 - i];
+        std::copy(ginv.begin(), ginv.end(), gb.begin());
+        medio::directa(t1, b);
+        medio::directa(t1, gb);
+        medio::producto(b, gb, p);
+        medio::inversa(t1, b);
+        std::vector<Elem> q(d1);
+        for (std::size_t i = 0; i < d1; ++i) q[i] = b[d1 - 1 - i];
+
+        const unsigned long l2 = fft::ceil_log2(n);
+        const std::size_t N2 = std::size_t(1) << l2;
+        const auto& t2 = fft::tables(K, l2);
+        std::vector<W> x = medio::pliega(o.c_.data(), o.c_.size(), N2, p);
+        std::vector<W> y = medio::pliega(q.data(), q.size(), N2, p);
+        medio::directa(t2, x);
+        medio::directa(t2, y);
+        medio::producto(x, y, p);
+        medio::inversa(t2, x);
+        std::vector<W> r = medio::pliega(c_.data(), m1, N2, p);
+        r.resize(n);
+        for (std::size_t i = 0; i < n; ++i) r[i] = K.sub(r[i], x[i]);
+        return {Poly(K, std::move(q)), Poly(K, std::move(r))};
+    }
+
     // División de *this entre o dado ginv = rev(o)^{-1} mod x^{d1}, con
     // d1 = deg(*this) - deg(o) + 1 (deg(*this) >= deg(o)): sirve para dividir
     // muchas veces entre el mismo o calculando el inverso una sola vez (lo
@@ -485,6 +644,12 @@ public:
     std::pair<Poly, Poly> divmod_with_inverse(const Poly& o, const std::vector<Elem>& ginv) const {
         const Field& K = *K_;
         const std::size_t m1 = c_.size(), d1 = ginv.size();
+        if constexpr (fft::NativeWordField<Field>) {
+            // Fase 6: resto módulo x^N - 1 si la NTT ya está disponible (sin generador).
+            const std::size_t n = o.c_.size() - 1;
+            if (d1 >= medio::kMin && n >= medio::kMin && ntt_sin_rng(K, 2 * d1 - 1) && ntt_sin_rng(K, n))
+                return divmod_with_inverse_medio(o, ginv);
+        }
         std::vector<Elem> frev;
         frev.reserve(d1);
         for (std::size_t i = 0; i < d1; ++i) frev.push_back(c_[m1 - 1 - i]);
@@ -778,15 +943,85 @@ public:
             const std::size_t d1 = static_cast<std::size_t>(a.degree() - n) + 1;
             if (d1 <= nn && prefer_newton(m_.field(), nn, d1, true)) {
                 if (inv_.empty()) inv_ = inverse_series(m_.field(), reversed_head(m_, nn), nn);
+                if constexpr (fft::NativeWordField<Field>) {
+                    // Fase 6: con la NTT ya disponible, transformadas precalculadas.
+                    if (d1 >= medio::kMin && ntt_sin_rng(m_.field(), 2 * d1 - 1) && ntt_sin_rng(m_.field(), nn))
+                        return reduce_ntt(a, d1);
+                }
                 return a.divmod_with_inverse(
                             m_, std::vector<Elem>(inv_.begin(), inv_.begin() + static_cast<std::ptrdiff_t>(d1)))
                     .second;
             }
             return a.divmod_school(m_).second;
         }
+
     private:
+        // Transformadas precalculadas del módulo (fase 6, solo Fp64; el
+        // «FFTRep» de NTL): se calculan la primera vez que hacen falta y se
+        // comparten entre las copias del Reducer (Composer y Frobenius lo
+        // copian), porque dependen solo de m.
+        struct RepNTT {
+            medio::Fija m;               // m plegado módulo x^N2 - 1, N2 = 2^ceil(log2 deg m)
+            unsigned long l2 = 0;
+            std::vector<medio::Fija> g;  // por l1: rev(m)^{-1} truncado, tamaño 2^l1
+        };
+
+        // a mod m (d1 = deg a - deg m + 1, 64 <= d1 <= deg m) con 2 transformadas
+        // de tamaño N1 = 2^ceil(log2(2·d1 - 1)) y 2 de tamaño N2 = 2^ceil(log2 deg m)
+        // frente a las 6 de divmod_with_inverse (unas 2n cada una):
+        //   rev(q) = rev(a)[0..d1)·ginv mod x^d1   (ginv ya transformado)
+        //   r = a - m·q mod (x^N2 - 1)             (m ya transformado; deg r < N2)
+        // ginv se trunca a t = min(deg m, N1/2) coeficientes: t >= d1 (los d1
+        // primeros coeficientes del producto no dependen del resto de ginv) y
+        // d1 + t - 1 < N1, así que la convolución cíclica no se solapa.  Truncar
+        // evita doblar N1 cuando deg m = 2^j + 1 (reserva del revisor de la
+        // fase 6): con ginv completo, d1 + deg m - 1 superaría 2^ceil(log2(2·d1 - 1)).
+        // Mismo cociente y mismo resto: resultado idéntico.
+        Poly reduce_ntt(const Poly& a, std::size_t d1) const {
+            using medio::W;
+            const Field& K = m_.field();
+            const W p = K.modulus64();
+            const std::size_t n = m_.c_.size() - 1;
+            if (!rep_) rep_ = std::make_shared<RepNTT>();
+            RepNTT& R = *rep_;
+            const unsigned long l1 = fft::ceil_log2(2 * d1 - 1);
+            const std::size_t N1 = std::size_t(1) << l1;
+            const auto& t1 = fft::tables(K, l1);  // la caché no está vacía: no consume el generador
+            if (R.g.size() <= l1) R.g.resize(l1 + 1);
+            if (R.g[l1].vacia()) {
+                const std::size_t t = std::min(n, N1 / 2);
+                std::vector<W> g(N1, 0);
+                std::copy(inv_.begin(), inv_.begin() + static_cast<std::ptrdiff_t>(t), g.begin());
+                R.g[l1] = medio::fija(t1, std::move(g), t, p);
+            }
+            if (R.m.vacia()) {
+                R.l2 = fft::ceil_log2(n);
+                const auto& t2 = fft::tables(K, R.l2);
+                R.m = medio::fija(t2, medio::pliega(m_.c_.data(), m_.c_.size(), std::size_t(1) << R.l2, p),
+                                  m_.c_.size(), p);
+            }
+            const auto& t2 = fft::tables(K, R.l2);
+            const std::size_t N2 = std::size_t(1) << R.l2;
+            const std::size_t da = a.c_.size() - 1;
+            std::vector<W> b(N1, 0);
+            for (std::size_t i = 0; i < d1; ++i) b[i] = a.c_[da - i];
+            medio::directa(t1, b);
+            medio::aplica(R.g[l1], b, p);
+            medio::inversa(t1, b);
+            std::vector<W> y(N2, 0);  // q, d1 <= n <= N2 coeficientes
+            for (std::size_t i = 0; i < d1; ++i) y[i] = b[d1 - 1 - i];
+            medio::directa(t2, y);
+            medio::aplica(R.m, y, p);
+            medio::inversa(t2, y);
+            std::vector<W> r = medio::pliega(a.c_.data(), a.c_.size(), N2, p);
+            r.resize(n);
+            for (std::size_t i = 0; i < n; ++i) r[i] = K.sub(r[i], y[i]);
+            return Poly(K, std::move(r));
+        }
+
         Poly m_;
         mutable std::vector<Elem> inv_;  // rev(m)^{-1} mod x^{deg m}, o vacío si aún no hace falta
+        mutable std::shared_ptr<RepNTT> rep_;  // fase 6: transformadas (solo Fp64), o nulo
     };
 
     // Composición modular de Brent-Kung con h fijo: precalcula h^0..h^{k-1}
@@ -804,6 +1039,16 @@ public:
             Poly hr = red_.reduce(h.degree() >= 2 * static_cast<int>(n) - 1 ? h % red_.modulus() : h);
             pot_.reserve(k_);
             pot_.push_back(red_.reduce(one(K)));
+            if constexpr (fft::NativeWordField<Field>) {
+                if (usa_ntt()) {
+                    // Fase 6: h se transforma una vez y cada potencia cuesta 2
+                    // transformadas (más la reducción con transformadas fijas).
+                    const medio::Fija H = transformada(hr);
+                    for (std::size_t i = 1; i < k_; ++i) pot_.push_back(mulmod_fija(pot_.back(), H));
+                    gigante_ = mulmod_fija(pot_.back(), H);
+                    return;
+                }
+            }
             for (std::size_t i = 1; i < k_; ++i) pot_.push_back(red_.reduce(pot_.back().mul_no_rng(hr)));
             gigante_ = red_.reduce(pot_.back().mul_no_rng(hr));
         }
@@ -817,7 +1062,7 @@ public:
             Poly acc = zero(K);
             for (std::size_t j = bloques; j-- > 0;) {
                 Poly B = combina(g, j * k_, std::min(k_, L - j * k_));
-                acc = (j + 1 == bloques) ? std::move(B) : red_.reduce(acc.mul_no_rng(gigante_)) + B;
+                acc = (j + 1 == bloques) ? std::move(B) : por_gigante(acc) + B;
             }
             return acc;
         }
@@ -827,6 +1072,55 @@ public:
         std::size_t k_ = 1;
         std::vector<Poly> pot_;  // h^0..h^{k-1} mod f
         Poly gigante_{red_.modulus().field()};  // h^k mod f
+        mutable medio::Fija gig_ntt_;  // fase 6: transformada del paso gigante (Fp64), o vacía
+
+        // Fase 6 (Fp64): ¿productos con transformada fija?  Solo con la NTT ya
+        // disponible para productos de 2n - 1 coeficientes (sin generador) y
+        // n >= 64.  Los factores tienen grado < n = deg f.
+        bool usa_ntt() const {
+            if constexpr (fft::NativeWordField<Field>) {
+                const std::size_t n = static_cast<std::size_t>(std::max(0, red_.modulus().degree()));
+                return n >= medio::kMin && ntt_sin_rng(red_.modulus().field(), 2 * n - 1);
+            } else {
+                return false;
+            }
+        }
+        unsigned long l_ntt() const {
+            return fft::ceil_log2(2 * static_cast<std::size_t>(red_.modulus().degree()) - 1);
+        }
+        // Transformada de x (grado < n) de tamaño 2^ceil(log2(2n - 1)).
+        medio::Fija transformada(const Poly& x) const {
+            const Field& K = red_.modulus().field();
+            const unsigned long l = l_ntt();
+            std::vector<medio::W> v(std::size_t(1) << l, 0);
+            std::copy(x.c_.begin(), x.c_.end(), v.begin());
+            return medio::fija(fft::tables(K, l), std::move(v), x.c_.size(), K.modulus64());
+        }
+        // x·F mod f con F ya transformado: 1 directa + 1 inversa en lugar de las
+        // 3 transformadas de mul_no_rng.  x·F tiene <= 2n - 1 coeficientes: la
+        // convolución cíclica no se solapa.  Mismo producto: resultado idéntico.
+        Poly mulmod_fija(const Poly& x, const medio::Fija& F) const {
+            const Field& K = red_.modulus().field();
+            if (x.is_zero() || F.len == 0) return zero(K);
+            const auto& t = fft::tables(K, l_ntt());
+            std::vector<medio::W> v(F.w.size(), 0);
+            std::copy(x.c_.begin(), x.c_.end(), v.begin());
+            medio::directa(t, v);
+            medio::aplica(F, v, K.modulus64());
+            medio::inversa(t, v);
+            v.resize(x.c_.size() + F.len - 1);
+            return red_.reduce(Poly(K, std::move(v)));
+        }
+        // acc·G mod f (G = gigante_).
+        Poly por_gigante(const Poly& acc) const {
+            if constexpr (fft::NativeWordField<Field>) {
+                if (usa_ntt()) {
+                    if (gig_ntt_.vacia()) gig_ntt_ = transformada(gigante_);
+                    return mulmod_fija(acc, gig_ntt_);
+                }
+            }
+            return red_.reduce(acc.mul_no_rng(gigante_));
+        }
 
         // Σ_{i<cnt} g_{ini+i}·h^i
         Poly combina(const Poly& g, std::size_t ini, std::size_t cnt) const {
