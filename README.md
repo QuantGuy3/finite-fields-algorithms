@@ -40,6 +40,7 @@ Trabajo sobre el port C++ y el binding pybind11. Las prácticas originales de `p
 | Fase 4 (nivel A) | División de Newton, inverso en F_q por Euclides y test de irreducibilidad sin la comprobación redundante: 27,7x frente al original y distancia media a FLINT de 7,2x a 5,9x | [docs/optimizacion/fase4.md](docs/optimizacion/fase4.md) |
 | Fase 4 (nivel B) | Producto de Kronecker sobre Z con GMP, half-GCD y Frobenius por composición modular: 36,8x frente al original y distancia media a FLINT de 5,9x a 2,7x | [docs/optimizacion/fase4.md](docs/optimizacion/fase4.md) |
 | Fase 5 | NTT con mariposas perezosas (3,5x por mariposa), Euclides en sitio en Fp64 (2,4-3,6x) y DDF de Kaltofen–Shoup: suite 1,14x sobre el nivel B y distancia media a FLINT de 2,7x a 1,66x | [docs/optimizacion/fase5.md](docs/optimizacion/fase5.md) |
+| Fase 6 | Newton con producto medio y transformadas precalculadas, F_p con p pequeño (acumulador de 64 bits, Kronecker sin divisiones), DDF sin `pow_mod` repetido y conversiones directas en el binding: suite 1,17x sobre la fase 5 (con batería); binding 4-11x en conversiones | [docs/optimizacion/fase6.md](docs/optimizacion/fase6.md) |
 
 ### Uso rápido
 

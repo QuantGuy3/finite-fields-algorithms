@@ -1,0 +1,17 @@
+mide_binding.py, F_998244353, ALCP_THREADS=1, en serie, con batería, 8 de noviembre de 2026.
+== f6-mod-base
+K.poly(lista) grado   100        5502 ns
+coeffs()      grado   100        4992 ns
+K.poly(lista) grado  1000       45570 ns
+coeffs()      grado  1000       49026 ns
+K.mul(a, b)                        388 ns
+K.add(a, b)                        329 ns
+hash 167b664f06e4ffff
+== f6-mod-final
+K.poly(lista) grado   100         902 ns
+coeffs()      grado   100        1131 ns
+K.poly(lista) grado  1000        4152 ns
+coeffs()      grado  1000       13605 ns
+K.mul(a, b)                        226 ns
+K.add(a, b)                        208 ns
+hash 167b664f06e4ffff

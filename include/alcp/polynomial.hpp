@@ -431,11 +431,12 @@ public:
             const std::size_t L = c_.size() + o.c_.size() - 1;
             std::vector<typename Field::Acc> acc(L);
             for (auto& s : acc) K_->acc_clear(s);
-            for (std::size_t i = 0; i < c_.size(); ++i) {
-                if (K_->is_zero(c_[i])) continue;
-                for (std::size_t j = 0; j < o.c_.size(); ++j)
-                    K_->acc_fma(acc[i + j], c_[i], o.c_[j]);
-            }
+            detail::con_acc_fma(*K_, [&](auto fma) {
+                for (std::size_t i = 0; i < c_.size(); ++i) {
+                    if (K_->is_zero(c_[i])) continue;
+                    for (std::size_t j = 0; j < o.c_.size(); ++j) fma(acc[i + j], c_[i], o.c_[j]);
+                }
+            });
             std::vector<Elem> r;
             r.reserve(L);
             for (auto& s : acc) r.push_back(K_->acc_reduce(s));
@@ -530,6 +531,9 @@ public:
             std::vector<typename Field::Acc> acc(nr);
             for (std::size_t k = 0; k < nr; ++k) K_->acc_set(acc[k], c_[k]);
             std::vector<Elem> q(degree() - db + 1, K_->zero());
+            // (Fase 6: aquí no se usa detail::con_acc_fma.  Con p pequeño ya
+            // actúa el acumulador de 64 bits de arriba, y la versión con lambda
+            // hacía este bucle un 15 % más lento con p = 2^61 - 1.)
             for (int dr = static_cast<int>(nr) - 1; dr >= db; --dr) {
                 Elem lr = K_->acc_reduce(acc[dr]);
                 if (K_->is_zero(lr)) continue;  // cero que ha aparecido: se salta
@@ -1192,12 +1196,14 @@ public:
             if constexpr (LazyAccumulation<Field>) {
                 std::vector<typename Field::Acc> s(n);
                 for (auto& a : s) K.acc_clear(a);
-                for (std::size_t i = 0; i < cnt; ++i) {
-                    const Elem& c = g.c_[ini + i];
-                    if (K.is_zero(c)) continue;
-                    const auto& P = pot_[i].c_;
-                    for (std::size_t t = 0; t < P.size(); ++t) K.acc_fma(s[t], c, P[t]);
-                }
+                detail::con_acc_fma(K, [&](auto fma) {
+                    for (std::size_t i = 0; i < cnt; ++i) {
+                        const Elem& c = g.c_[ini + i];
+                        if (K.is_zero(c)) continue;
+                        const auto& P = pot_[i].c_;
+                        for (std::size_t t = 0; t < P.size(); ++t) fma(s[t], c, P[t]);
+                    }
+                });
                 std::vector<Elem> r;
                 r.reserve(n);
                 for (auto& a : s) r.push_back(K.acc_reduce(a));
