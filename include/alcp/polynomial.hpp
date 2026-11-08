@@ -35,6 +35,7 @@
 #include "errors.hpp"
 #include "fft.hpp"
 #include "field.hpp"
+#include "fp64.hpp"  // acumulador de 64 bits de Poly<Fp64> (fase 6)
 #include "kronecker.hpp"
 
 #include <algorithm>
@@ -331,6 +332,26 @@ public:
     Poly mul_school(const Poly& o) const {
         require_same_field(o);
         if (is_zero() || o.is_zero()) return zero(*K_);
+        if constexpr (std::is_same_v<Field, Fp64>) {
+            // Fase 6 (p pequeño, p. ej. F_101): el mismo doble bucle con un
+            // acumulador de 64 bits.  Cada coeficiente del producto recibe a lo
+            // sumo min(na, nb) productos <= (p-1)^2; Fp64::acc64_cabe comprueba
+            // que esa suma cabe en una palabra.  Mismo valor exacto que con el
+            // acumulador de 128 bits, luego el mismo resultado.
+            const std::size_t na = c_.size(), nb = o.c_.size();
+            if (K_->acc64_cabe(std::min(na, nb))) {
+                std::vector<std::uint64_t> acc(na + nb - 1, 0);
+                for (std::size_t i = 0; i < na; ++i) {
+                    const std::uint64_t ci = c_[i];
+                    if (ci == 0) continue;
+                    std::uint64_t* fila = acc.data() + i;
+                    for (std::size_t j = 0; j < nb; ++j) fila[j] += ci * o.c_[j];
+                }
+                std::vector<Elem> r(acc.size());
+                for (std::size_t k = 0; k < acc.size(); ++k) r[k] = K_->reduce64(acc[k]);
+                return Poly(*K_, std::move(r));
+            }
+        }
         if constexpr (LazyAccumulation<Field>) {
             // Mismo doble bucle, con reducción perezosa: cada coeficiente del
             // producto acumula sus productos c_i·o_j sin reducir y se reduce
@@ -401,6 +422,31 @@ public:
 
         const int db = o.degree();
         Elem inv_lead = K_->inv(o.lead());
+        if constexpr (std::is_same_v<Field, Fp64>) {
+            // Fase 6 (p pequeño): la misma división con acumuladores de 64 bits.
+            // Cada acumulador parte de un coeficiente < p y recibe a lo sumo
+            // un producto <= (p-1)^2 por paso, y hay nr - db pasos: en total
+            // <= (nr - db + 1)·(p-1)^2 (Fp64::acc64_cabe).  Mismos valores
+            // exactos, luego el mismo cociente y el mismo resto.
+            const std::size_t nr = c_.size();
+            if (K_->acc64_cabe(nr - static_cast<std::size_t>(db) + 1)) {
+                std::vector<std::uint64_t> acc(c_.begin(), c_.end());
+                std::vector<Elem> q(degree() - db + 1, 0);
+                for (int dr = static_cast<int>(nr) - 1; dr >= db; --dr) {
+                    const Elem lr = K_->reduce64(acc[dr]);
+                    if (lr == 0) continue;  // cero que ha aparecido: se salta
+                    const int pos = dr - db;
+                    const Elem factor = K_->mul(lr, inv_lead);
+                    const std::uint64_t nfactor = K_->neg(factor);
+                    q[pos] = factor;
+                    std::uint64_t* fila = acc.data() + pos;
+                    for (int j = 0; j < db; ++j) fila[j] += nfactor * o.c_[j];
+                }
+                std::vector<Elem> rem(static_cast<std::size_t>(db));
+                for (int k = 0; k < db; ++k) rem[k] = K_->reduce64(acc[k]);
+                return {Poly(*K_, std::move(q)), Poly(*K_, std::move(rem))};
+            }
+        }
         if constexpr (LazyAccumulation<Field>) {
             // Misma división escolar con reducción perezosa: el resto de trabajo
             // se guarda en acumuladores sin reducir; cada paso resta
@@ -833,6 +879,22 @@ public:
             const Field& K = red_.modulus().field();
             std::size_t n = 0;
             for (std::size_t i = 0; i < cnt; ++i) n = std::max(n, pot_[i].c_.size());
+            if constexpr (std::is_same_v<Field, Fp64>) {
+                // Fase 6 (p pequeño): acumulador de 64 bits; cada s[t] recibe a
+                // lo sumo cnt productos <= (p-1)^2 (Fp64::acc64_cabe).
+                if (K.acc64_cabe(cnt)) {
+                    std::vector<std::uint64_t> s(n, 0);
+                    for (std::size_t i = 0; i < cnt; ++i) {
+                        const std::uint64_t c = g.c_[ini + i];
+                        if (c == 0) continue;
+                        const auto& P = pot_[i].c_;
+                        for (std::size_t t = 0; t < P.size(); ++t) s[t] += c * P[t];
+                    }
+                    std::vector<Elem> r(n);
+                    for (std::size_t t = 0; t < n; ++t) r[t] = K.reduce64(s[t]);
+                    return Poly(K, std::move(r));
+                }
+            }
             if constexpr (LazyAccumulation<Field>) {
                 std::vector<typename Field::Acc> s(n);
                 for (auto& a : s) K.acc_clear(a);

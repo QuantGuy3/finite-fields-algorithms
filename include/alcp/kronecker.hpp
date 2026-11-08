@@ -23,8 +23,10 @@
 
 #include "bigint.hpp"
 #include "field.hpp"
+#include "fp64.hpp"
 
 #include <algorithm>
+#include <bit>
 #include <cstddef>
 #include <cstdint>
 #include <type_traits>
@@ -74,11 +76,45 @@ inline void leer(const limb* src, std::size_t nsrc, std::size_t bit, std::size_t
     if (sobra > 0 && sobra < 64) out[nout - 1] &= (~limb(0)) >> sobra;
 }
 
+// dst[bit .. bit + 64) |= v en dos palabras (dst con ceros en esa zona y con
+// la palabra siguiente disponible).  Es escribir() con nv = 1 (fase 6).
+inline void poner(limb* dst, std::size_t bit, limb v) {
+    const std::size_t w = bit >> 6, s = bit & 63;
+    dst[w] |= v << s;
+    if (s) dst[w + 1] |= v >> (64 - s);
+}
+
+// Bits [bit, bit + b) de src con b <= 64, en una palabra (fase 6).  Lee
+// src[bit/64] y, si el hueco cruza la frontera, src[bit/64 + 1]: el llamador
+// garantiza que existen.  mask = 2^b - 1 (o ~0 con b = 64).
+inline limb tomar(const limb* src, std::size_t bit, limb mask) {
+    const std::size_t w = bit >> 6, s = bit & 63;
+    limb x = src[w] >> s;
+    if (s) x |= src[w + 1] << (64 - s);
+    return x & mask;
+}
+inline limb mascara(std::size_t b) { return b >= 64 ? ~limb(0) : (limb(1) << b) - 1; }
+
 // Primera palabra de x (x < 2^64).  No se usa mpz_get_ui: devuelve unsigned
 // long, que en Windows tiene 32 bits y truncaría p.
 inline std::uint64_t palabra(const BigInt& x) { return static_cast<std::uint64_t>(mpz_getlimbn(x.get_mpz_t(), 0)); }
 
 inline std::size_t bitlen(const BigInt& x) { return sgn(x) == 0 ? 0 : mpz_sizeinbase(x.get_mpz_t(), 2); }
+
+// Bits de cada hueco para un producto en que cada coeficiente suma a lo sumo m
+// productos de elementos < p: 2·bitlen(p-1) + bitlen(m) + 1 (m·(p-1)^2 < 2^bits).
+// Fase 6: con Fp64 se calcula con palabras, sin los dos mpz temporales (p - 1 y
+// m) que costaban dos reservas de memoria por producto; mismo valor.
+template <class Base>
+std::size_t bits_hueco(const Base& K, std::size_t m) {
+    if constexpr (std::is_same_v<typename Base::Elem, std::uint64_t>) {
+        const std::uint64_t pm1 = static_cast<std::uint64_t>(mpz_getlimbn(K.characteristic().get_mpz_t(), 0)) - 1;
+        return 2 * static_cast<std::size_t>(std::bit_width(pm1)) + static_cast<std::size_t>(std::bit_width(m)) + 1;
+    } else {
+        const BigInt& p = K.characteristic();
+        return 2 * bitlen(p - 1) + bitlen(BigInt(static_cast<unsigned long>(m))) + 1;
+    }
+}
 
 // Valor de un elemento de cuerpo primo como limbs (vista sin copia si se puede).
 struct Limbs {
@@ -102,26 +138,35 @@ std::vector<typename Field::Elem> mul_primo(const Field& K, const typename Field
     const BigInt& p = K.characteristic();
     const std::size_t m = std::min(na, nb);
     // Cota de cada coeficiente del producto: m·(p-1)^2 < 2^bits.
-    const std::size_t bits = 2 * detail::bitlen(p - 1) + detail::bitlen(BigInt(static_cast<unsigned long>(m))) + 1;
+    const std::size_t bits = detail::bits_hueco(K, m);
     const std::size_t L = na + nb - 1;
-    const std::size_t la = (na * bits + 63) / 64 + 1, lb = (nb * bits + 63) / 64 + 1;
-    std::vector<limb> A(la, 0), B(lb, 0);
-    for (std::size_t i = 0; i < na; ++i) {
-        auto v = detail::como_limbs(a[i]);
-        detail::escribir(A.data(), i * bits, v.p ? v.p : &v.uno, v.n);
-    }
     const bool cuadrado = (a == b && na == nb);
-    if (!cuadrado)
-        for (std::size_t i = 0; i < nb; ++i) {
-            auto v = detail::como_limbs(b[i]);
-            detail::escribir(B.data(), i * bits, v.p ? v.p : &v.uno, v.n);
+    const std::size_t la = (na * bits + 63) / 64 + 1, lb = cuadrado ? 0 : (nb * bits + 63) / 64 + 1;
+    std::vector<limb> A(la, 0), B(lb, 0);
+    // Fase 6: en Fp64 cada coeficiente es una palabra y se escribe directamente
+    // (detail::poner); en Fp, sus limbs.
+    auto empaquetar = [&](const Elem* x, std::size_t nx, limb* X) {
+        for (std::size_t i = 0; i < nx; ++i) {
+            if constexpr (std::is_same_v<Elem, std::uint64_t>) {
+                detail::poner(X, i * bits, x[i]);
+            } else {
+                auto v = detail::como_limbs(x[i]);
+                detail::escribir(X, i * bits, v.p ? v.p : &v.uno, v.n);
+            }
         }
+    };
+    empaquetar(a, na, A.data());
+    if (!cuadrado) empaquetar(b, nb, B.data());
     // Longitudes reales (sin limbs nulos al final; mpn_mul exige el último no nulo).
     std::size_t na_l = la, nb_l = cuadrado ? la : lb;
     while (na_l > 1 && A[na_l - 1] == 0) --na_l;
     const limb* Bp = cuadrado ? A.data() : B.data();
     while (nb_l > 1 && Bp[nb_l - 1] == 0) --nb_l;
-    std::vector<limb> C(na_l + nb_l, 0);
+    // Fase 6: dos limbs nulos de más al final, para que detail::tomar pueda leer
+    // la palabra siguiente del último hueco sin comprobar el límite (el hueco
+    // k empieza en el bit k·bits y L·bits puede pasar de 64·(na_l + nb_l)
+    // cuando los coeficientes altos del producto son pequeños).
+    std::vector<limb> C(std::max(na_l + nb_l, (L * bits + 63) / 64) + 2, 0);
     if (cuadrado)
         mpn_sqr(C.data(), A.data(), static_cast<mp_size_t>(na_l));
     else if (na_l >= nb_l)
@@ -134,12 +179,24 @@ std::vector<typename Field::Elem> mul_primo(const Field& K, const typename Field
     std::vector<limb> t(nw);
     if constexpr (std::is_same_v<Elem, std::uint64_t>) {
         const std::uint64_t pw = detail::palabra(p);
-        if (nw <= 2) {
-            using u128 = unsigned __int128;
+        // Fase 6 (F_101 y p pequeños en general): sin «u128 % p».
+        //   * bits <= 64 (cada hueco cabe en una palabra; con p = 101 hasta
+        //     m < 2^49 coeficientes, con p < 2^30 hasta m < 2^3): se lee el
+        //     hueco directamente (tomar) y se reduce con Barrett de 64 bits.
+        //   * 64 < bits <= 128: hueco de dos palabras, reducido por trozos
+        //     (hi mod p con Barrett y después divq; Barrett64::dos_palabras).
+        // El valor de cada hueco es el coeficiente exacto (< 2^bits, sin
+        // acarreos entre huecos), así que el resto es el mismo que antes.
+        const alcp::detail::Barrett64 red(pw);
+        if (bits <= 64) {
+            const limb mask = detail::mascara(bits);
+            for (std::size_t k = 0; k < L; ++k) r[k] = red(detail::tomar(C.data(), k * bits, mask));
+            return r;
+        }
+        if (nw == 2) {
             for (std::size_t k = 0; k < L; ++k) {
                 detail::leer(C.data(), C.size(), k * bits, bits, t.data(), nw);
-                const u128 v = (nw == 2) ? ((static_cast<u128>(t[1]) << 64) | t[0]) : t[0];
-                r[k] = static_cast<std::uint64_t>(v % pw);
+                r[k] = red.dos_palabras(t[1], t[0]);
             }
             return r;
         }
@@ -177,7 +234,7 @@ std::vector<typename Field::Elem> mul_extension(const Field& K, const typename F
     const std::size_t bloque = 2 * e - 1;
     const BigInt& p = K.characteristic();
     const std::size_t m = std::min(na, nb) * e;
-    const std::size_t bits = 2 * detail::bitlen(p - 1) + detail::bitlen(BigInt(static_cast<unsigned long>(m))) + 1;
+    const std::size_t bits = detail::bits_hueco(base, m);
     const std::size_t L = na + nb - 1;
     auto empaquetar = [&](const Elem* x, std::size_t nx, std::vector<limb>& X) {
         X.assign((nx * bloque * bits + 63) / 64 + 1, 0);
@@ -196,7 +253,8 @@ std::vector<typename Field::Elem> mul_extension(const Field& K, const typename F
     const std::vector<limb>& Bv = cuadrado ? A : B;
     std::size_t nb_l = Bv.size();
     while (nb_l > 1 && Bv[nb_l - 1] == 0) --nb_l;
-    std::vector<limb> C(na_l + nb_l, 0);
+    // Dos limbs nulos de más para detail::tomar (ver mul_primo; fase 6).
+    std::vector<limb> C(std::max(na_l + nb_l, (L * bloque * bits + 63) / 64) + 2, 0);
     if (cuadrado)
         mpn_sqr(C.data(), A.data(), static_cast<mp_size_t>(na_l));
     else if (na_l >= nb_l)
@@ -204,13 +262,32 @@ std::vector<typename Field::Elem> mul_extension(const Field& K, const typename F
     else
         mpn_mul(C.data(), Bv.data(), static_cast<mp_size_t>(nb_l), A.data(), static_cast<mp_size_t>(na_l));
 
+    typename Field::Acc acc;
+    std::vector<Elem> r;
+    r.reserve(L);
+    if constexpr (std::is_same_v<std::decay_t<decltype(base)>, alcp::Fp64>) {
+        // Fase 6, Fq64 con huecos de <= 64 bits (F_(3^30): 18 bits en grado
+        // 200; F_256: 16-24 bits): cada hueco se lee directamente en su
+        // acumulador de Fp64 (u128) SIN reducirlo módulo p.  El acumulador es
+        // una suma sin reducir por definición y acc_reduce de FqT reduce módulo
+        // p (Fp64::acc_reduce acepta cualquier valor de 128 bits) y módulo g,
+        // así que el elemento resultante es el mismo; se ahorran la lectura
+        // genérica (leer) y el mpn_mod_1 de cada hueco.
+        if (bits <= 64) {
+            const limb mask = detail::mascara(bits);
+            for (std::size_t k = 0; k < L; ++k) {
+                K.acc_clear(acc);
+                const std::size_t b0 = k * bloque * bits;
+                for (std::size_t j = 0; j < bloque; ++j) acc[j] = detail::tomar(C.data(), b0 + j * bits, mask);
+                r.push_back(K.acc_reduce(acc));
+            }
+            return r;
+        }
+    }
     const std::size_t nw = (bits + 63) / 64;
     std::vector<limb> t(nw);
     BigInt v;
     const limb pw = static_cast<limb>(detail::palabra(p));  // solo se usa si p cabe en una palabra
-    typename Field::Acc acc;
-    std::vector<Elem> r;
-    r.reserve(L);
     for (std::size_t k = 0; k < L; ++k) {
         K.acc_clear(acc);
         for (std::size_t j = 0; j < bloque; ++j) {

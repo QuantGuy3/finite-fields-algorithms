@@ -39,6 +39,9 @@
 // producto es < 2^124, así que caben al menos 16 sin reducir; si una suma
 // desborda 2^128 (solo posible con p > 2^60 y muchos términos) se detecta por
 // el acarreo y se pliega: t + 2^128 ≡ (t mod p) + (2^128 mod p).
+// Fase 6 (q pequeño): con p < 2^32 el producto es de 64 bits y no se vigila el
+// acarreo (cota en acc_fma), y una suma < 2^64 se reduce con Barrett de 64 bits
+// (detail::Barrett64) en lugar de dividir.
 //
 // Requiere un compilador con unsigned __int128 (GCC/Clang de 64 bits) y una GMP
 // con limbs de 64 bits.
@@ -82,6 +85,38 @@ inline BigInt u64_to_big(std::uint64_t x) {
     return r;
 }
 
+// Reducción de Barrett para CUALQUIER x < 2^64 (fase 6), sin división.
+//   m = floor((2^64 - 1) / p)  ->  m·p >= 2^64 - p, luego x·m / 2^64 >= x/p - x/2^64 > x/p - 1
+//   q = floor(x·m / 2^64) > x/p - 2  ->  r = x - q·p en [0, 2p): basta una resta.
+// La usan los acumuladores de Fp64 cuando la suma no cabe en 2^(2k) pero sí en
+// una palabra, y el desempaquetado de Kronecker (kronecker.hpp), que antes
+// dividían (u128 % p o divq).
+struct Barrett64 {
+    std::uint64_t p = 2, m = 0;
+    Barrett64() = default;
+    explicit Barrett64(std::uint64_t pp) : p(pp), m(~std::uint64_t(0) / pp) {}
+    std::uint64_t operator()(std::uint64_t x) const {
+        const std::uint64_t q = static_cast<std::uint64_t>((static_cast<u128>(x) * m) >> 64);
+        const std::uint64_t r = x - q * p;
+        return r >= p ? r - p : r;
+    }
+    // (hi·2^64 + lo) mod p para cualquier valor de dos palabras: primero hi mod
+    // p (Barrett) y luego la división 128/64 del hardware, cuyo cociente cabe
+    // porque hi < p.  Evita el «u128 % p» de software (__umodti3).
+    std::uint64_t dos_palabras(std::uint64_t hi, std::uint64_t lo) const {
+        if (hi == 0) return (*this)(lo);
+        hi = (*this)(hi);
+#if defined(__x86_64__)
+        std::uint64_t q, r;
+        __asm__("divq %4" : "=a"(q), "=d"(r) : "0"(lo), "1"(hi), "rm"(p) : "cc");
+        (void)q;
+        return r;
+#else
+        return static_cast<std::uint64_t>(((static_cast<u128>(hi) << 64) | lo) % p);
+#endif
+    }
+};
+
 }  // namespace detail
 
 class Fp64 {
@@ -107,6 +142,12 @@ public:
         k_ = static_cast<unsigned>(bit_length(pbig_));
         m_ = static_cast<std::uint64_t>((detail::u128(1) << (2 * k_)) / p_);
         lim_ = detail::u128(1) << (2 * k_);
+        bar64_ = detail::Barrett64(p_);
+        pequeno_ = k_ <= 32;
+        {
+            const detail::u128 c = static_cast<detail::u128>(p_ - 1) * (p_ - 1);  // >= 1
+            max_terminos64_ = (c >> 64) ? 0 : static_cast<std::size_t>(~std::uint64_t(0) / static_cast<std::uint64_t>(c));
+        }
         // 2^128 mod p = ((2^128 - 1) mod p + 1) mod p
         c128_ = static_cast<std::uint64_t>((~detail::u128(0)) % p_);
         c128_ = (c128_ + 1 == p_) ? 0 : c128_ + 1;
@@ -185,11 +226,35 @@ public:
     void acc_clear(Acc& s) const { s = 0; }
     void acc_set(Acc& s, const Elem& a) const { s = a; }
     void acc_fma(Acc& s, const Elem& a, const Elem& b) const {
+        // Fase 6, p < 2^32 (F_101, cuerpos base de F_(3^30), F_256...): a·b <
+        // p^2 < 2^64 se calcula con el producto de 64 bits y se suma sin vigilar
+        // el acarreo.  Cota: para desbordar 2^128 harían falta más de 2^64
+        // términos en un mismo acumulador, y cada acumulador recibe a lo sumo
+        // un término por coeficiente de un polinomio en memoria (escolar,
+        // división, composición) o por coeficiente de F_q (FqT: convolución de
+        // 2e-1 huecos más e pliegues por hueco); todos son < 2^61.  Mismo valor
+        // exacto que la rama general, luego el mismo resultado tras reducir.
+        if (pequeno_) {
+            s += static_cast<std::uint64_t>(a * b);
+            return;
+        }
         const Acc t = s + static_cast<Acc>(a) * b;
         // Acarreo (t < s): se ha perdido 2^128; se pliega a un valor < 2p.
         s = (t < s) ? static_cast<Acc>(reduce128(t)) + c128_ : t;
     }
     Elem acc_reduce(Acc& s) const { return reduce128(s); }
+
+    // --- acumulador de 64 bits (fase 6, p pequeño) ---------------------------
+    // Los bucles escolares de Poly<Fp64> (producto, división y combinación de
+    // Brent-Kung, polynomial.hpp) acumulan en una palabra cuando la suma no
+    // puede desbordarla: un acumulador que recibe como mucho `terminos`
+    // sumandos, cada uno <= (p-1)^2, vale <= terminos·(p-1)^2, y eso es
+    // < 2^64 si terminos <= floor((2^64 - 1) / (p-1)^2).  Con p = 101, hasta
+    // 1,8·10^15 términos (cualquier polinomio); con p < 2^16, más de 2^32; con
+    // p >= 2^32 + 1 nunca.  Un valor de partida < p (división) cuenta como un
+    // término más, pues p - 1 <= (p-1)^2.
+    bool acc64_cabe(std::size_t terminos) const { return terminos <= max_terminos64_; }
+    Elem reduce64(std::uint64_t x) const { return bar64_(x); }
 
     // --- predicates ---------------------------------------------------------
     bool eq(const Elem& a, const Elem& b) const { return a == b; }
@@ -239,6 +304,9 @@ private:
     detail::u128 lim_ = 0;   // 2^(2k): cota de validez de barrett()
     std::uint64_t c128_ = 0; // 2^128 mod p (= R^2 mod p para Montgomery, R = 2^64)
     std::uint64_t pinv_ = 0; // -p^(-1) mod 2^64 (solo p impar)
+    detail::Barrett64 bar64_;  // x mod p para x < 2^64 (fase 6)
+    bool pequeno_ = false;     // p < 2^32: a·b cabe en una palabra (acc_fma, fase 6)
+    std::size_t max_terminos64_ = 0;  // floor((2^64-1)/(p-1)^2): ver acc64_cabe (fase 6)
     mutable bool base_root_ready_ = false;
     mutable Elem base_root_ = 0;
 
@@ -260,20 +328,13 @@ private:
         return r;
     }
 
-    // x mod p para cualquier x de 128 bits.
+    // x mod p para cualquier x de 128 bits.  Fase 6: con p pequeño la suma de
+    // un acumulador casi nunca cabe en 2^(2k) (con p = 101, en 2^14) pero sí en
+    // una palabra; ese caso se reduce con Barrett de 64 bits en lugar de las
+    // dos divisiones de antes (hi % p y divq).  Mismo resto exacto.
     Elem reduce128(detail::u128 x) const {
         if (x < lim_) return barrett(x);
-        const std::uint64_t hi = static_cast<std::uint64_t>(x >> 64) % p_;
-        const std::uint64_t lo = static_cast<std::uint64_t>(x);
-#if defined(__x86_64__)
-        // División 128/64 del hardware: hi < p garantiza que el cociente cabe.
-        std::uint64_t q, r;
-        __asm__("divq %4" : "=a"(q), "=d"(r) : "0"(lo), "1"(hi), "rm"(p_) : "cc");
-        (void)q;
-        return r;
-#else
-        return static_cast<Elem>(((static_cast<detail::u128>(hi) << 64) | lo) % p_);
-#endif
+        return bar64_.dos_palabras(static_cast<std::uint64_t>(x >> 64), static_cast<std::uint64_t>(x));
     }
 
     // REDC: t·2^(-64) mod p para t < p·2^64 (aquí t = a·b con a, b < p).
