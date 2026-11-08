@@ -226,21 +226,28 @@ public:
     void acc_clear(Acc& s) const { s = 0; }
     void acc_set(Acc& s, const Elem& a) const { s = a; }
     void acc_fma(Acc& s, const Elem& a, const Elem& b) const {
-        // Fase 6, p < 2^32 (F_101, cuerpos base de F_(3^30), F_256...): a·b <
-        // p^2 < 2^64 se calcula con el producto de 64 bits y se suma sin vigilar
-        // el acarreo.  Cota: para desbordar 2^128 harían falta más de 2^64
-        // términos en un mismo acumulador, y cada acumulador recibe a lo sumo
-        // un término por coeficiente de un polinomio en memoria (escolar,
-        // división, composición) o por coeficiente de F_q (FqT: convolución de
-        // 2e-1 huecos más e pliegues por hueco); todos son < 2^61.  Mismo valor
-        // exacto que la rama general, luego el mismo resultado tras reducir.
-        if (pequeno_) {
-            s += static_cast<std::uint64_t>(a * b);
-            return;
-        }
         const Acc t = s + static_cast<Acc>(a) * b;
         // Acarreo (t < s): se ha perdido 2^128; se pliega a un valor < 2p.
         s = (t < s) ? static_cast<Acc>(reduce128(t)) + c128_ : t;
+    }
+    // Fase 6, p < 2^32 (F_101, cuerpos base de F_(3^30), F_256...): a·b <
+    // p^2 < 2^64 se calcula con el producto de 64 bits y se suma sin vigilar
+    // el acarreo.  Cota: para desbordar 2^128 harían falta más de 2^64
+    // términos en un mismo acumulador, y cada acumulador recibe a lo sumo
+    // un término por coeficiente de un polinomio en memoria (escolar,
+    // división, composición) o por coeficiente de F_q (FqT: convolución de
+    // 2e-1 huecos más e pliegues por hueco); todos son < 2^61.  Mismo valor
+    // exacto que acc_fma, luego el mismo resultado tras reducir.  Solo se usa
+    // si acc_pequeno(), y la comprobación se hace fuera del bucle
+    // (detail::con_acc_fma): dentro de acc_fma frenaba los bucles de p grande.
+    bool acc_pequeno() const { return pequeno_; }
+    void acc_fma_peq(Acc& s, const Elem& a, const Elem& b) const { s += static_cast<std::uint64_t>(a * b); }
+    // Con la comprobación por término: para FqT<Fp64>, cuyos bucles internos
+    // son de longitud e (el grado de la extensión) y se llaman por cada
+    // producto de F_q; ahí el despacho fuera del bucle medía un 3-8 % peor.
+    void acc_fma_rama(Acc& s, const Elem& a, const Elem& b) const {
+        if (pequeno_) acc_fma_peq(s, a, b);
+        else acc_fma(s, a, b);
     }
     Elem acc_reduce(Acc& s) const { return reduce128(s); }
 
@@ -334,6 +341,8 @@ private:
     // dos divisiones de antes (hi % p y divq).  Mismo resto exacto.
     Elem reduce128(detail::u128 x) const {
         if (x < lim_) return barrett(x);
+        // (Medido: volver aquí a la división de antes, hi % p y divq, hace
+        // divmod de grado 2000 en F_(2^61-1) un 15 % más lento que esto.)
         return bar64_.dos_palabras(static_cast<std::uint64_t>(x >> 64), static_cast<std::uint64_t>(x));
     }
 

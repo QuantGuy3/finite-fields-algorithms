@@ -92,6 +92,30 @@ concept LazyAccumulation =
 
 namespace detail {
 
+// Fase 6: despacho de acc_fma fuera del bucle.  Un cuerpo puede ofrecer además
+//   bool acc_pequeno();                      // ¿vale acc_fma_peq?
+//   void acc_fma_peq(Acc& s, Elem a, Elem b);  // s += a·b, versión rápida
+// (Fp64 con p < 2^32: producto de 64 bits sin vigilar el acarreo).  `bucle`
+// es una lambda genérica que recibe la operación fma; se instancia dos veces
+// y la comprobación se hace una sola vez por bucle, no una por término (con la
+// comprobación dentro de acc_fma, los bucles de p grande iban un 15 % más
+// lentos).  Ambas versiones dan el mismo valor exacto.
+template <class F, class Bucle>
+inline void con_acc_fma(const F& K, Bucle&& bucle) {
+    if constexpr (requires(typename F::Acc& s, const typename F::Elem& a) {
+                      { K.acc_pequeno() } -> std::convertible_to<bool>;
+                      K.acc_fma_peq(s, a, a);
+                  }) {
+        if (K.acc_pequeno()) {
+            bucle([&K](typename F::Acc& s, const typename F::Elem& a, const typename F::Elem& b) {
+                K.acc_fma_peq(s, a, b);
+            });
+            return;
+        }
+    }
+    bucle([&K](typename F::Acc& s, const typename F::Elem& a, const typename F::Elem& b) { K.acc_fma(s, a, b); });
+}
+
 // ¿Son a y b el mismo cuerpo?  Camino rápido: el mismo objeto.  Si no, se usa
 // la función libre same_field(a, b) del tipo de cuerpo (Fp y Fq la definen; se
 // encuentra por ADL en el punto de instanciación), o en su defecto operator==;

@@ -280,11 +280,17 @@ public:
         acc_clear(s);
         for (unsigned long i = 0; i < n_; ++i) base_.acc_set(s[i], a[i]);
     }
+    // Fase 6: con Base = Fp64 se usa acc_fma_rama (producto de 64 bits si
+    // p < 2^32, comprobado por término; ver fp64.hpp).
+    void base_fma(typename Base::Acc& s, const BaseElem& a, const BaseElem& b) const {
+        if constexpr (requires { base_.acc_fma_rama(s, a, b); }) base_.acc_fma_rama(s, a, b);
+        else base_.acc_fma(s, a, b);
+    }
     void acc_fma(Acc& s, const Elem& a, const Elem& b) const {
         for (unsigned long i = 0; i < n_; ++i) {
             const BaseElem& ai = a[i];
             if (base_.is_zero(ai)) continue;
-            for (unsigned long j = 0; j < n_; ++j) base_.acc_fma(s[i + j], ai, b[j]);
+            for (unsigned long j = 0; j < n_; ++j) base_fma(s[i + j], ai, b[j]);
         }
     }
     // Reduce la convolución acumulada (la consume: s queda como búfer de
@@ -296,7 +302,7 @@ public:
             const BaseElem c = base_.acc_reduce(s[k]);
             if (base_.is_zero(c)) continue;
             const std::size_t base = k - n_;
-            for (unsigned long t = 0; t < n_; ++t) base_.acc_fma(s[base + t], c, neg_g_[t]);
+            for (unsigned long t = 0; t < n_; ++t) base_fma(s[base + t], c, neg_g_[t]);
         }
         Elem r;
         r.reserve(n_);
