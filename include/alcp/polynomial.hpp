@@ -40,10 +40,12 @@
 #include "kronecker.hpp"
 
 #include <algorithm>
+#include <atomic>
 #include <cstddef>
 #include <cstdint>
 #include <future>
 #include <memory>
+#include <mutex>  // std::call_once (fase 8)
 #include <optional>
 #include <stdexcept>
 #include <string>
@@ -427,10 +429,43 @@ ALCP_TAB_FN inline void acumula64(const Tabla& t, const u64* a, std::size_t fila
 #undef ALCP_TAB_FN
 #endif  // ALCP_NTT_AVX2
 
-// Tabla de m (aplicable(K, deg m) ya comprobado).
-inline Tabla crea(const Fp64& K, const std::vector<u64>& m) {
+// Versiones escalares de construir y de la suma (fase 8, revisión): mismos
+// valores exactos que las AVX2.  No se usan para ganar tiempo (no ganaban a la
+// reducción antigua) sino para que crea y combina den SIEMPRE el resultado
+// correcto aunque no haya AVX2 en la CPU o en esta unidad de compilación
+// (ALCP_NTT_AVX2 = 0, p. ej. -O0): si por ODR se mezclan unidades -O0 y -O2,
+// o si alguien las llama sin pasar por aplicable(), no devuelven ceros.  Las
+// prueba tests/test_fase8_reducer.cpp frente a las vectoriales.
+inline void construir_escalar(Tabla& t, const std::vector<u32>& r0, const Fp64& K) {
+    const std::size_t n = t.n, ld = t.ld;
+    u32* T = t.buf.data() + 8;
+    std::copy(r0.begin(), r0.end(), T);
+    for (std::size_t i = 1; i < n; ++i) {
+        const u32* a = T + (i - 1) * ld;
+        u32* b = T + i * ld;
+        const u64 c = a[n - 1];
+        // T_i[j-1] + c·T_0[j] <= (p-1) + (p-1)² < 2^32 con p <= 2^16.
+        for (std::size_t j = 0; j < n; ++j) b[j] = static_cast<u32>(K.reduce64((j ? a[j - 1] : 0) + c * r0[j]));
+    }
+}
+
+inline std::vector<u64> combina_escalar(const Fp64& K, const Tabla& t, const u64* a0, const u64* c,
+                                        std::size_t filas) {
+    // filas <= kMax y p <= 2^16: filas·(p-1)² + (p-1) < 2^64.
+    const std::size_t n = t.n;
+    std::vector<u64> acc(n, 0);
+    if (a0) std::copy(a0, a0 + n, acc.begin());
+    for (std::size_t i = 0; i < filas; ++i) {
+        const u32* f = t.fila(i);
+        for (std::size_t j = 0; j < n; ++j) acc[j] += c[i] * f[j];
+    }
+    for (auto& x : acc) x = K.reduce64(x);
+    return acc;
+}
+
+// Cabecera de la tabla de m: tamaños, cota de 32 bits y T_0.
+inline Tabla prepara(const Fp64& K, const std::vector<u64>& m, std::vector<u32>& r0) {
     Tabla t;
-#if ALCP_NTT_AVX2
     const u64 p = K.modulus64();
     t.n = m.size() - 1;
     t.ld = (t.n + 8) & ~std::size_t(7);  // >= n + 1
@@ -439,37 +474,54 @@ inline Tabla crea(const Fp64& K, const std::vector<u64>& m) {
     t.v32 = static_cast<u64>(t.n) * (p - 1) * (p - 1) + (p - 1) < (u64(1) << 32);
     t.buf.assign(8 + t.n * t.ld, 0);
     const u64 il = K.inv(m.back());
-    std::vector<u32> r0(t.ld, 0);
+    r0.assign(t.ld, 0);
     for (std::size_t j = 0; j < t.n; ++j) r0[j] = static_cast<u32>(K.neg(K.mul(m[j], il)));
-    construir(t, r0, p);
-#else
-    (void)K; (void)m;
+    return t;
+}
+
+// Tabla de m (p <= 2^16, deg m >= 1; aplicable(K, deg m) decide si compensa).
+inline Tabla crea_escalar(const Fp64& K, const std::vector<u64>& m) {
+    std::vector<u32> r0;
+    Tabla t = prepara(K, m, r0);
+    construir_escalar(t, r0, K);
+    return t;
+}
+inline Tabla crea(const Fp64& K, const std::vector<u64>& m) {
+    std::vector<u32> r0;
+    Tabla t = prepara(K, m, r0);
+#if ALCP_NTT_AVX2
+    if (fft::word::avx2_disponible()) {
+        construir(t, r0, K.modulus64());
+        return t;
+    }
 #endif
+    construir_escalar(t, r0, K);
     return t;
 }
 
 // Σ_{i<filas} c[i]·T_i[j] + a0[j] (a0 puede ser nulo), reducido módulo p, para
 // j < t.n.  Las sumas de t.v32 caben en 32 bits; si no, en 64 (n <= kMax
-// filas, o k <= n potencias en el Composer, con p <= 2^16: < 2^64 siempre).
+// filas, o k <= n <= kMax potencias en el Composer, con p <= 2^16: < 2^64).
 inline std::vector<u64> combina(const Fp64& K, const Tabla& t, const u64* a0, const u64* c, std::size_t filas) {
-    const std::size_t n = t.n;
-    std::vector<u64> r(n);
 #if ALCP_NTT_AVX2
-    if (t.v32) {
-        std::vector<u32> acc(t.ld, 0);
-        if (a0) for (std::size_t j = 0; j < n; ++j) acc[j] = static_cast<u32>(a0[j]);
-        acumula32(t, c, filas, acc.data());
-        for (std::size_t j = 0; j < n; ++j) r[j] = K.reduce64(acc[j]);
-    } else {
-        std::vector<u64> acc(t.ld, 0);
-        if (a0) std::copy(a0, a0 + n, acc.begin());
-        acumula64(t, c, filas, acc.data());
-        for (std::size_t j = 0; j < n; ++j) r[j] = K.reduce64(acc[j]);
+    if (fft::word::avx2_disponible()) {
+        const std::size_t n = t.n;
+        std::vector<u64> r(n);
+        if (t.v32) {
+            std::vector<u32> acc(t.ld, 0);
+            if (a0) for (std::size_t j = 0; j < n; ++j) acc[j] = static_cast<u32>(a0[j]);
+            acumula32(t, c, filas, acc.data());
+            for (std::size_t j = 0; j < n; ++j) r[j] = K.reduce64(acc[j]);
+        } else {
+            std::vector<u64> acc(t.ld, 0);
+            if (a0) std::copy(a0, a0 + n, acc.begin());
+            acumula64(t, c, filas, acc.data());
+            for (std::size_t j = 0; j < n; ++j) r[j] = K.reduce64(acc[j]);
+        }
+        return r;
     }
-#else
-    (void)K; (void)t; (void)a0; (void)c; (void)filas;
 #endif
-    return r;
+    return combina_escalar(K, t, a0, c, filas);
 }
 
 // a mod m para a de grado n..2n-1 (a.size() - n <= n filas).  Devuelve los n
@@ -479,7 +531,8 @@ inline std::vector<u64> reduce(const Fp64& K, const Tabla& t, const std::vector<
 }
 
 // Tabla con filas dadas (las potencias h^i mod f del Composer): k filas de
-// ancho n (cada fila con <= n coeficientes < p <= 2^16).
+// ancho n (cada fila con <= n coeficientes < p <= 2^16, k <= n <= kMax).  No
+// tiene código vectorial: la suma la hace combina, correcta con o sin AVX2.
 inline Tabla de_filas(const Fp64& K, std::size_t n, const std::vector<const std::vector<u64>*>& filas) {
     Tabla t;
     const u64 p = K.modulus64();
@@ -1517,18 +1570,33 @@ public:
         // (el criterio del «alquiler de esquíes»: no gasta más del doble de lo
         // óptimo aunque no lleguen más llamadas).  Un pow_mod hace unas
         // 2·log2(k) reducciones; ddf_ks, cientos.
+        //
+        // Hilos (revisión de la fase 8): el estado se comparte entre las copias
+        // desde la construcción, así que dos copias usadas en hilos distintos
+        // lo tocan a la vez.  El contador es atómico (relaxed: solo decide
+        // cuándo construir, y contar de más o de menos no cambia el resultado)
+        // y la tabla se construye UNA vez con std::call_once; `lista` se
+        // publica con release después de escribir `t`, y quien la lee con
+        // acquire ve la tabla completa.  `t` no se reasigna nunca después: no
+        // hay forma de liberar una tabla en uso (vive lo que viva el estado).
+        // Coste fuera de la construcción: una carga acquire (un mov en x86).
         struct EstadoTabla {
             tabla::Tabla t;
-            std::size_t llamadas = 0;
+            std::atomic<std::size_t> llamadas{0};
+            std::atomic<bool> lista{false};
+            std::once_flag una;
         };
         bool usa_tabla() const {
             if constexpr (std::is_same_v<Field, Fp64>) {
                 EstadoTabla& E = *tab_;
-                if (!E.t.vacia()) return true;
+                if (E.lista.load(std::memory_order_acquire)) return true;
                 const std::size_t nn = static_cast<std::size_t>(m_.degree());
-                if (E.llamadas++ < 1 + nn / 128) return false;
-                E.t = tabla::crea(m_.field(), m_.c_);
-                return !E.t.vacia();
+                if (E.llamadas.fetch_add(1, std::memory_order_relaxed) < 1 + nn / 128) return false;
+                std::call_once(E.una, [&] {
+                    E.t = tabla::crea(m_.field(), m_.c_);
+                    E.lista.store(true, std::memory_order_release);
+                });
+                return true;  // call_once sincroniza: t ya está escrita
             } else {
                 return false;
             }
@@ -1637,7 +1705,10 @@ public:
                 // Fase 8: sin NTT, las potencias también como tabla de 32 bits
                 // para combina (la misma suma de productos que el Reducer por
                 // tabla; namespace tabla).  Sumas exactas: mismo resultado.
-                if (n >= tabla::kMin && K.modulus64() <= 65536 && fft::word::avx2_disponible()) {
+                // Mismo rango que el Reducer (tabla::aplicable: kMin <= n <= kMax,
+                // p <= 2^16 y AVX2): la tabla de potencias es pequeña (k <= n
+                // filas), pero la cota de 64 bits de combina supone k <= kMax.
+                if (tabla::aplicable(K, n)) {
                     std::vector<const std::vector<Elem>*> filas;
                     for (const auto& q : pot_) filas.push_back(&q.c_);
                     pot_tab_ = tabla::de_filas(K, n, filas);

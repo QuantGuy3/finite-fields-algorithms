@@ -5,12 +5,17 @@
 //   1. tabla::reduce directamente frente a divmod_school: grados de m límite
 //      (2^j y 2^j ± 1, kMin y kMax), deg a = n..2n-1, módulos no mónicos,
 //      coeficientes p - 1 (sumas máximas) y la frontera entre las sumas de 32
-//      y de 64 bits (p = 4093, n = 256 / 257).
+//      y de 64 bits (p = 4093, n = 256 / 257; p = 4099, n = 255 / 256).
+//   1b. Revisión: suma máxima sintética en esa frontera (tabla y a con todas
+//      las entradas p - 1) frente al valor exacto, y las versiones escalares
+//      (crea_escalar, combina_escalar: las que se usan sin AVX2) frente a las
+//      vectoriales y a divmod_school.
 //   2. Reducer::reduce frente a divmod_school con el mismo Reducer muchas
 //      veces (la tabla se construye a partir de la llamada 2 + n/128) y con
 //      sus copias (comparten la tabla): deg a = n-1..2n-1, 2n, 2n+5 y cero.
 //      Incluye cuerpos sin tabla (F_65537, F_(2^61-1)) y con NTT pequeña
 //      (F_257, F_193: unas reducciones por la NTT y otras por la tabla).
+//   2b. Revisión: copias de un Reducer usadas a la vez desde varios hilos.
 //   3. pow_mod y Composer::compose frente a referencias escolares.
 //   4. En frío: Reducer, pow_mod (sin FFT en el cuerpo) y Composer no
 //      consumen el generador y dejan fft_cache_ vacía.
@@ -26,6 +31,7 @@
 #include <cstdint>
 #include <cstdio>
 #include <string>
+#include <thread>
 #include <vector>
 
 using namespace alcp;
@@ -69,6 +75,7 @@ void test_tabla_directa() {
         {"2", {8, 9, 15, 16, 17, 64, 100, 384}},
         {"101", {8, 9, 31, 32, 33, 63, 64, 65, 100, 127, 128, 129, 255, 256, 257, 383, 384}},
         {"4093", {255, 256, 257}},  // frontera de las sumas de 32 bits
+        {"4099", {255, 256}},       // (4099: v32 con 255, v64 con 256)
         {"65521", {8, 33, 100, 128, 129, 384}},
     };
     for (const Caso& c : casos) {
@@ -104,6 +111,50 @@ void test_tabla_directa() {
     CHECK(!tabla::aplicable(K65537, 100));
 }
 
+// ------------------------------------------------------------ 1b. frontera y escalares
+void test_frontera() {
+    struct Caso { const char* p; int n; bool v32; };
+    // n·(p-1)² + (p-1) < 2^32: 4093 hasta n = 256, 4099 hasta n = 255.
+    const Caso casos[] = {{"4093", 255, true}, {"4093", 256, true}, {"4093", 257, false},
+                          {"4099", 255, true}, {"4099", 256, false}};
+    for (const Caso& c : casos) {
+        const std::string tag = std::string(" p = ") + c.p + ", n = " + std::to_string(c.n);
+        set_seed(17);
+        const Fp64 K{BigInt(c.p)};
+        const std::uint64_t p = K.modulus64();
+        const std::size_t n = static_cast<std::size_t>(c.n);
+        // Tabla real: v32 según la cota, y la escalar idéntica a la vectorial.
+        const P m = P::random(K, c.n);
+        const tabla::Tabla t = tabla::crea(K, m.coeffs()), te = tabla::crea_escalar(K, m.coeffs());
+        CHECK_MSG(t.v32 == c.v32 && te.v32 == c.v32, ("cota de 32 bits" + tag).c_str());
+        CHECK_MSG(t.buf == te.buf, ("crea = crea_escalar" + tag).c_str());
+        // Sintética: todas las entradas de la tabla y de a valen p - 1, la
+        // suma máxima n·(p-1)² + (p-1) en cada columna.  Valor exacto con u128.
+        tabla::Tabla s = t;
+        for (std::size_t i = 0; i < n; ++i)
+            for (std::size_t j = 0; j < n; ++j) s.buf[8 + i * s.ld + j] = static_cast<std::uint32_t>(p - 1);
+        const std::vector<std::uint64_t> a(2 * n, p - 1);
+        const unsigned __int128 exacto = static_cast<unsigned __int128>(n) * (p - 1) * (p - 1) + (p - 1);
+        const std::uint64_t esperado = static_cast<std::uint64_t>(exacto % p);
+        const auto r = tabla::reduce(K, s, a);
+        const auto re = tabla::combina_escalar(K, s, a.data(), a.data() + n, n);
+        bool ok = r.size() == n && r == re;
+        for (auto x : r) ok = ok && x == esperado;
+        CHECK_MSG(ok, ("suma máxima sintética" + tag).c_str());
+        // Tabla real con a de coeficientes p - 1 y grados n..2n-1, frente a la
+        // escolar, por la vectorial y por la escalar.
+        bool ok2 = true;
+        for (int da : {c.n, c.n + 1, 2 * c.n - 1}) {
+            const P A = aleatorio(K, da, true);
+            const P esp = A.divmod_school(m).second;
+            const auto& ac = A.coeffs();
+            ok2 = ok2 && P(K, tabla::reduce(K, t, ac)) == esp &&
+                  P(K, tabla::combina_escalar(K, te, ac.data(), ac.data() + n, ac.size() - n)) == esp;
+        }
+        CHECK_MSG(ok2, ("tabla real, a con p - 1, = escolar" + tag).c_str());
+    }
+}
+
 // ------------------------------------------------------------ 2. Reducer
 void test_reducer(const char* ps, const std::vector<int>& ns) {
     set_seed(5);
@@ -127,6 +178,37 @@ void test_reducer(const char* ps, const std::vector<int>& ns) {
                 ok = ok && red.reduce(a) == esperado && copia.reduce(a) == esperado;
             }
         CHECK_MSG(ok, ("Reducer::reduce = escolar, p = " + std::string(ps) + ", n = " + std::to_string(n)).c_str());
+    }
+}
+
+// ------------------------------------------------------------ 2b. hilos
+// Revisión: copias de un Reducer recién creado (comparten el estado de la
+// tabla) usadas a la vez desde varios hilos; todas deben construir/usar la
+// misma tabla sin carreras (contador atómico y std::call_once).
+void test_hilos() {
+    set_seed(31);
+    const Fp64 K{BigInt(101)};
+    for (int n : {16, 100, 300}) {
+        const P m = P::random(K, n);
+        std::vector<P> as, esperados;
+        for (int i = 0; i < 24; ++i) {
+            as.push_back(P::random(K, n + (i * n) / 24));
+            esperados.push_back(as.back().divmod_school(m).second);
+        }
+        const P::Reducer red(m);
+        std::vector<P::Reducer> copias(6, red);
+        std::vector<int> fallos(copias.size(), 0);
+        std::vector<std::thread> hilos;
+        for (std::size_t h = 0; h < copias.size(); ++h)
+            hilos.emplace_back([&, h] {
+                for (int v = 0; v < 4; ++v)
+                    for (std::size_t i = 0; i < as.size(); ++i)
+                        if (!(copias[h].reduce(as[i]) == esperados[i])) ++fallos[h];
+            });
+        for (auto& t : hilos) t.join();
+        int total = 0;
+        for (int x : fallos) total += x;
+        CHECK_MSG(total == 0, ("Reducer compartido entre hilos, n = " + std::to_string(n)).c_str());
     }
 }
 
@@ -238,6 +320,7 @@ void test_huellas() {
 int main() {
 #ifndef ALCP_HUELLAS
     test_tabla_directa();
+    test_frontera();
     test_reducer("2", {8, 9, 16, 17, 64, 100});
     test_reducer("3", {8, 31, 32, 33, 100, 129});
     test_reducer("7", {7, 8, 9, 15, 16, 17, 63, 64, 65, 100, 255, 256, 257, 383, 384, 385});
@@ -249,6 +332,7 @@ int main() {
     test_reducer("193", {32, 33, 64, 100});
     test_reducer("65537", {32, 100, 129});
     test_reducer("2305843009213693951", {32, 100});
+    test_hilos();
     test_pow_compose("101", {8, 33, 64, 100, 129, 200});
     test_pow_compose("7", {16, 100, 256});
     test_pow_compose("65521", {33, 100});
