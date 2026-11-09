@@ -120,7 +120,8 @@ inline int resto(std::vector<W>& a, int da, const std::vector<W>& b, int db, W i
         // (< 2^31 + 2^63) y se reduce una sola vez (Barrett, como fma2).  Con
         // p >= 2^31 no compensa (medido: F_(2^61-1) 0,94x por la reducción de
         // 128 bits extra de a[db]) y se usa el bucle general.
-        // Con p < 2^31 los productos caben en 64 bits: % de 64 bits, no de 128.
+        // Con p < 2^31 los productos caben en 64 bits (también c1·b + a[db] <
+        // 2^62 + 2^31): % de 64 bits, no de 128.
         const auto mulmod = [p](W x, W y) { return x * y % p; };
         const W l1 = a[static_cast<std::size_t>(da)];
         const W f1 = l1 == 0 ? 0 : mulmod(l1, inv_lead);
@@ -141,8 +142,9 @@ inline int resto(std::vector<W>& a, int da, const std::vector<W>& b, int db, W i
             const W s = r[j] + c1 * prev + c0 * B[j];
             prev = B[j];
             const W qq = static_cast<W>((static_cast<W128>(s) * mu) >> 64);
-            W v = s - qq * p;  // en [0, 3p)
-            v -= p & (0 - static_cast<W>(v >= p));
+            // mu = floor((2^64-1)/p) cumple 2^64 - p·mu <= p, así que qq es
+            // floor(s/p) o uno menos: v en [0, 2p) (revisión de la fase 7).
+            W v = s - qq * p;
             v -= p & (0 - static_cast<W>(v >= p));
             r[j] = v;
         }
@@ -2551,6 +2553,12 @@ private:
     //     Fase 5: con p < 2^32 y NTT para el tamaño (mariposas perezosas),
     //     128 / 512 (F_998244353: 1,22x amortizado a 128, 1,34x aislada a 512;
     //     bench/results/fase5/calibra_newton.txt).
+    //     Fase 7 (escolar con acumulador de 64 bits de la fase 6, NTT radix 4 y
+    //     tablas sin generador; bench/results/fase7/calibra_newton_fino.txt,
+    //     primer tamaño en que Newton gana): p < 2^16: 80 / 384 (aislada 0,95x
+    //     a 320, 1,07x a 384); p < 2^32 con NTT: 112 / 224 (1,32x amortizado a
+    //     112, 1,07x aislada a 224); p mayor: 512 / 1792 (1,10x a 512; aislada
+    //     0,94x a 1536, 1,05x a 1792).  p < 2^32 sin NTT no se volvió a medir.
     //   * Fp (GMP): 96 / 256.   * FpN2 (fase 7): 384 / 1024.
     //   * F_q de grado e: con p < 2^32, max(32, 192/e) / max(64, 1024/e)
     //     (F_9: 96 / 512; F_256: 32 / 128; F_(3^30): 32 / 64); con p mayor
@@ -2562,10 +2570,11 @@ private:
         const std::size_t bits = mpz_sizeinbase(K.characteristic().get_mpz_t(), 2);
         std::size_t umbral = kNunca;
         if constexpr (fft::NativeWordField<Field>) {
-            if (bits <= 16) umbral = amortizado ? 64 : 192;
-            else if (bits <= 32 && fft::fft_exponent(K, 2 * small) >= 0) umbral = amortizado ? 128 : 512;
+            // Fase 7: recalibrado (ver el comentario de arriba).
+            if (bits <= 16) umbral = amortizado ? 80 : 384;
+            else if (bits <= 32 && fft::fft_exponent(K, 2 * small) >= 0) umbral = amortizado ? 112 : 224;
             else if (bits <= 32) umbral = amortizado ? 192 : 768;
-            else umbral = amortizado ? 768 : 1536;
+            else umbral = amortizado ? 512 : 1792;
         } else if constexpr (std::is_same_v<Elem, BigInt>) {
             umbral = amortizado ? 96 : 256;
         } else if constexpr (std::is_same_v<Field, FpN2>) {

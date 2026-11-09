@@ -196,6 +196,30 @@ repetirlas escenario a escenario (7 rondas, 11 repeticiones, 0,2 s) quedan entre
 El binario de la suite necesita ahora `-Wa,-mbig-obj` para enlazar, igual que la cobertura (`run_bench.py build` lo añade en Windows):
 sin él aparecen referencias indefinidas a símbolos de `std::async`.
 
+## Recalibración de la división de Newton
+
+Desde la última calibración (fase 5) cambiaron tres cosas: la división escolar es más rápida
+con p < 2^32 (acumulador de 64 bits de la fase 6), la NTT es más rápida (radix 4) y Newton ya
+no necesita la caché llena (3d). Se volvió a ejecutar `bench/calibra_newton.cpp` (Fp64, con
+entradas variadas y el mínimo de 5 tandas) con tamaños intermedios. Resultados en
+`bench/results/fase7/calibra_newton.txt` y `calibra_newton_fino.txt`.
+
+Umbrales de `prefer_newton` (amortizado / división aislada): el primer tamaño en que Newton
+gana a la escolar.
+
+| Cuerpo | Antes | Ahora | Por qué |
+|---|---|---|---|
+| p < 2^16 (F_101) | 64 / 192 | **80 / 384** | La aislada a 192 era 0,65x frente a la escolar. Con 384 da 1,07x |
+| p < 2^32 con NTT (F_998244353) | 128 / 512 | **112 / 224** | La aislada ya gana 1,07x a 224 y 1,44x a 256. La amortizada, 1,32x a 112 |
+| p > 2^32 (F_(2^61−1)) | 768 / 1536 | **512 / 1792** | La amortizada gana 1,10x a 512. La aislada era 0,94x a 1536 y da 1,05x a 1792 |
+
+En p < 2^32 sin NTT no se volvió a medir; se deja 192 / 768. `medio::kMin` (64) no cambia:
+solo gobierna la recursión de `inverse_series`, y los nuevos umbrales están por encima.
+
+Suite intercalada frente a la versión anterior: **1,011x** global, **checksums iguales**.
+`fp.ntt.pow_mod.d128_k5` va **2,24x** más rápido (con 112 el `Reducer` ya usa Newton en
+grado 128); el resto queda en ±5 % (`bench/results/fase7/newton-recalibrado.md`).
+
 ## Pruebas
 
 - `tests/test_fase7_*.cpp` (hgcd, NTT, FpN2 con 3558 comprobaciones, FqTab/FqSwar) y las
@@ -214,7 +238,7 @@ sin él aparecen referencias indefinidas a símbolos de `std::async`.
 
 ## Pendiente
 
-- Recalibrar `prefer_newton` y `medio::kMin` con las nuevas NTT y la raíz determinista.
+- Recalibrar Newton con 2^16 < p < 2^32 sin NTT (p. ej. 2^31 − 1).
 - Acercarse a FLINT en `gcd` con F_998244353 y en `factor`/`irred` con p = 101.
 - Informe de cobertura C++. `build.py cov-cpp` ya compila todo (se añadió `-Wa,-mbig-obj`
   a los flags de cobertura: sin él, `bindings.o` a -O0 no enlazaba) y **todos los tests
