@@ -235,6 +235,17 @@ std::vector<typename Field::Elem> mul_extension(const Field& K, const typename F
     const BigInt& p = K.characteristic();
     const std::size_t m = std::min(na, nb) * e;
     const std::size_t bits = detail::bits_hueco(base, m);
+    // Fase 7: un cuerpo con el gancho reducir_huecos (FqSwar, fq_swar.hpp)
+    // reduce cada bloque de 2e-1 huecos de 64 bits con su reducción escalar.
+    // Con huecos de más de 62 bits (imposible en la práctica con p < 2^16) se
+    // usa el camino de Fq64, que da los mismos elementos.
+    constexpr bool kGanchoHuecos = requires(std::uint64_t* s) {
+        K.reducir_huecos(s);
+        K.como_fq64();
+    };
+    if constexpr (kGanchoHuecos) {
+        if (bits > 62) return mul_extension(K.como_fq64(), a, na, b, nb);
+    }
     const std::size_t L = na + nb - 1;
     auto empaquetar = [&](const Elem* x, std::size_t nx, std::vector<limb>& X) {
         X.assign((nx * bloque * bits + 63) / 64 + 1, 0);
@@ -262,9 +273,21 @@ std::vector<typename Field::Elem> mul_extension(const Field& K, const typename F
     else
         mpn_mul(C.data(), Bv.data(), static_cast<mp_size_t>(nb_l), A.data(), static_cast<mp_size_t>(na_l));
 
-    typename Field::Acc acc;
     std::vector<Elem> r;
     r.reserve(L);
+    if constexpr (kGanchoHuecos) {
+        // Cada hueco (<= 62 bits) se lee con una máscara, sin reducirlo: la
+        // reducción escalar del cuerpo reduce módulo p y módulo g a la vez.
+        const limb mask = detail::mascara(bits);
+        std::vector<std::uint64_t> s(bloque);
+        for (std::size_t k = 0; k < L; ++k) {
+            const std::size_t b0 = k * bloque * bits;
+            for (std::size_t j = 0; j < bloque; ++j) s[j] = detail::tomar(C.data(), b0 + j * bits, mask);
+            r.push_back(K.reducir_huecos(s.data()));
+        }
+        return r;
+    } else {
+    typename Field::Acc acc;
     if constexpr (std::is_same_v<std::decay_t<decltype(base)>, alcp::Fp64>) {
         // Fase 6, Fq64 con huecos de <= 64 bits (F_(3^30): 18 bits en grado
         // 200; F_256: 16-24 bits): cada hueco se lee directamente en su
@@ -307,6 +330,7 @@ std::vector<typename Field::Elem> mul_extension(const Field& K, const typename F
         r.push_back(K.acc_reduce(acc));
     }
     return r;
+    }  // if constexpr (kGanchoHuecos)
 }
 
 }  // namespace alcp::ks

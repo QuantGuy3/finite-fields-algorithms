@@ -1,0 +1,68 @@
+Fase 7, propuesta 7 (FqTab/FqSwar). CON CARGA (otros agentes compilando a la vez). ALCP_THREADS=1.
+Dos ejecuciones de medir.exe: la primera con menos carga (Fq64 -> nuevo): F_256 factor d30 5999.6 -> 166.6 us (36.0x); F_256 mul d1000 949.5 -> 317.2 us (2.99x); F_(3^30) factor d5 3571.6 -> 1763.2 us (2.03x); F_(3^30) mul d200 761.5 -> 693.6 us (1.10x).
+La segunda, completa:
+
+Fase 7, propuesta 7: Fq64 frente a FqTab / FqSwar (un hilo, mejor de 3 tandas de >= 30 ms
+con vueltas completas a las entradas, A/B intercalado)
+
+== factor F_256 grado 30 (16 entradas)
+  Fq64            8930.5 us
+  FqTab            211.2 us  (42.28x)  idéntico (factores, orden y generador): sí
+
+== producto F_256 grado 1000 (16 pares)
+  Fq64            1105.6 us
+  FqTab            389.3 us  (2.84x)  idéntico: sí
+
+== factor F_(3^30) grado 5 (16 entradas)
+  Fq64            5477.5 us
+  FqSwar          2174.1 us  (2.52x)  idéntico (factores, orden y generador): sí
+
+== producto F_(3^30) grado 200 (16 pares)
+  Fq64            1011.0 us
+  FqSwar           831.4 us  (1.22x)  idéntico: sí
+
+(sumidero 751154)
+
+===== bench_suite -DALCP_BENCH_SIN_FQ_RAPIDO (Fq64, antes), --reps 3 --min-time 0.1 =====
+# alcp bench_suite | g++ 15.2.0 | GMP 6.3.0 | backend auto | 18 escenarios | reps>=3, min-time 0.10 s
+fq.q3e30.elem_muladd.n4000                           5.235 ms  min       4.990 ms  n=19    16edfcc06a08028a
+fq.q3e30.elem_inv.n100                               1.039 ms  min       0.979 ms  n=90    a8167c01d1cfc5dd
+fq.q3e30.mul_school.d32                              0.593 ms  min       0.570 ms  n=154   ed0ca8eb7d325de3
+fq.q3e30.mul_karatsuba.d128                          5.144 ms  min       4.978 ms  n=19    2464b901bd242c7d
+fq.q3e30.divmod.d64_32                               0.629 ms  min       0.599 ms  n=133   a2b35f414a139741
+fq.q3e30.factor.d5                                   3.386 ms  min       3.304 ms  n=29    417a5b753c7a2a07
+fq.q2e8.elem_muladd.n50000                          11.765 ms  min      10.325 ms  n=9     c0ffe16ee54f128c
+fq.q2e8.elem_inv.n5000                               5.075 ms  min       3.423 ms  n=20    81d71b5687e3e735
+fq.q2e8.mul_school.d128                              0.685 ms  min       0.584 ms  n=126   c056d9d992271db9
+fq.q2e8.mul_karatsuba.d512                           6.960 ms  min       6.006 ms  n=14    de1089fdce26d02c
+fq.q2e8.is_irreducible.d16                           1.690 ms  min       1.584 ms  n=57    9478d590a29a9cbf
+fq.q2e8.factor.d28                                   2.958 ms  min       2.881 ms  n=32    d2fc95c10ececedd
+fq.q7e4.elem_muladd.n50000                           7.709 ms  min       6.999 ms  n=12    a6cf18a43d40c5c0
+fq.q7e4.elem_inv.n5000                               2.291 ms  min       2.176 ms  n=42    8664ac6d09409f94
+fq.q7e4.mul_school.d128                              0.262 ms  min       0.248 ms  n=345   71d186560b1d8153
+fq.q7e4.mul_karatsuba.d512                           4.253 ms  min       3.993 ms  n=23    6a2e9b751ab48e99
+fq.q7e4.gcd.d200                                     4.859 ms  min       4.137 ms  n=19    8cf19ac90e512feb
+fq.q7e4.factor.d20                                   1.410 ms  min       1.325 ms  n=61    ce23318b1b5fd48e
+# total 2.38 s
+
+===== bench_suite (FqTab en q2e8/q7e4, FqSwar en q3e30) =====
+# alcp bench_suite | g++ 15.2.0 | GMP 6.3.0 | backend auto | 18 escenarios | reps>=3, min-time 0.10 s
+fq.q3e30.elem_muladd.n4000                           2.788 ms  min       2.720 ms  n=35    16edfcc06a08028a
+fq.q3e30.elem_inv.n100                               0.195 ms  min       0.188 ms  n=467   a8167c01d1cfc5dd
+fq.q3e30.mul_school.d32                              0.212 ms  min       0.198 ms  n=457   ed0ca8eb7d325de3
+fq.q3e30.mul_karatsuba.d128                          2.519 ms  min       2.190 ms  n=37    2464b901bd242c7d
+fq.q3e30.divmod.d64_32                               0.221 ms  min       0.213 ms  n=408   a2b35f414a139741
+fq.q3e30.factor.d5                                   1.566 ms  min       1.520 ms  n=60    417a5b753c7a2a07
+fq.q2e8.elem_muladd.n50000                           0.195 ms  min       0.188 ms  n=505   c0ffe16ee54f128c
+fq.q2e8.elem_inv.n5000                               0.008 ms  min       0.007 ms  n=10000 81d71b5687e3e735
+fq.q2e8.mul_school.d128                              0.017 ms  min       0.016 ms  n=5146  c056d9d992271db9
+fq.q2e8.mul_karatsuba.d512                           0.143 ms  min       0.130 ms  n=550   de1089fdce26d02c
+fq.q2e8.is_irreducible.d16                           0.056 ms  min       0.051 ms  n=1418  9478d590a29a9cbf
+fq.q2e8.factor.d28                                   0.181 ms  min       0.163 ms  n=457   d2fc95c10ececedd
+fq.q7e4.elem_muladd.n50000                           0.391 ms  min       0.382 ms  n=250   a6cf18a43d40c5c0
+fq.q7e4.elem_inv.n5000                               0.029 ms  min       0.026 ms  n=3317  8664ac6d09409f94
+fq.q7e4.mul_school.d128                              0.106 ms  min       0.086 ms  n=894   71d186560b1d8153
+fq.q7e4.mul_karatsuba.d512                           0.765 ms  min       0.734 ms  n=123   6a2e9b751ab48e99
+fq.q7e4.gcd.d200                                     0.335 ms  min       0.316 ms  n=280   8cf19ac90e512feb
+fq.q7e4.factor.d20                                   0.176 ms  min       0.157 ms  n=499   ce23318b1b5fd48e
+# total 10.69 s

@@ -367,7 +367,7 @@ public:
             // Fase 4 (nivel B): Kronecker sobre Z cuando es más rápido.  Va después
             // de la línea anterior, así que el consumo del generador no cambia.
             if (prefer_kronecker(*K_, small, can_fft))
-                algo = MulAlgo::Kronecker;
+                return mul_kronecker_auto(o);
             else if (use_fft)
                 algo = MulAlgo::FFT;
             else if (small >= kKaratsubaCutoff)
@@ -388,6 +388,20 @@ public:
         }
     }
 
+    // Fase 7: ¿es Field un cuerpo con representación propia de un Fq64 de
+    // referencia (FqTab, fq_tab.hpp)?
+    static constexpr bool kRepresentaFq64 = requires(const Field& K, const Elem& x) {
+        K.reference();
+        K.encode(K.decode(x));
+    };
+    // El producto que la regla Auto llama «Kronecker»: con FqTab, Karatsuba
+    // sobre elementos de una palabra (más rápido que pasar por Fq64); en el
+    // resto, Kronecker.  Ninguno usa el generador ni la FFT.
+    Poly mul_kronecker_auto(const Poly& o) const {
+        if constexpr (kRepresentaFq64) return mul_karatsuba(o);
+        else return mul_kronecker(o);
+    }
+
     // Producto por sustitución de Kronecker sobre Z con GMP (kronecker.hpp,
     // fase 4, nivel B): los coeficientes se empaquetan en un entero, se
     // multiplica con mpn_mul y se desempaqueta reduciendo módulo p (y módulo g
@@ -397,7 +411,23 @@ public:
         if (is_zero() || o.is_zero()) return zero(*K_);
         if constexpr (ks::Extension<Field>)
             return Poly(*K_, ks::mul_extension(*K_, c_.data(), c_.size(), o.c_.data(), o.c_.size()));
-        else
+        else if constexpr (kRepresentaFq64) {
+            // Fase 7: cuerpo con representación propia de un Fq64 de referencia
+            // (FqTab, fq_tab.hpp).  Solo con MulAlgo::Kronecker explícito (Auto
+            // usa mul_kronecker_auto): se pasa por el Kronecker de Fq64.
+            auto aref = [&](const std::vector<Elem>& v) {
+                std::vector<typename std::decay_t<decltype(K_->reference())>::Elem> r;
+                r.reserve(v.size());
+                for (const auto& x : v) r.push_back(K_->decode(x));
+                return r;
+            };
+            const auto A = aref(c_), B = aref(o.c_);
+            const auto C = ks::mul_extension(K_->reference(), A.data(), A.size(), B.data(), B.size());
+            std::vector<Elem> r;
+            r.reserve(C.size());
+            for (const auto& x : C) r.push_back(K_->encode(x));
+            return Poly(*K_, std::move(r));
+        } else
             return Poly(*K_, ks::mul_primo(*K_, c_.data(), c_.size(), o.c_.data(), o.c_.size()));
     }
 
@@ -2007,7 +2037,12 @@ private:
     //     porque cada mariposa costaba 14 ns por fallos de predicción.
     static bool prefer_kronecker(const Field& K, std::size_t small, bool can_fft) {
         if (small < 32) return false;
-        if constexpr (ks::Extension<Field>) {
+        if constexpr (ks::Extension<Field> || kRepresentaFq64) {
+            // Fase 7: FqTab elige «Kronecker» en los mismos casos que Fq64, y
+            // por tanto tampoco la FFT: si no, en un cuerpo con FFT (p. ej.
+            // F_(193^2)) haría transformadas donde Fq64 no las hace y
+            // construiría las tablas (y la raíz, con el generador) antes.
+            // mul_kronecker_auto lo resuelve con Karatsuba sobre sus palabras.
             (void)K; (void)can_fft;
             return true;
         } else if constexpr (std::is_same_v<Elem, BigInt>) {
@@ -2096,7 +2131,7 @@ private:
         // Kronecker y Karatsuba se razona como si el cuerpo no tuviera FFT
         // (fase 5: con la NTT disponible prefer_kronecker ya no elige Kronecker).
         const bool can_fft = !K_->fft_cache_.empty() && fft::fft_exponent(*K_, L) >= 0;
-        if (prefer_kronecker(*K_, small, can_fft)) return mul_kronecker(o);
+        if (prefer_kronecker(*K_, small, can_fft)) return mul_kronecker_auto(o);
         const bool use_fft = can_fft && prefer_fft(*K_, small, std::max(na, nb), L);
         if (use_fft) return Poly(*K_, fft::convolve(*K_, c_, o.c_));
         if (small >= kKaratsubaCutoff) return mul_karatsuba(o);

@@ -49,6 +49,10 @@
 // la propiedad `backend` dice cuál se usa ('u64' o 'gmp').  Los dos backends
 // dan los mismos resultados, las mismas excepciones y consumen igual el
 // generador aleatorio: la API Python no cambia, solo la velocidad.
+// Fase 7 (propuesta 7): con backend 'u64', Fq elige además FqTab (q <= 2^16,
+// tablas de logaritmos) o FqSwar (p pequeño, huecos de 16 bits) cuando caben;
+// son el mismo cuerpo que Fq64 con el mismo módulo y dan exactamente lo mismo
+// (elementos, índices, repr, errores y generador).  `backend` sigue diciendo 'u64'.
 #include "alcp/alcp.hpp"
 
 #include <pybind11/pybind11.h>
@@ -75,6 +79,8 @@ using alcp::Fp;
 using alcp::Fp64;
 using alcp::Fq;
 using alcp::Fq64;
+using alcp::FqSwar;
+using alcp::FqTab;
 
 // ---------------------------------------------------------------------------
 // Conversión de enteros Python <-> mpz
@@ -372,8 +378,8 @@ struct FpW {
 };
 
 struct FqW {
-    using Var = std::variant<Fq, Fq64>;
-    using PolyVar = std::variant<alcp::Poly<Fq>, alcp::Poly<Fq64>>;
+    using Var = std::variant<Fq, Fq64, FqTab, FqSwar>;
+    using PolyVar = std::variant<alcp::Poly<Fq>, alcp::Poly<Fq64>, alcp::Poly<FqTab>, alcp::Poly<FqSwar>>;
     Var K;
     FqW(const BigInt& q, bool gmp) : K(desde_q(q, gmp)) {}
     FqW(const BigInt& p, std::vector<BigInt> g, bool gmp) : K(desde_modulo(p, std::move(g), gmp)) {}
@@ -382,24 +388,44 @@ struct FqW {
     // un primo, la misma excepción que daría Fq(q)).  prime_power_factor no usa
     // el generador aleatorio global: el módulo aleatorio sale igual.
     static Var desde_q(const BigInt& q, bool gmp) {
-        if (!gmp && Fp64::fits(alcp::prime_power_factor(q).first)) return Var(std::in_place_type<Fq64>, q);
+        if (!gmp) {
+            const auto [p, n] = alcp::prime_power_factor(q);
+            if (Fp64::fits(p)) {
+                // Fase 7: el tipo más rápido en que cabe el cuerpo (mismo módulo
+                // aleatorio y mismo generador: todos construyen antes el Fq64).
+                const unsigned long e = n <= 64 ? mpz_get_ui(n.get_mpz_t()) : 0;
+                if (FqTab::fits(p, e)) return Var(std::in_place_type<FqTab>, q);
+                if (FqSwar::fits(p, e)) return Var(std::in_place_type<FqSwar>, q);
+                return Var(std::in_place_type<Fq64>, q);
+            }
+        }
         return Var(std::in_place_type<Fq>, q);
     }
     static Var desde_modulo(const BigInt& p, std::vector<BigInt> g, bool gmp) {
-        if (!gmp && Fp64::fits(p)) return Var(std::in_place_type<Fq64>, Fp64(p), std::move(g));
+        if (!gmp && Fp64::fits(p)) {
+            // Un módulo de menos de dos coeficientes lo rechaza Fq64 (mismo mensaje).
+            const unsigned long e = g.size() >= 2 ? static_cast<unsigned long>(g.size() - 1) : 0;
+            if (FqTab::fits(p, e)) return Var(std::in_place_type<FqTab>, Fp64(p), std::move(g));
+            if (FqSwar::fits(p, e)) return Var(std::in_place_type<FqSwar>, Fp64(p), std::move(g));
+            return Var(std::in_place_type<Fq64>, Fp64(p), std::move(g));
+        }
         return Var(std::in_place_type<Fq>, Fp(p), std::move(g));
     }
 };
 
-// Aplica fn a la alternativa activa de un variant de dos tipos.  Equivale a
-// std::visit, pero con un simple if: std::visit instancia por cada llamada una
-// tabla de despacho y varias funciones auxiliares, y con -O0 --coverage el
-// objeto superaba el número de secciones COFF que admite ld de MinGW.
-template <class V, class Fn>
+// Aplica fn a la alternativa activa de un variant.  Equivale a std::visit,
+// pero con una cadena de if: std::visit instancia por cada llamada una tabla
+// de despacho y varias funciones auxiliares, y con -O0 --coverage el objeto
+// superaba el número de secciones COFF que admite ld de MinGW.  (Fase 7: para
+// cualquier número de alternativas; Fq tiene cuatro.)
+template <std::size_t I = 0, class V, class Fn>
 decltype(auto) visitar2(V& v, Fn&& fn) {
-    static_assert(std::variant_size_v<std::remove_const_t<V>> == 2);
-    if (v.index() == 0) return fn(*std::get_if<0>(&v));
-    return fn(*std::get_if<1>(&v));
+    if constexpr (I + 1 == std::variant_size_v<std::remove_const_t<V>>) {
+        return fn(*std::get_if<I>(&v));
+    } else {
+        if (v.index() == I) return fn(*std::get_if<I>(&v));
+        return visitar2<I + 1>(v, std::forward<Fn>(fn));
+    }
 }
 
 // Aplica fn al cuerpo concreto (Fp/Fp64 o Fq/Fq64) del envoltorio f.
@@ -448,6 +474,9 @@ template <class B>
 typename alcp::FqT<B>::Elem elem_in(const alcp::FqT<B>& K, const BigInt& v) { return K.from_index(v); }
 template <class B>
 BigInt elem_out(const alcp::FqT<B>& K, const typename alcp::FqT<B>::Elem& e) { return K.to_index(e); }
+// FqTab (fase 7): el mismo índice en base p que Fq64.
+inline FqTab::Elem elem_in(const FqTab& K, const BigInt& v) { return K.from_index(v); }
+inline BigInt elem_out(const FqTab& K, const FqTab::Elem& e) { return K.to_index(e); }
 
 // Listas completas.  Se construyen desde una vista (sin vector local: así no hay
 // código de limpieza de excepciones en estas líneas).  No se usa
@@ -516,6 +545,7 @@ template <class B>
 py::tuple clave(const alcp::FqT<B>& K) {
     return py::make_tuple("Fq", K.characteristic(), py::tuple(py::cast(K.modulus())));
 }
+inline py::tuple clave(const FqTab& K) { return clave(K.reference()); }
 
 // El repr es evaluable y da un cuerpo igual: si se forzó GMP para un p que
 // cabría en 64 bits, se añade backend='gmp'.
@@ -532,6 +562,7 @@ std::string repr_cuerpo(const alcp::FqT<B>& K) {
     for (std::size_t i = 0; i < K.modulus().size(); ++i) s += (i ? ", " : "") + K.modulus()[i].get_str();
     return s + "]" + sufijo_backend(K.characteristic(), std::is_same_v<B, Fp>) + ")";
 }
+inline std::string repr_cuerpo(const FqTab& K) { return repr_cuerpo(K.reference()); }
 
 // ---------------------------------------------------------------------------
 // Polinomios.  PolyW comparte el cuerpo (shared_ptr) para que el Field* que
@@ -845,6 +876,11 @@ struct OpsFp {
     static int n(const FpW& /*f*/) { return 1; }
 };
 
+// Cuerpo con base_field() para to_coeffs: FqTab usa su Fq64 de referencia.
+template <class K>
+const K& ref_fq(const K& k) { return k; }
+inline const Fq64& ref_fq(const FqTab& k) { return k.reference(); }
+
 // Exclusivo de Fq.
 struct OpsFq {
     static std::shared_ptr<FqW> crear_q(const BigInt& q, const std::string& backend) {
@@ -862,7 +898,9 @@ struct OpsFq {
         return en(f, [&](const auto& K) { return K.to_index(K.from_vector(v)); });
     }
     static std::vector<BigInt> to_coeffs(const FqW& f, const BigInt& i) {
-        return en(f, [&](const auto& K) {
+        return en(f, [&](const auto& K0) {
+            // FqTab: los coeficientes los da su Fq64 de referencia (fase 7).
+            const auto& K = ref_fq(K0);
             const auto e = K.from_index(i);
             const auto& B = K.base_field();
             const auto vista = e | std::views::transform([&B](const auto& c) { return B.to_bigint(c); });
