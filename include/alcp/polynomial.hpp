@@ -110,6 +110,46 @@ inline int resto(std::vector<W>& a, int da, const std::vector<W>& b, int db, W i
     if (q) q->assign(da >= db ? static_cast<std::size_t>(da - db + 1) : 0, 0);
     if (da < db) return da;
     const std::size_t ldb = static_cast<std::size_t>(db);
+    if (da == db + 1 && db >= 1 && p < (W(1) << 31)) {
+        // Fase 7: cociente de grado 1, el caso típico del Euclides, con p < 2^31.  Las dos
+        // filas de la división escolar (factor f1 en grado da, f0 en grado db)
+        // se aplican en UNA pasada: a[j] += c1·b[j-1] + c0·b[j], c = -f.  f0
+        // depende de a[db] DESPUÉS de la primera fila, que se calcula aparte.
+        // Mismos factores (y por tanto mismo cociente) y mismo resto módulo p:
+        // resultado idéntico.  La suma a[j] + c1·b + c0·b cabe en 64 bits
+        // (< 2^31 + 2^63) y se reduce una sola vez (Barrett, como fma2).  Con
+        // p >= 2^31 no compensa (medido: F_(2^61-1) 0,94x por la reducción de
+        // 128 bits extra de a[db]) y se usa el bucle general.
+        // Con p < 2^31 los productos caben en 64 bits: % de 64 bits, no de 128.
+        const auto mulmod = [p](W x, W y) { return x * y % p; };
+        const W l1 = a[static_cast<std::size_t>(da)];
+        const W f1 = l1 == 0 ? 0 : mulmod(l1, inv_lead);
+        const W c1 = f1 == 0 ? 0 : p - f1;
+        W adb = a[ldb];
+        if (c1 != 0) adb = (c1 * b[ldb - 1] + adb) % p;
+        const W f0 = adb == 0 ? 0 : mulmod(adb, inv_lead);
+        const W c0 = f0 == 0 ? 0 : p - f0;
+        if (q) {
+            (*q)[0] = f0;
+            (*q)[1] = f1;
+        }
+        W* r = a.data();
+        const W* B = b.data();
+        const W mu = ~W(0) / p;
+        W prev = 0;  // b[j - 1], 0 para j = 0
+        for (std::size_t j = 0; j < ldb; ++j) {
+            const W s = r[j] + c1 * prev + c0 * B[j];
+            prev = B[j];
+            const W qq = static_cast<W>((static_cast<W128>(s) * mu) >> 64);
+            W v = s - qq * p;  // en [0, 3p)
+            v -= p & (0 - static_cast<W>(v >= p));
+            v -= p & (0 - static_cast<W>(v >= p));
+            r[j] = v;
+        }
+        a[static_cast<std::size_t>(da)] = 0;
+        a[ldb] = 0;
+        return grado(a, db - 1);
+    }
     for (int dr = da; dr >= db; --dr) {
         const W lr = a[static_cast<std::size_t>(dr)];
         if (lr == 0) continue;
@@ -1189,8 +1229,10 @@ public:
     // prefer_newton lo aconseja (con el inverso amortizado), calcula y guarda
     // rev(m)^{-1} mod x^{deg m}; desde entonces reduce(a) divide con ese
     // inverso (a de grado <= 2·deg m - 1, el caso de los productos de
-    // pow_mod).  El cálculo es perezoso porque la decisión depende de que el
-    // cuerpo ya tenga tablas FFT, que los productos de pow_mod construyen.
+    // pow_mod).  El cálculo es perezoso: solo se hace si alguna reducción lo
+    // necesita.  (Hasta la fase 6 la decisión dependía de que el cuerpo ya tuviera
+    // tablas FFT; desde la fase 7, Fp64 usa la NTT también en frío con
+    // fft::tablas_sin_rng.)
     class Reducer {
     public:
         explicit Reducer(const Poly& m) : m_(m) {}
@@ -2085,11 +2127,10 @@ private:
 #else
     static constexpr std::size_t kHgcdMin = fft::NativeWordField<Field> ? 256 : 128;
 #endif
-    // Fase 7 (Fp64): ¿hay NTT para el half-GCD sin tocar el generador?  Solo si
-    // la caché FFT ya tiene tablas (reserva del revisor de la fase 6: sin ellas
-    // los productos de hgcd son Karatsuba y los umbrales bajos no compensan) y
-    // el cuerpo admite transformadas de 2048 (las de F_7681 o F_193 se quedan
-    // cortas y casi todo iría por Karatsuba).
+    // Fase 7 (Fp64): ¿hay NTT para el half-GCD sin tocar el generador?  Si el
+    // cuerpo admite transformadas de 2048 (las de F_7681 o F_193 se quedan
+    // cortas y casi todo iría por Karatsuba).  Con la propuesta 3d ya no hace
+    // falta que la caché FFT tenga tablas (fft::tablas_sin_rng).
     static bool hgcd_con_ntt(const Field& K) { return ntt_sin_rng(K, 2048); }
     // Fase 6: en Fp64, una vez que gcd_ext ha entrado en half-GCD, sigue con
     // hgcd mientras el grado sea >= este valor y termina con el Euclides
@@ -2140,8 +2181,8 @@ private:
     //       (1,3x; 0,85-0,89x a 4096) y ext gana desde 1024 (1,2x; 2,8x a
     //       8192): 8192 / 1024.  Para 2^16 <= p < 2^32 sin NTT no se midió:
     //       se dejan 4096 / 1024, entre ambos.
-    //     Sin tablas FFT en la caché se usan los valores «sin NTT» aunque el
-    //     cuerpo admita NTT (gcd_ext, además, va al clásico; ver gcd_ext).
+    //     Desde la propuesta 3d, los valores «con NTT» se usan aunque la caché
+    //     esté vacía (gcd_ext en frío sigue yendo al clásico; ver gcd_ext).
     //     Fase 5: 2048 / 1024, 4096 / 2048 y 8192 / 4096 según p.
     //   * Fp con GMP: 384 / 128.   * F_q: 384 / 192.   * FpN2 (fase 7): 4096 / 768.
     static std::size_t umbral_hgcd(const Field& K, bool ext) {
@@ -2205,8 +2246,8 @@ private:
     // del coeficiente principal), luego g = (x'·m00 + y'·m10)·a +
     // (x'·m01 + y'·m11)·b.  La sucesión de cocientes es la misma que la del
     // clásico, así que g, x e y son idénticos a los de gcd_ext_classic.
-    // Solo se llega aquí con la caché FFT llena o sin FFT posible, de modo que
-    // ni la cola ni mul_no_rng consumen el generador aleatorio.
+    // Solo se llega aquí con la caché FFT llena o sin FFT posible (gcd_ext va
+    // al clásico en frío), y ni la cola ni mul_no_rng consumen el generador.
     static ExtGcd cola_ext_w(const Poly& r0, const Poly& r1, const Mat2& M) {
         ExtGcd t = gcd_ext_classic_w(r0, r1);
         if (t.g.is_zero()) return t;
@@ -2245,9 +2286,9 @@ private:
     }
 
     // ---- Half-GCD «V3e» en Fp64 (fase 7) ------------------------------------
-    // Productos de matrices con la NTT en palabras (ver namespace hgcdw).  Solo
-    // con la caché FFT ya llena (ntt_sin_rng): pedir tablas de otro tamaño ya no
-    // consume el generador.  Si no, los productos de siempre (mul_no_rng).
+    // Productos de matrices con la NTT en palabras (ver namespace hgcdw), con
+    // las tablas de fft::tablas_sin_rng (no consume el generador).  Si no hay
+    // NTT del tamaño necesario, los productos de siempre (mul_no_rng).
     static std::size_t max_ent(const Mat2& M) {
         return std::max({M.m00.c_.size(), M.m01.c_.size(), M.m10.c_.size(), M.m11.c_.size()});
     }

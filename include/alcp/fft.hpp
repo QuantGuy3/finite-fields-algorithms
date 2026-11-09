@@ -809,9 +809,9 @@ namespace detail {
 template <class Field>
 void valida_k(const Field& K, unsigned long k) {
     if (k >= static_cast<unsigned long>(std::numeric_limits<std::size_t>::digits) - 1)
-        throw std::invalid_argument("fft::tables: k = " + std::to_string(k) + " demasiado grande");
+        throw std::invalid_argument("fft::tables/tablas_sin_rng: k = " + std::to_string(k) + " demasiado grande");
     if (k > K.fft_capacity())
-        throw std::invalid_argument("fft::tables: el cuerpo no tiene raíces de la unidad de orden 2^" +
+        throw std::invalid_argument("fft::tables/tablas_sin_rng: el cuerpo no tiene raíces de la unidad de orden 2^" +
                                     std::to_string(k) + " (capacidad FFT " +
                                     std::to_string(K.fft_capacity()) + ")");
 }
@@ -924,9 +924,10 @@ template <class Field>
     requires NativeWordField<Field>
 typename Field::Elem raiz_det(const Field& K) {
     const unsigned long cap = K.fft_capacity();
+    if (cap == 0) throw std::invalid_argument("fft::raiz_det: el cuerpo no admite NTT (capacidad FFT 0)");
     const BigInt pm1 = K.characteristic() - 1;
     const BigInt cofactor = pm1 >> cap;
-    const BigInt half = BigInt(1) << (cap - 1);  // cap >= 1: solo se llama con capacidad FFT
+    const BigInt half = BigInt(1) << (cap - 1);  // cap >= 1 (comprobado arriba)
     for (unsigned long a = 2;; ++a) {
         const auto c = K.pow(K.from_int(BigInt(a)), cofactor);
         if (K.pow(c, half) != K.one()) return c;

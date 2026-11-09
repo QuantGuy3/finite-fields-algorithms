@@ -98,6 +98,104 @@ F_998244353 y en `factor`/`irred` con p = 101 (0,57-0,76x). Esas son las candida
 recalibración de Newton y de los umbrales de half-GCD que quedan pendientes. Es una sola
 pasada sin intercalar, así que diferencias menores del 10 % no son significativas.
 
+## Propuesta 3d: tablas NTT con raíz determinista
+
+**Problema.** En `Fp64`, las rutas que no deben consumir el generador aleatorio
+(`mul_no_rng`, Newton, `Reducer`, `Composer`, half-GCD) solo podían usar la NTT si la caché
+FFT del cuerpo ya tenía tablas, es decir, si la raíz base ya se había sacado del generador.
+Desde Python cada cuerpo nace con la caché vacía, así que `divmod` o `gcd` iban por Kronecker
+o Karatsuba.
+
+**Solución** (`fft.hpp`: `raiz_det`, `tablas_sin_rng`; `fp64.hpp`: `fft_cache_det_`):
+
+- Esas rutas piden las tablas con `fft::tablas_sin_rng`. Si la caché normal tiene tablas,
+  devuelve esas. Si está vacía, construye tablas con una raíz determinista (el primer
+  a = 2, 3, … que no es resto cuadrático, elevado a (p−1)/2^cap) y las guarda en una caché
+  aparte.
+- El producto calculado con la NTT es la convolución exacta módulo p y no depende de la raíz.
+  `fft_base_root()`, `tables()` y `fft_cache_` no cambian, así que el generador se consume
+  exactamente igual que antes.
+- **Riesgo de mezclar raíces.** Una transformada solo puede combinarse con otra hecha con las
+  mismas tablas. Un `Reducer` vive durante todo un `factor()`, y entre dos reducciones la caché
+  puede llenarse con la raíz del generador. Para evitarlo, `medio::Fija` guarda el puntero a
+  sus tablas, y `Reducer` y `Composer` combinan con esas. Las demás rutas piden las tablas una
+  vez por operación.
+
+**Medido** con `compare_libs.py --filter fp30` en una sola pasada. La máquina estaba más lenta
+que en la comparativa anterior: FLINT tardó unas 2,3 veces más. Por eso se comparan cocientes y
+no tiempos absolutos.
+
+| Escenario | tiempo FLINT / tiempo alcp, antes de 3d | ídem, con 3d |
+|---|---|---|
+| `fp30.divmod.d4000` | 0,58x | **1,73x** |
+| `fp30.gcd.d1000` | 0,46x | 0,53x |
+| `fp30.factor.d300` | 1,05x | 1,06x |
+| `fp30.irred.d400` | 2,25x | 2,29x |
+
+Una cifra mayor que 1 significa que alcp es más rápido. `gcd` apenas cambia: con grado 1000 el
+coste está en el Euclides clásico de la cola, no en los productos. JSON en
+`bench/results/fase7/comparativa_flint_raizdet.json`.
+
+**Pruebas.** `tests/test_fase7_raizdet.cpp` tiene 43 comprobaciones:
+
+- `raiz_det` tiene orden exactamente 2^cap;
+- en frío, `divmod`, `inverse_series`, `gcd` y `Composer` coinciden con las versiones escolares,
+  no consumen el generador y dejan `fft_cache_` vacía;
+- un `Reducer` y un `Composer` creados en frío siguen siendo correctos después de llenar la
+  caché con la raíz del generador.
+
+Además pasan todas las pruebas previas de consumo del generador en frío
+(`test_fase6_newton`, `test_fase7_hgcd`, `test_fase6_kronecker`…).
+
+**Revisión adversaria: aprobada.**
+
+- Un programa diferencial compilado contra las cabeceras de antes y de después dio la misma
+  salida byte a byte en 117 combinaciones: 13 primos (de 2 a 2^62), 3 semillas y modos frío,
+  caliente y mixto. Comparaba resultados, `fft_cache_.empty()` y el estado del generador tras
+  cada operación.
+- Prueba de mezcla de raíces: 560 comprobaciones, 0 fallos. Su control negativo (una copia
+  que combina con las tablas de la caché en vez de `Fija::tab`) da 123 fallos, así que la
+  prueba detecta la mezcla.
+- Observaciones menores corregidas: `raiz_det` lanza una excepción si la capacidad FFT es 0
+  (p = 2), los mensajes de `valida_k` nombran las dos funciones, y se actualizaron los
+  comentarios que aún decían «solo con la caché llena».
+
+## Euclides: resto con cociente de grado 1 en una pasada
+
+En el Euclides clásico casi todos los pasos tienen cociente de grado 1. La división escolar
+aplicaba dos filas, `a += c1·x·b` y `a += c0·b`, cada una con su reducción módulo p. Con
+p < 2^31, `euclides::resto` las aplica ahora en una sola pasada: suma
+`a[j] + c1·b[j−1] + c0·b[j]` en 64 bits y reduce una vez con Barrett. Los factores son los
+mismos, y cociente y resto son únicos, así que el resultado es idéntico.
+
+Con p ≥ 2^31 se dejó el bucle general. La versión fusionada medía 0,94x en `fp.m61.gcd`, por
+la reducción de 128 bits adicional del coeficiente a[db].
+
+Pruebas: sección 4 de `test_fase7_raizdet.cpp` (49 comprobaciones en total). Compara con un
+Euclides de referencia hecho con `divmod_school` para p = 3, 101, 998244353, 2^31 − 1,
+2^31 + 11 y 2^61 − 1, con coeficientes p − 1 y con b[db−1] = 0.
+
+## Medición de 3d + resto fusionado
+
+Suite intercalada frente a la fase 7 inicial (`f7i534`), 3 rondas × 5 repeticiones, **todos
+los checksums iguales**: **1,025x** global. El portátil estaba más lento, probablemente con
+batería, pero la comparación intercalada es justa.
+
+| Escenario | Speedup |
+|---|---|
+| `fp.ntt.divmod.d2000_1000` | 2,38x |
+| `fp.p101.gcd.d500` / `fp.ntt.gcd.d500` / `fp.p7.gcd.d500` | 1,59x / 1,60x / 1,36x |
+| `gcd_ext` con p < 2^31 | 1,12-1,18x |
+| `fp.m61`, `fp.m127`, `fp.p256`, F_q | 0,96-1,04x (sin cambios) |
+
+Algunas multiplicaciones de Karatsuba salieron a 0,82-0,93x, aunque ese código no cambió. Al
+repetirlas escenario a escenario (7 rondas, 11 repeticiones, 0,2 s) quedan entre 0,99x y
+1,09x: era ruido. Resultados en `bench/results/fase7/fase7-vs-3d-resto.md` y
+`fase7-vs-3d-resto_repeticion.md`.
+
+El binario de la suite necesita ahora `-Wa,-mbig-obj` para enlazar, igual que la cobertura (`run_bench.py build` lo añade en Windows):
+sin él aparecen referencias indefinidas a símbolos de `std::async`.
+
 ## Pruebas
 
 - `tests/test_fase7_*.cpp` (hgcd, NTT, FpN2 con 3558 comprobaciones, FqTab/FqSwar) y las
@@ -116,9 +214,8 @@ pasada sin intercalar, así que diferencias menores del 10 % no son significativ
 
 ## Pendiente
 
-- Caché de raíz determinista (propuesta 3d) y recalibración de `prefer_newton` y `medio::kMin`
-  con las nuevas NTT.
-- Acercarse a FLINT en `divmod`, `gcd` y `factor` con p pequeño (ver la comparativa).
+- Recalibrar `prefer_newton` y `medio::kMin` con las nuevas NTT y la raíz determinista.
+- Acercarse a FLINT en `gcd` con F_998244353 y en `factor`/`irred` con p = 101.
 - Informe de cobertura C++. `build.py cov-cpp` ya compila todo (se añadió `-Wa,-mbig-obj`
   a los flags de cobertura: sin él, `bindings.o` a -O0 no enlazaba) y **todos los tests
   instrumentados y pytest pasan**. Pero gcovr 8.7 aborta porque gcov da cuentas negativas en

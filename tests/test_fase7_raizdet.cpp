@@ -11,6 +11,9 @@
 //   3. Mezcla de raíces: un Reducer y un Composer creados en frío (transformadas
 //      guardadas con la raíz determinista) siguen dando el resultado correcto
 //      después de que la caché se llene con la raíz del generador.
+//   4. Euclides clásico con el resto fusionado (cociente de grado 1) frente a
+//      la referencia con divmod_school, con p < 2^31, p = 2^31 - 1, p > 2^31 y
+//      coeficientes p - 1.
 #include "alcp/alcp.hpp"
 #include "check.hpp"
 
@@ -131,9 +134,46 @@ void test_mezcla(const char* ps) {
     CHECK_MSG(ok, ("Reducer y Composer frío -> caliente" + tag).c_str());
 }
 
+// --------------------------------------- 4. resto con cociente de grado 1
+// euclides::resto fusiona las dos filas cuando da = db + 1.  Referencia: el
+// Euclides con divmod_school (genérico, no pasa por euclides::resto).
+P gcd_ref(P a, P b) {
+    while (!b.is_zero()) {
+        P r = a.divmod_school(b).second;
+        a = std::move(b);
+        b = std::move(r);
+    }
+    return a.is_zero() ? a : a.monic();
+}
+
+void test_resto(const char* ps) {
+    const std::string tag = std::string(" p = ") + ps;
+    set_seed(5);
+    const Fp64 K{BigInt(ps)};
+    const std::uint64_t pm1 = K.modulus64() - 1;
+    bool ok = true;
+    for (int d : {1, 2, 3, 10, 64, 200}) {
+        const P a = P::random(K, d + 1), b = P::random(K, d);
+        ok = ok && P::gcd_classic(a, b) == gcd_ref(a, b);
+        const P g = P::random(K, d / 2 + 1);
+        const P x = g.mul_school(P::random(K, d)), y = g.mul_school(P::random(K, d - 1 >= 0 ? d - 1 : 0));
+        ok = ok && P::gcd_classic(x, y) == gcd_ref(x, y);
+        const auto e = P::gcd_ext_classic(x, y);
+        ok = ok && e.g == gcd_ref(x, y) && e.x.mul_school(x) + e.y.mul_school(y) == e.g;
+        // Coeficientes p - 1 (cotas de la suma sin reducir) y b[db-1] = 0.
+        std::vector<std::uint64_t> va(static_cast<std::size_t>(d) + 2, pm1), vb(static_cast<std::size_t>(d) + 1, pm1);
+        vb[static_cast<std::size_t>(d) - 1 + (d == 0)] = 0;
+        vb.back() = 1;
+        const P A(K, va), B(K, vb);
+        ok = ok && P::gcd_classic(A, B) == gcd_ref(A, B) && A.divmod(B) == A.divmod_school(B);
+    }
+    CHECK_MSG(ok, ("Euclides con el resto fusionado = referencia" + tag).c_str());
+}
+
 }  // namespace
 
 int main() {
+    for (const char* ps : {"101", "3", "998244353", "2147483647", "2147483659", "2305843009213693951"}) test_resto(ps);
     test_raiz();
     for (const char* ps : kPrimos) {
         test_frio(ps);
