@@ -302,6 +302,9 @@ public:
     }
 
     mutable FFTCache<Elem> fft_cache_;
+    // Fase 7 (propuesta 3d): tablas con la raíz determinista para las rutas
+    // que no consumen el generador (ver fft::tablas_sin_rng).
+    mutable FFTCache<Elem> fft_cache_det_;
 
 private:
     BigInt pbig_;

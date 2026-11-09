@@ -153,9 +153,9 @@ inline std::vector<W> menos_producto(const std::vector<W>& x0, const std::vector
 // x^N - 1) o que un operando se repite (transformada fija, el «FFTRep» de NTL).
 // La aritmética es exacta módulo p, así que los resultados son idénticos.
 //
-// Generador aleatorio: quien llama solo usa estas piezas si la caché FFT del
-// cuerpo ya tiene tablas (ntt_sin_rng en Poly), es decir, si la raíz base ya se
-// sacó del generador; pedir tablas de otro tamaño ya no lo consume.
+// Generador aleatorio: las tablas se piden con fft::tablas_sin_rng, que nunca
+// lo consume (fase 7: tablas de la caché si ya existen; si no, con la raíz
+// determinista).
 namespace medio {
 
 using W = std::uint64_t;
@@ -175,16 +175,21 @@ inline void producto(std::vector<W>& a, const std::vector<W>& b, W p) {
 
 // Transformada de un operando que se reutiliza, con los cocientes de Shoup de
 // cada valor: el producto punto a punto por ella no divide.
+// Fase 7: guarda las tablas con las que se transformó; el otro operando hay
+// que transformarlo con ESAS tablas (*tab), no con las que haya en la caché
+// en ese momento (ver fft::tablas_sin_rng: la raíz puede ser otra).
 struct Fija {
     std::vector<W> w, ws;
     std::size_t len = 0;  // coeficientes del operando antes de transformar
+    std::shared_ptr<const Tab> tab;
     bool vacia() const { return w.empty(); }
 };
 
-// Transforma a (ya rellenado con ceros hasta el tamaño de t) y prepara Shoup.
-inline Fija fija(const Tab& t, std::vector<W> a, std::size_t len, W p) {
-    directa(t, a);
+// Transforma a (ya rellenado con ceros hasta el tamaño de *t) y prepara Shoup.
+inline Fija fija(std::shared_ptr<const Tab> t, std::vector<W> a, std::size_t len, W p) {
+    directa(*t, a);
     Fija F;
+    F.tab = std::move(t);
     F.ws.resize(a.size());
     for (std::size_t i = 0; i < a.size(); ++i) F.ws[i] = fft::word::shoup(a[i], p);
     F.w = std::move(a);
@@ -225,7 +230,7 @@ inline std::vector<W> pliega(const W* v, std::size_t len, std::size_t N, W p) {
 // 2^k: los pocos coeficientes j >= 2^(k-1) se calculan directamente y se restan
 // de los que se envolvieron sobre j - 2^(k-1) («envoltura»).  La aritmética es
 // exacta módulo p: el resultado es idéntico al de los productos de siempre.
-// Quien llama solo usa estas piezas con la caché FFT ya llena (ntt_sin_rng).
+// Las tablas se piden con fft::tablas_sin_rng (no consume el generador).
 namespace hgcdw {
 
 using W = std::uint64_t;
@@ -768,11 +773,13 @@ public:
     }
 
     // ¿Puede usarse la NTT en palabras para una convolución de longitud len sin
-    // tocar el generador aleatorio?  Solo si la caché ya tiene tablas (la raíz
-    // base ya se sacó del generador: pedir tablas de otro tamaño no lo consume)
-    // y el cuerpo admite ese tamaño.  Es la misma condición que mul_no_rng.
+    // tocar el generador aleatorio?  Fase 7 (Fp64): siempre que el cuerpo
+    // admita ese tamaño, con fft::tablas_sin_rng (raíz determinista si la caché
+    // está vacía).  En los demás cuerpos, solo si la caché ya tiene tablas (la
+    // raíz base ya se sacó del generador).  Es la misma condición que mul_no_rng.
     static bool ntt_sin_rng(const Field& K, std::size_t len) {
-        return !K.fft_cache_.empty() && fft::fft_exponent(K, len) >= 0;
+        if constexpr (fft::NativeWordField<Field>) return fft::fft_exponent(K, len) >= 0;
+        else return !K.fft_cache_.empty() && fft::fft_exponent(K, len) >= 0;
     }
 
     // Fase 6 (Fp64 con tablas FFT): el mismo paso de Newton, k = ceil(n/2) y
@@ -790,7 +797,8 @@ public:
         std::vector<Elem> x = inverse_series(K, a, k);  // k coeficientes exactos
         const unsigned long l = fft::ceil_log2(n);
         const std::size_t N = std::size_t(1) << l;
-        const auto& t = fft::tables(K, l);  // la caché no está vacía: no consume el generador
+        const auto tp = fft::tablas_sin_rng(K, l);  // no consume el generador
+        const auto& t = *tp;
         const W p = K.modulus64();
         std::vector<W> fa(N, 0), fx(N, 0);
         std::copy(a.begin(), a.begin() + static_cast<std::ptrdiff_t>(std::min(n, a.size())), fa.begin());
@@ -824,7 +832,8 @@ public:
         const std::size_t m1 = c_.size(), d1 = ginv.size(), n = o.c_.size() - 1;
         const unsigned long l1 = fft::ceil_log2(2 * d1 - 1);
         const std::size_t N1 = std::size_t(1) << l1;
-        const auto& t1 = fft::tables(K, l1);
+        const auto tp1 = fft::tablas_sin_rng(K, l1);  // no consume el generador
+        const auto& t1 = *tp1;
         std::vector<W> b(N1, 0), gb(N1, 0);
         for (std::size_t i = 0; i < d1; ++i) b[i] = c_[m1 - 1 - i];
         std::copy(ginv.begin(), ginv.end(), gb.begin());
@@ -837,7 +846,8 @@ public:
 
         const unsigned long l2 = fft::ceil_log2(n);
         const std::size_t N2 = std::size_t(1) << l2;
-        const auto& t2 = fft::tables(K, l2);
+        const auto tp2 = fft::tablas_sin_rng(K, l2);
+        const auto& t2 = *tp2;
         std::vector<W> x = medio::pliega(o.c_.data(), o.c_.size(), N2, p);
         std::vector<W> y = medio::pliega(q.data(), q.size(), N2, p);
         medio::directa(t2, x);
@@ -1235,21 +1245,24 @@ public:
             RepNTT& R = *rep_;
             const unsigned long l1 = fft::ceil_log2(2 * d1 - 1);
             const std::size_t N1 = std::size_t(1) << l1;
-            const auto& t1 = fft::tables(K, l1);  // la caché no está vacía: no consume el generador
+            // Fase 7: cada transformada guardada se combina con las tablas con
+            // las que se hizo (Fija::tab), no con las que haya ahora en la caché:
+            // entre dos llamadas la caché puede haberse llenado con otra raíz.
             if (R.g.size() <= l1) R.g.resize(l1 + 1);
             if (R.g[l1].vacia()) {
                 const std::size_t t = std::min(n, N1 / 2);
                 std::vector<W> g(N1, 0);
                 std::copy(inv_.begin(), inv_.begin() + static_cast<std::ptrdiff_t>(t), g.begin());
-                R.g[l1] = medio::fija(t1, std::move(g), t, p);
+                R.g[l1] = medio::fija(fft::tablas_sin_rng(K, l1), std::move(g), t, p);
             }
             if (R.m.vacia()) {
                 R.l2 = fft::ceil_log2(n);
-                const auto& t2 = fft::tables(K, R.l2);
-                R.m = medio::fija(t2, medio::pliega(m_.c_.data(), m_.c_.size(), std::size_t(1) << R.l2, p),
+                R.m = medio::fija(fft::tablas_sin_rng(K, R.l2),
+                                  medio::pliega(m_.c_.data(), m_.c_.size(), std::size_t(1) << R.l2, p),
                                   m_.c_.size(), p);
             }
-            const auto& t2 = fft::tables(K, R.l2);
+            const auto& t1 = *R.g[l1].tab;
+            const auto& t2 = *R.m.tab;
             const std::size_t N2 = std::size_t(1) << R.l2;
             const std::size_t da = a.c_.size() - 1;
             std::vector<W> b(N1, 0);
@@ -1343,7 +1356,7 @@ public:
             const unsigned long l = l_ntt();
             std::vector<medio::W> v(std::size_t(1) << l, 0);
             std::copy(x.c_.begin(), x.c_.end(), v.begin());
-            return medio::fija(fft::tables(K, l), std::move(v), x.c_.size(), K.modulus64());
+            return medio::fija(fft::tablas_sin_rng(K, l), std::move(v), x.c_.size(), K.modulus64());
         }
         // x·F mod f con F ya transformado: 1 directa + 1 inversa en lugar de las
         // 3 transformadas de mul_no_rng.  x·F tiene <= 2n - 1 coeficientes: la
@@ -1351,7 +1364,7 @@ public:
         Poly mulmod_fija(const Poly& x, const medio::Fija& F) const {
             const Field& K = red_.modulus().field();
             if (x.is_zero() || F.len == 0) return zero(K);
-            const auto& t = fft::tables(K, l_ntt());
+            const auto& t = *F.tab;  // las tablas con las que se transformó F (fase 7)
             std::vector<medio::W> v(F.w.size(), 0);
             std::copy(x.c_.begin(), x.c_.end(), v.begin());
             medio::directa(t, v);
@@ -2250,7 +2263,8 @@ private:
         }
         const unsigned long k = hgcdw::elige_k(L);
         const std::size_t n = std::size_t(1) << k;
-        const auto& t = fft::tables(K, k);  // la caché no está vacía: no consume el generador
+        const auto tp = fft::tablas_sin_rng(K, k);  // no consume el generador
+        const auto& t = *tp;
         const euclides::W p = K.modulus64();
         const auto fa = hgcdw::directa(t, a.c_, n, p), fb = hgcdw::directa(t, b.c_, n, p);
         const auto f00 = hgcdw::directa(t, M.m00.c_, n, p), f01 = hgcdw::directa(t, M.m01.c_, n, p);
@@ -2276,7 +2290,8 @@ private:
         if (L < 2) return mul_mat(A, B);
         const unsigned long k = hgcdw::elige_k(L);
         const std::size_t n = std::size_t(1) << k;
-        const auto& t = fft::tables(K, k);  // la caché no está vacía: no consume el generador
+        const auto tp = fft::tablas_sin_rng(K, k);  // no consume el generador
+        const auto& t = *tp;
         const euclides::W p = K.modulus64();
         const auto a00 = hgcdw::directa(t, A.m00.c_, n, p), a01 = hgcdw::directa(t, A.m01.c_, n, p);
         const auto a10 = hgcdw::directa(t, A.m10.c_, n, p), a11 = hgcdw::directa(t, A.m11.c_, n, p);
@@ -2309,7 +2324,8 @@ private:
         }
         const unsigned long k = hgcdw::elige_k(L);
         const std::size_t n = std::size_t(1) << k;
-        const auto& t = fft::tables(K, k);  // la caché no está vacía: no consume el generador
+        const auto tp = fft::tablas_sin_rng(K, k);  // no consume el generador
+        const auto& t = *tp;
         const euclides::W p = K.modulus64();
         const auto s00 = hgcdw::directa(t, S.m00.c_, n, p), s01 = hgcdw::directa(t, S.m01.c_, n, p);
         const auto s10 = hgcdw::directa(t, S.m10.c_, n, p), s11 = hgcdw::directa(t, S.m11.c_, n, p);
@@ -2550,6 +2566,20 @@ private:
         if (is_zero() || o.is_zero()) return zero(*K_);
         const std::size_t na = c_.size(), nb = o.c_.size();
         const std::size_t L = na + nb - 1, small = std::min(na, nb);
+        if constexpr (fft::NativeWordField<Field>) {
+            // Fase 7 (Fp64, propuesta 3d): la NTT está disponible aunque la caché
+            // esté vacía, con las tablas de fft::tablas_sin_rng (raíz
+            // determinista; el producto no depende de la raíz).
+            const bool can = fft::fft_exponent(*K_, L) >= 0;
+            if (prefer_kronecker(*K_, small, can)) return mul_kronecker_auto(o);
+            if (can && prefer_fft(*K_, small, std::max(na, nb), L)) {
+                const unsigned long k = fft::ceil_log2(L);
+                const auto tp = fft::tablas_sin_rng(*K_, k);
+                return Poly(*K_, fft::detail::convolve_word(*tp, c_, o.c_, std::size_t(1) << k, L));
+            }
+            if (small >= kKaratsubaCutoff) return mul_karatsuba(o);
+            return mul_school(o);
+        }
         // Sin tablas en la caché la FFT no se puede usar aquí: para elegir entre
         // Kronecker y Karatsuba se razona como si el cuerpo no tuviera FFT
         // (fase 5: con la NTT disponible prefer_kronecker ya no elige Kronecker).
