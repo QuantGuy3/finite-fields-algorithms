@@ -7,6 +7,10 @@
 // -DALCP_HGCD_UMBRAL=128 (fase 5); -DSOLO_FP64 limita la tabla a Fp64.
 // -DALCP_HGCD_COLA=n fija el grado por debajo del cual gcd_ext en Fp64 pasa
 // del half-GCD al Euclides extendido en sitio (corrección de la fase 5).
+// Fase 7: en Fp64 ALCP_HGCD_UMBRAL es también el grado por debajo del cual gcd
+// termina con el Euclides clásico en sitio (no solo el de entrada), así que
+// para calibrar gcd se barre ese valor.  Se añaden F_(29·2^57 + 1) (NTT con
+// p de 62 bits) y F_65537, y los grados 768, 1000, 1536 y 8192.
 //
 //   g++ -std=c++23 -O3 -DALCP_HGCD_UMBRAL=128 -Iinclude bench/calibra_hgcd.cpp -lgmpxx -lgmp -static -o build/calibra_hgcd.exe
 #include "alcp/alcp.hpp"
@@ -42,7 +46,7 @@ void calibrar(const Field& K, const char* nombre, int nmax) {
     std::printf("\n%s\n%7s %12s %12s %8s %14s %14s %8s\n", nombre, "n", "gcd clás", "gcd hgcd", "x", "gcd_ext clás",
                 "gcd_ext hgcd", "x");
     (void)(P::random(K, 300) * P::random(K, 300));
-    for (int n : {128, 192, 256, 384, 512, 1024, 2048, 4096}) {
+    for (int n : {128, 192, 256, 384, 512, 768, 1000, 1024, 1536, 2048, 4096, 8192}) {
         if (n > nmax) break;
         std::vector<P> as, bs;
         for (int i = 0; i < 8; ++i) {
@@ -54,6 +58,7 @@ void calibrar(const Field& K, const char* nombre, int nmax) {
         const double ce = medir_us([&](int i) { (void)P::gcd_ext_classic(as[i], bs[i]); });
         const double he = medir_us([&](int i) { (void)P::gcd_ext(as[i], bs[i]); });
         std::printf("%7d %12.1f %12.1f %8.2f %14.1f %14.1f %8.2f\n", n, c, h, c / h, ce, he, ce / he);
+        std::fflush(stdout);
     }
 }
 
@@ -61,14 +66,16 @@ int main() {
     set_seed(1);
     const std::vector<BigInt> mod_3_30{2, 0, 2, 0, 1, 0, 1, 1, 1, 1, 0, 0, 2, 1, 1, 0,
                                        2, 2, 1, 0, 1, 1, 0, 1, 0, 2, 1, 0, 1, 0, 1};
-    Fp64 w101(101), wntt(998244353), wm61((BigInt(1) << 61) - 1);
+    Fp64 w101(101), wntt(998244353), wm61((BigInt(1) << 61) - 1), w62(BigInt("4179340454199820289")), w65537(65537);
     Fp g127((BigInt(1) << 127) - 1);
     Fq64 w9(Fp64(BigInt(3)), std::vector<BigInt>{1, 0, 1});
     Fq64 w256(Fp64(BigInt(2)), std::vector<BigInt>{1, 1, 0, 1, 1, 0, 0, 0, 1});
     Fq64 w3e30(Fp64(BigInt(3)), mod_3_30);
-    calibrar(wntt, "Fp64 p = 998244353", 4096);
-    calibrar(w101, "Fp64 p = 101", 4096);
-    calibrar(wm61, "Fp64 p = 2^61 - 1", 4096);
+    calibrar(wntt, "Fp64 p = 998244353", 8192);
+    calibrar(w62, "Fp64 p = 29·2^57 + 1", 8192);
+    calibrar(w65537, "Fp64 p = 65537", 8192);
+    calibrar(w101, "Fp64 p = 101", 8192);
+    calibrar(wm61, "Fp64 p = 2^61 - 1", 8192);
 #ifndef SOLO_FP64
     calibrar(g127, "Fp GMP p = 2^127 - 1", 2048);
     calibrar(w9, "Fq64 F_9", 2048);

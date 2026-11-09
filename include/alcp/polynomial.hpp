@@ -211,6 +211,123 @@ inline std::vector<W> pliega(const W* v, std::size_t len, std::size_t N, W p) {
 
 }  // namespace medio
 
+// ---------------------------------------------------------------------------
+// Matrices 2x2 del half-GCD con la NTT en palabras (fase 7, solo Fp64)
+// ---------------------------------------------------------------------------
+// Piezas del half-GCD «V3e» (docs/optimizacion/investigacion-fase6.md, tema
+// «hgcd»; prototipo bench/experimentos/fase6/hgcd/hgcd_proto.cpp).  Un producto
+// de matrices 2x2 (o una matriz por un vector) con la NTT transforma cada
+// entrada UNA vez y suma en el dominio transformado: mul_mat pasa de 24
+// transformadas a 12 (8 directas + 4 inversas) y aplicar de 12 a 8.  Además,
+// si la longitud L del producto se pasa poco de una potencia de 2 (L <= 2^(k-1)
+// + 2^(k-1)/16), se usa una convolución CÍCLICA de tamaño 2^(k-1) en lugar de
+// 2^k: los pocos coeficientes j >= 2^(k-1) se calculan directamente y se restan
+// de los que se envolvieron sobre j - 2^(k-1) («envoltura»).  La aritmética es
+// exacta módulo p: el resultado es idéntico al de los productos de siempre.
+// Quien llama solo usa estas piezas con la caché FFT ya llena (ntt_sin_rng).
+namespace hgcdw {
+
+using W = std::uint64_t;
+using W128 = unsigned __int128;
+using Tab = FFTTables<W>;
+
+// Exponente k de la transformada para productos de longitud <= L (L >= 2),
+// con la envoltura: si L - 2^(k-1) <= 2^(k-1)/16, se usa 2^(k-1).  El umbral
+// 1/16 es el del prototipo: con él los coeficientes calculados directamente
+// cuestan como mucho (2^(k-1)/16)^2/2 productos, poco frente a la NTT ahorrada.
+inline unsigned long elige_k(std::size_t L) {
+    unsigned long k = fft::ceil_log2(L);
+    if (k >= 6) {
+        const std::size_t mitad = std::size_t(1) << (k - 1);
+        if (L - mitad <= mitad / 16) --k;
+    }
+    return k;
+}
+
+// Transformada directa de c plegado módulo x^n - 1 (t de tamaño n).
+inline std::vector<W> directa(const Tab& t, const std::vector<W>& c, std::size_t n, W p) {
+    std::vector<W> v = medio::pliega(c.data(), c.size(), n, p);
+    if (!c.empty()) medio::directa(t, v);
+    return v;
+}
+
+// out[i] = x1[i]·y1[i] + x2[i]·y2[i] mod p (valores en [0, p)).
+inline void fma2(std::vector<W>& out, const std::vector<W>& x1, const std::vector<W>& y1, const std::vector<W>& x2,
+                 const std::vector<W>& y2, W p) {
+    const std::size_t n = x1.size();
+    out.resize(n);
+    if (p < (W(1) << 31)) {
+        // La suma cabe en 64 bits (< 2^63): una reducción de Barrett con
+        // mu = floor((2^64 - 1)/p) deja el resto en [0, 3p).
+        const W mu = ~W(0) / p;
+        for (std::size_t i = 0; i < n; ++i) {
+            const W s = x1[i] * y1[i] + x2[i] * y2[i];
+            const W q = static_cast<W>((static_cast<W128>(s) * mu) >> 64);
+            W r = s - q * p;
+            r -= p & (0 - static_cast<W>(r >= p));
+            r -= p & (0 - static_cast<W>(r >= p));
+            out[i] = r;
+        }
+    } else {
+        // Con p < 2^62 la suma de los dos productos es < 2^125: una sola división.
+        for (std::size_t i = 0; i < n; ++i)
+            out[i] = static_cast<W>((static_cast<W128>(x1[i]) * y1[i] + static_cast<W128>(x2[i]) * y2[i]) % p);
+    }
+}
+
+// Coeficiente j de x·y módulo p, calculado directamente.  Reserva del revisor
+// de la fase 6: con p cerca de 2^62 cada producto llega a 2^124 y basta sumar
+// 16 para desbordar un acumulador de 128 bits (el prototipo no lo tenía en
+// cuenta).  Aquí se cuentan los acarreos: el valor exacto de la suma es
+// acarreos·2^128 + s, y r128 = 2^128 mod p.  Con p < 2^32 nunca hay acarreos.
+inline W coef(const std::vector<W>& x, const std::vector<W>& y, std::size_t j, W p, W r128) {
+    if (x.empty() || y.empty() || j > x.size() + y.size() - 2) return 0;
+    const std::size_t i0 = j >= y.size() ? j - (y.size() - 1) : 0;
+    const std::size_t i1 = std::min(j, x.size() - 1);
+    W128 s = 0;
+    W acarreos = 0;
+    for (std::size_t i = i0; i <= i1; ++i) {
+        const W128 t = static_cast<W128>(x[i]) * y[j - i];
+        s += t;
+        acarreos += static_cast<W>(s < t);
+    }
+    return static_cast<W>((static_cast<W128>(acarreos % p) * r128 + s % p) % p);
+}
+
+// Longitud de x·y (0 si alguno es nulo).
+inline std::size_t lprod(const std::vector<W>& x, const std::vector<W>& y) {
+    return (x.empty() || y.empty()) ? 0 : x.size() + y.size() - 1;
+}
+
+// v es la transformada (tamaño n) de x1·y1 + x2·y2.  Devuelve sus coeficientes:
+// la transformada inversa y, si el producto tiene más de n coeficientes
+// (envoltura; nunca más de 2n), los j >= n se calculan directamente y se
+// restan de v[j - n], donde se habían sumado al envolver.
+inline std::vector<W> final_(const Tab& t, std::vector<W>& v, const std::vector<W>& x1, const std::vector<W>& y1,
+                             const std::vector<W>& x2, const std::vector<W>& y2, W p) {
+    const std::size_t n = v.size();
+    medio::inversa(t, v);
+    const std::size_t L = std::max(lprod(x1, y1), lprod(x2, y2));
+    if (L <= n) {
+        v.resize(L);
+        return std::move(v);
+    }
+    const W r64 = static_cast<W>((static_cast<W128>(1) << 64) % p);
+    const W r128 = static_cast<W>(static_cast<W128>(r64) * r64 % p);
+    v.resize(L, 0);
+    for (std::size_t j = n; j < L; ++j) {
+        W c = coef(x1, y1, j, p, r128) + coef(x2, y2, j, p, r128);
+        c -= p & (0 - static_cast<W>(c >= p));
+        v[j] = c;
+        W d = v[j - n] + p - c;
+        d -= p & (0 - static_cast<W>(d >= p));
+        v[j - n] = d;
+    }
+    return std::move(v);
+}
+
+}  // namespace hgcdw
+
 template <class Field>
 class Poly {
 public:
@@ -790,16 +907,34 @@ public:
     static Poly gcd(Poly a, Poly b) {
         a.require_same_field(b);
         const int umbral = static_cast<int>(umbral_hgcd(a.field(), false));
+        if constexpr (fft::NativeWordField<Field>) {
+            // Fase 7 (Fp64): half-GCD «V3e» (hgcd_rem_w devuelve los restos, sin
+            // el `aplicar` completo de después) si el grado de entrada es >=
+            // umbral, mientras sea >= `sigue`, y el Euclides clásico en sitio
+            // por debajo.  Mismos cocientes.
+            if (std::max(a.degree(), b.degree()) < umbral) return gcd_classic(std::move(a), std::move(b));
+            const int sigue = static_cast<int>(umbral_sigue_gcd(a.field()));
+            while (!b.is_zero()) {
+                if (a.degree() < sigue) return gcd_classic(std::move(a), std::move(b));
+                if (a.degree() > b.degree()) {
+                    HgcdRes r = hgcd_rem_w(a, b, false);
+                    a = std::move(r.A);
+                    b = std::move(r.B);
+                    if (b.is_zero()) break;
+                    if (a.degree() < sigue) return gcd_classic(std::move(a), std::move(b));
+                }
+                Poly r = a % b;
+                a = std::move(b);
+                b = std::move(r);
+            }
+            return a.is_zero() ? a : a.monic();
+        }
         while (!b.is_zero()) {
             if (a.degree() > b.degree() && a.degree() >= umbral) {
                 const Mat2 R = hgcd(a, b);
                 aplicar(R, a, b);
                 if (b.is_zero()) break;
             }
-            // Fase 5: por debajo del umbral, el resto de la sucesión es el
-            // Euclides clásico, que en Fp64 se hace en sitio.
-            if constexpr (fft::NativeWordField<Field>)
-                if (a.degree() < umbral) return gcd_classic(std::move(a), std::move(b));
             Poly r = a % b;
             a = std::move(b);
             b = std::move(r);
@@ -835,21 +970,39 @@ public:
         // M acumula la matriz de cocientes: (r0, r1) = M·(a, b) en todo momento.
         Poly r0 = a, r1 = b;
         Mat2 M = identidad(K);
-        // Fase 6: en Fp64, el umbral solo decide la entrada.  Después se sigue
-        // con hgcd mientras r0 tenga grado >= `cola` y el resto de la sucesión
-        // se hace con el Euclides extendido en sitio (antes seguía con `paso`
-        // sobre Poly, 2,6x más lento que el clásico en grado 2048).
-        const int cola = fft::NativeWordField<Field> ? static_cast<int>(umbral_cola_ext(K)) : umbral;
-        while (!r1.is_zero()) {
-            if (r0.degree() > r1.degree() && r0.degree() >= cola) {
-                const Mat2 R = hgcd(r0, r1);
-                aplicar(R, r0, r1);
-                M = mul_mat(R, M);
-                if (r1.is_zero()) break;
-            }
-            if constexpr (fft::NativeWordField<Field>)
+        if constexpr (fft::NativeWordField<Field>) {
+            // Fase 6: en Fp64, el umbral solo decide la entrada.  Después se
+            // sigue con hgcd mientras r0 tenga grado >= `cola` y el resto de la
+            // sucesión se hace con el Euclides extendido en sitio (antes seguía
+            // con `paso` sobre Poly, 2,6x más lento que el clásico en grado 2048).
+            // Fase 7: hgcd_rem_w devuelve ya los restos (sin el `aplicar`
+            // completo) y M se multiplica con las transformadas reutilizadas;
+            // la primera matriz no se multiplica por la identidad.
+            const int cola = static_cast<int>(umbral_cola_ext(K));
+            bool es_identidad = true;
+            while (!r1.is_zero()) {
+                if (r0.degree() > r1.degree() && r0.degree() >= cola) {
+                    HgcdRes R = hgcd_rem_w(r0, r1, true);
+                    r0 = std::move(R.A);
+                    r1 = std::move(R.B);
+                    M = es_identidad ? std::move(R.M) : mul_mat_w(R.M, M);
+                    es_identidad = false;
+                    if (r1.is_zero()) break;
+                }
                 if (r0.degree() < cola) return cola_ext_w(r0, r1, M);
-            paso(r0, r1, M);
+                paso(r0, r1, M);
+                es_identidad = false;
+            }
+        } else {
+            while (!r1.is_zero()) {
+                if (r0.degree() > r1.degree() && r0.degree() >= umbral) {
+                    const Mat2 R = hgcd(r0, r1);
+                    aplicar(R, r0, r1);
+                    M = mul_mat(R, M);
+                    if (r1.is_zero()) break;
+                }
+                paso(r0, r1, M);
+            }
         }
         if (r0.is_zero()) return {zero(K), zero(K), zero(K)};
         Elem inv = K.inv(r0.lead());
@@ -1839,29 +1992,64 @@ private:
 #else
     static constexpr std::size_t kHgcdMin = fft::NativeWordField<Field> ? 256 : 128;
 #endif
+    // Fase 7 (Fp64): ¿hay NTT para el half-GCD sin tocar el generador?  Solo si
+    // la caché FFT ya tiene tablas (reserva del revisor de la fase 6: sin ellas
+    // los productos de hgcd son Karatsuba y los umbrales bajos no compensan) y
+    // el cuerpo admite transformadas de 2048 (las de F_7681 o F_193 se quedan
+    // cortas y casi todo iría por Karatsuba).
+    static bool hgcd_con_ntt(const Field& K) { return ntt_sin_rng(K, 2048); }
     // Fase 6: en Fp64, una vez que gcd_ext ha entrado en half-GCD, sigue con
     // hgcd mientras el grado sea >= este valor y termina con el Euclides
-    // extendido en sitio (cola_ext_w).  Medido con bench/calibra_hgcd.cpp y
-    // -DALCP_HGCD_COLA=256/512/1024: el mejor es 256 con p = 101, 512 con
-    // p = 998244353 y 1024 con p = 2^61 - 1, es decir, un cuarto del umbral
-    // de entrada de gcd_ext (nunca menos que kHgcdMin).
+    // extendido en sitio (cola_ext_w).
+    // Fase 7: recalibrado con V3e (bench/calibra_hgcd.cpp -DSOLO_FP64
+    // -DALCP_HGCD_UMBRAL=U -DALCP_HGCD_COLA=U, U = 128/256/512/1024; ver
+    // umbral_hgcd): 256 con NTT o p < 2^16 y 512 en el resto.
     static std::size_t umbral_cola_ext(const Field& K) {
 #ifdef ALCP_HGCD_COLA
         (void)K;
         return ALCP_HGCD_COLA;  // solo para calibrar (bench/calibra_hgcd.cpp)
 #else
-        return std::max(kHgcdMin, umbral_hgcd(K, true) / 4);
+        if constexpr (fft::NativeWordField<Field>) {
+            if (hgcd_con_ntt(K) || mpz_sizeinbase(K.characteristic().get_mpz_t(), 2) <= 16) return 256;
+            return 512;
+        } else {
+            return std::max(kHgcdMin, umbral_hgcd(K, true) / 4);
+        }
+#endif
+    }
+    // Fase 7 (Fp64): gcd sigue con hgcd mientras el grado sea >= este valor y
+    // termina con el Euclides clásico en sitio: la mitad del umbral de entrada
+    // (con NTT, 480; el barrido daba 1,07-1,12x a grado 1000 con 256 y 512).
+    // Con ALCP_HGCD_UMBRAL, el mismo valor (así se calibró).
+    static std::size_t umbral_sigue_gcd(const Field& K) {
+#ifdef ALCP_HGCD_UMBRAL
+        (void)K;
+        return ALCP_HGCD_UMBRAL;
+#else
+        return std::max(kHgcdMin, umbral_hgcd(K, false) / 2);
 #endif
     }
     // Grado a partir del cual gcd (ext = false) o gcd_ext (ext = true) usan
     // half-GCD.  Medido con bench/calibra_hgcd.cpp (Zen 3, entradas variadas):
     // gcd_ext gana antes porque el clásico también arrastra los cofactores.
-    //   * Fp64 (recalibrado en la fase 5, con el Euclides clásico en sitio,
-    //     2,4-3,6x más rápido, frente a half-GCD con el caso base en sitio):
-    //     p < 2^16: 2048 / 1024 (F_101 a 2048: 1,16x / 1,51x);
-    //     p < 2^32: 4096 / 2048 (F_998244353 a 4096: 1,11x; ext a 2048: 1,09x);
-    //     si no: 8192 / 4096 (F_(2^61-1): gcd no gana hasta 4096; ext 1,03x).
-    //     Antes: 384 / 128, 1024 / 384 y 2048 / 512.
+    //   * Fp64, fase 7 (half-GCD V3e: restos, NTT reutilizada y envoltura).
+    //     Barrido con -DSOLO_FP64 -DALCP_HGCD_UMBRAL=U -DALCP_HGCD_COLA=U,
+    //     U = 128/256/512/1024, grados 128-8192, CON CARGA (otros procesos
+    //     midiendo a la vez; cifras orientativas):
+    //     - con NTT (caché llena; F_998244353, F_(29·2^57+1), F_65537):
+    //       gcd 960 / ext 256.  gcd: con U = 512, 0,91-0,95x a 768 y
+    //       1,05-1,12x a 1000, 1,5-1,66x a 2048, 2,35-2,6x a 4096 y 4,2-4,6x
+    //       a 8192.  ext: con U = 256, 1,3-1,4x ya a 256, 2,4-3,1x a 1000 y
+    //       ~10x a 8192 (el clásico arrastra los dos cofactores).
+    //     - sin NTT y p < 2^16 (F_101; productos de Karatsuba): 768 / 256
+    //       (gcd 1,15-1,19x a 768; ext 1,6x a 256).
+    //     - sin NTT y p >= 2^16 (F_(2^61-1)): gcd sigue sin ganar hasta 8192
+    //       (1,3x; 0,85-0,89x a 4096) y ext gana desde 1024 (1,2x; 2,8x a
+    //       8192): 8192 / 1024.  Para 2^16 <= p < 2^32 sin NTT no se midió:
+    //       se dejan 4096 / 1024, entre ambos.
+    //     Sin tablas FFT en la caché se usan los valores «sin NTT» aunque el
+    //     cuerpo admita NTT (gcd_ext, además, va al clásico; ver gcd_ext).
+    //     Fase 5: 2048 / 1024, 4096 / 2048 y 8192 / 4096 según p.
     //   * Fp con GMP: 384 / 128.   * F_q: 384 / 192.
     static std::size_t umbral_hgcd(const Field& K, bool ext) {
 #ifdef ALCP_HGCD_UMBRAL
@@ -1869,10 +2057,11 @@ private:
         return ALCP_HGCD_UMBRAL;  // solo para calibrar (bench/calibra_hgcd.cpp)
 #endif
         if constexpr (fft::NativeWordField<Field>) {
+            if (hgcd_con_ntt(K)) return ext ? 256 : 960;
             const std::size_t bits = mpz_sizeinbase(K.characteristic().get_mpz_t(), 2);
-            if (bits <= 16) return ext ? 1024 : 2048;
-            if (bits <= 32) return ext ? 2048 : 4096;
-            return ext ? 4096 : 8192;
+            if (bits <= 16) return ext ? 256 : 768;
+            if (bits <= 32) return ext ? 1024 : 4096;
+            return ext ? 1024 : 8192;
         } else if constexpr (std::is_same_v<Elem, BigInt>) {
             (void)K;
             return ext ? 128 : 384;
@@ -1925,9 +2114,12 @@ private:
         return {std::move(t.g), t.x.mul_no_rng(M.m00) + t.y.mul_no_rng(M.m10),
                 t.x.mul_no_rng(M.m01) + t.y.mul_no_rng(M.m11)};
     }
+    // Resultado de hgcd_rem_w: la matriz M y los restos (A, B) = M·(a, b).
+    struct HgcdRes { Mat2 M; Poly A, B; };
     // Caso base de hgcd en Fp64 (fase 5): los pasos clásicos de `paso`, con el
     // resto y la matriz acumulada en vectores de palabras (ver euclides::).
-    static Mat2 hgcd_base_w(const Poly& a, const Poly& b, int m) {
+    // Fase 7: devuelve también los restos, que ya están calculados.
+    static HgcdRes hgcd_base_w(const Poly& a, const Poly& b, int m) {
         using euclides::W;
         const Field& K = a.field();
         const W p = K.modulus64();
@@ -1947,8 +2139,172 @@ private:
             m10 = std::move(n10);
             m11 = std::move(n11);
         }
+        A.resize(static_cast<std::size_t>(da + 1));  // (da, db = -1 dejan vacío = 0)
+        B.resize(static_cast<std::size_t>(db + 1));
         auto P = [&](std::vector<W>& v) { return Poly(K, std::vector<Elem>(std::move(v))); };
-        return {P(m00), P(m01), P(m10), P(m11)};
+        return {{P(m00), P(m01), P(m10), P(m11)}, P(A), P(B)};
+    }
+
+    // ---- Half-GCD «V3e» en Fp64 (fase 7) ------------------------------------
+    // Productos de matrices con la NTT en palabras (ver namespace hgcdw).  Solo
+    // con la caché FFT ya llena (ntt_sin_rng): pedir tablas de otro tamaño ya no
+    // consume el generador.  Si no, los productos de siempre (mul_no_rng).
+    static std::size_t max_ent(const Mat2& M) {
+        return std::max({M.m00.c_.size(), M.m01.c_.size(), M.m10.c_.size(), M.m11.c_.size()});
+    }
+    // (a, b) <- M·(a, b): 6 transformadas directas y 2 inversas (antes 12).
+    static void aplicar_w(const Mat2& M, Poly& a, Poly& b) {
+        using hgcdw::lprod;
+        const Field& K = a.field();
+        const std::size_t L =
+            std::max({lprod(M.m00.c_, a.c_), lprod(M.m01.c_, b.c_), lprod(M.m10.c_, a.c_), lprod(M.m11.c_, b.c_)});
+        if (L == 0 || max_ent(M) < medio::kMin || !ntt_sin_rng(K, L)) {
+            aplicar(M, a, b);
+            return;
+        }
+        const unsigned long k = hgcdw::elige_k(L);
+        const std::size_t n = std::size_t(1) << k;
+        const auto& t = fft::tables(K, k);  // la caché no está vacía: no consume el generador
+        const euclides::W p = K.modulus64();
+        const auto fa = hgcdw::directa(t, a.c_, n, p), fb = hgcdw::directa(t, b.c_, n, p);
+        const auto f00 = hgcdw::directa(t, M.m00.c_, n, p), f01 = hgcdw::directa(t, M.m01.c_, n, p);
+        const auto f10 = hgcdw::directa(t, M.m10.c_, n, p), f11 = hgcdw::directa(t, M.m11.c_, n, p);
+        std::vector<euclides::W> na, nb;
+        hgcdw::fma2(na, f00, fa, f01, fb, p);
+        hgcdw::fma2(nb, f10, fa, f11, fb, p);
+        Poly ra(K, hgcdw::final_(t, na, M.m00.c_, a.c_, M.m01.c_, b.c_, p));
+        Poly rb(K, hgcdw::final_(t, nb, M.m10.c_, a.c_, M.m11.c_, b.c_, p));
+        a = std::move(ra);
+        b = std::move(rb);
+    }
+    // A·B con las transformadas reutilizadas: 8 directas y 4 inversas (antes 24).
+    // Strassen-Winograd (7 productos) se midió 1,2x MÁS lento y se descartó.
+    static Mat2 mul_mat_w(const Mat2& A, const Mat2& B) {
+        using hgcdw::lprod;
+        const Field& K = A.m00.field();
+        if (std::max(max_ent(A), max_ent(B)) < medio::kMin || !ntt_sin_rng(K, max_ent(A) + max_ent(B)))
+            return mul_mat(A, B);
+        const std::size_t L = std::max({lprod(A.m00.c_, B.m00.c_), lprod(A.m01.c_, B.m10.c_), lprod(A.m00.c_, B.m01.c_),
+                                        lprod(A.m01.c_, B.m11.c_), lprod(A.m10.c_, B.m00.c_), lprod(A.m11.c_, B.m10.c_),
+                                        lprod(A.m10.c_, B.m01.c_), lprod(A.m11.c_, B.m11.c_)});
+        if (L < 2) return mul_mat(A, B);
+        const unsigned long k = hgcdw::elige_k(L);
+        const std::size_t n = std::size_t(1) << k;
+        const auto& t = fft::tables(K, k);  // la caché no está vacía: no consume el generador
+        const euclides::W p = K.modulus64();
+        const auto a00 = hgcdw::directa(t, A.m00.c_, n, p), a01 = hgcdw::directa(t, A.m01.c_, n, p);
+        const auto a10 = hgcdw::directa(t, A.m10.c_, n, p), a11 = hgcdw::directa(t, A.m11.c_, n, p);
+        const auto b00 = hgcdw::directa(t, B.m00.c_, n, p), b01 = hgcdw::directa(t, B.m01.c_, n, p);
+        const auto b10 = hgcdw::directa(t, B.m10.c_, n, p), b11 = hgcdw::directa(t, B.m11.c_, n, p);
+        std::vector<euclides::W> c00, c01, c10, c11;
+        hgcdw::fma2(c00, a00, b00, a01, b10, p);
+        hgcdw::fma2(c01, a00, b01, a01, b11, p);
+        hgcdw::fma2(c10, a10, b00, a11, b10, p);
+        hgcdw::fma2(c11, a10, b01, a11, b11, p);
+        return {Poly(K, hgcdw::final_(t, c00, A.m00.c_, B.m00.c_, A.m01.c_, B.m10.c_, p)),
+                Poly(K, hgcdw::final_(t, c01, A.m00.c_, B.m01.c_, A.m01.c_, B.m11.c_, p)),
+                Poly(K, hgcdw::final_(t, c10, A.m10.c_, B.m00.c_, A.m11.c_, B.m10.c_, p)),
+                Poly(K, hgcdw::final_(t, c11, A.m10.c_, B.m01.c_, A.m11.c_, B.m11.c_, p))};
+    }
+    // Segunda mitad de hgcd: (a, b) <- S·(a, b) y devuelve S·Q, compartiendo las
+    // transformadas de S entre los dos productos (14 transformadas en vez de 20)
+    // cuando ambos usan el mismo tamaño; si no, aplicar_w y mul_mat_w.
+    static Mat2 segunda_w(const Mat2& S, Poly& a, Poly& b, const Mat2& Q) {
+        using hgcdw::lprod;
+        const Field& K = a.field();
+        const std::size_t L1 =
+            std::max({lprod(S.m00.c_, a.c_), lprod(S.m01.c_, b.c_), lprod(S.m10.c_, a.c_), lprod(S.m11.c_, b.c_)});
+        const std::size_t L2 = max_ent(S) + max_ent(Q);  // cota de la longitud de S·Q
+        const std::size_t L = std::max(L1, L2);
+        if (L1 < 2 || max_ent(S) < medio::kMin || !ntt_sin_rng(K, L) ||
+            hgcdw::elige_k(L1) != hgcdw::elige_k(L2)) {
+            aplicar_w(S, a, b);
+            return mul_mat_w(S, Q);
+        }
+        const unsigned long k = hgcdw::elige_k(L);
+        const std::size_t n = std::size_t(1) << k;
+        const auto& t = fft::tables(K, k);  // la caché no está vacía: no consume el generador
+        const euclides::W p = K.modulus64();
+        const auto s00 = hgcdw::directa(t, S.m00.c_, n, p), s01 = hgcdw::directa(t, S.m01.c_, n, p);
+        const auto s10 = hgcdw::directa(t, S.m10.c_, n, p), s11 = hgcdw::directa(t, S.m11.c_, n, p);
+        const auto fa = hgcdw::directa(t, a.c_, n, p), fb = hgcdw::directa(t, b.c_, n, p);
+        const auto q00 = hgcdw::directa(t, Q.m00.c_, n, p), q01 = hgcdw::directa(t, Q.m01.c_, n, p);
+        const auto q10 = hgcdw::directa(t, Q.m10.c_, n, p), q11 = hgcdw::directa(t, Q.m11.c_, n, p);
+        std::vector<euclides::W> na, nb, c00, c01, c10, c11;
+        hgcdw::fma2(na, s00, fa, s01, fb, p);
+        hgcdw::fma2(nb, s10, fa, s11, fb, p);
+        hgcdw::fma2(c00, s00, q00, s01, q10, p);
+        hgcdw::fma2(c01, s00, q01, s01, q11, p);
+        hgcdw::fma2(c10, s10, q00, s11, q10, p);
+        hgcdw::fma2(c11, s10, q01, s11, q11, p);
+        Poly ra(K, hgcdw::final_(t, na, S.m00.c_, a.c_, S.m01.c_, b.c_, p));
+        Poly rb(K, hgcdw::final_(t, nb, S.m10.c_, a.c_, S.m11.c_, b.c_, p));
+        a = std::move(ra);
+        b = std::move(rb);
+        return {Poly(K, hgcdw::final_(t, c00, S.m00.c_, Q.m00.c_, S.m01.c_, Q.m10.c_, p)),
+                Poly(K, hgcdw::final_(t, c01, S.m00.c_, Q.m01.c_, S.m01.c_, Q.m11.c_, p)),
+                Poly(K, hgcdw::final_(t, c10, S.m10.c_, Q.m00.c_, S.m11.c_, Q.m10.c_, p)),
+                Poly(K, hgcdw::final_(t, c11, S.m10.c_, Q.m01.c_, S.m11.c_, Q.m11.c_, p))};
+    }
+    // p mod x^k.
+    static Poly mod_xk(const Poly& p, std::size_t k) {
+        const auto fin = p.c_.begin() + static_cast<std::ptrdiff_t>(std::min(k, p.c_.size()));
+        return Poly(p.field(), std::vector<Elem>(p.c_.begin(), fin));
+    }
+    // hi·x^k + lo.
+    static Poly sube_suma(const Poly& hi, std::size_t k, const Poly& lo) {
+        if (hi.is_zero()) return lo;
+        const Field& K = hi.field();
+        std::vector<Elem> r(std::max(hi.c_.size() + k, lo.c_.size()), K.zero());
+        std::copy(lo.c_.begin(), lo.c_.end(), r.begin());
+        for (std::size_t i = 0; i < hi.c_.size(); ++i) r[i + k] = K.add(r[i + k], hi.c_[i]);
+        return Poly(K, std::move(r));
+    }
+    // hgcd con restos (fase 7, Fp64): la misma matriz M que hgcd(a, b) y además
+    // (A, B) = M·(a, b), sin el `aplicar` completo que hacían gcd y gcd_ext
+    // fuera.  Como los cocientes de la primera mitad solo dependen de a div x^m
+    // y b div x^m, (A, B) = (A1, B1)·x^m + R·(a mod x^m, b mod x^m): la matriz
+    // se aplica solo a la parte baja (lo mismo en la segunda mitad con x^k).
+    // Con con_matriz = false (nivel superior de gcd) no se calcula S·QR ni el
+    // paso intermedio sobre la matriz: M sale indefinida y solo valen A y B.
+    // Mismos cocientes que hgcd, luego mismos restos y misma matriz.
+    static HgcdRes hgcd_rem_w(const Poly& a, const Poly& b, bool con_matriz) {
+        const Field& K = a.field();
+        const int n = a.degree();
+        const int m = (n + 1) / 2;
+        if (b.is_zero() || b.degree() < m) return {identidad(K), a, b};
+        if (n < static_cast<int>(kHgcdMin)) return hgcd_base_w(a, b, m);
+        const std::size_t um = static_cast<std::size_t>(m);
+        HgcdRes r1 = hgcd_rem_w(div_xk(a, um), div_xk(b, um), true);
+        Poly al = mod_xk(a, um), bl = mod_xk(b, um);
+        aplicar_w(r1.M, al, bl);
+        Poly A = sube_suma(r1.A, um, al), B = sube_suma(r1.B, um, bl);
+        if (B.is_zero() || B.degree() < m) return {std::move(r1.M), std::move(A), std::move(B)};
+        Mat2 QR = std::move(r1.M);
+        if (con_matriz) {
+            paso(A, B, QR);
+        } else {
+            Poly r = A % B;
+            A = std::move(B);
+            B = std::move(r);
+        }
+        if (B.is_zero() || B.degree() < m) return {std::move(QR), std::move(A), std::move(B)};
+        const int k = 2 * m - A.degree();
+        if (k < 0) {
+            // No debería ocurrir (Thull-Yap); por seguridad, pasos clásicos.
+            while (!B.is_zero() && B.degree() >= m) paso(A, B, QR);
+            return {std::move(QR), std::move(A), std::move(B)};
+        }
+        const std::size_t uk = static_cast<std::size_t>(k);
+        HgcdRes r2 = hgcd_rem_w(div_xk(A, uk), div_xk(B, uk), true);
+        Poly cl = mod_xk(A, uk), dl = mod_xk(B, uk);
+        Mat2 SQ = identidad(K);
+        if (con_matriz) {
+            SQ = segunda_w(r2.M, cl, dl, QR);
+        } else {
+            aplicar_w(r2.M, cl, dl);
+        }
+        return {std::move(SQ), sube_suma(r2.A, uk, cl), sube_suma(r2.B, uk, dl)};
     }
     // p div x^k (los coeficientes de grado >= k, desplazados).
     static Poly div_xk(const Poly& p, std::size_t k) {
@@ -1969,7 +2325,7 @@ private:
         if (n < static_cast<int>(kHgcdMin)) {
             // Caso base: pasos clásicos hasta bajar de grado m (en Fp64, en
             // sitio sobre palabras desde la fase 5; mismos cocientes).
-            if constexpr (fft::NativeWordField<Field>) return hgcd_base_w(a, b, m);
+            if constexpr (fft::NativeWordField<Field>) return hgcd_base_w(a, b, m).M;
             Mat2 M = identidad(K);
             Poly A = a, B = b;
             while (!B.is_zero() && B.degree() >= m) paso(A, B, M);
