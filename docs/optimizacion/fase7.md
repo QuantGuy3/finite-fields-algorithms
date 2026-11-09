@@ -58,14 +58,12 @@ JSON en `bench/results/fase7/suite-base.json` y `suite-fase7.json`.
 | `fp.m61`, `fq.m61e2`, `fq.build` | 0,99-1,00x | | `divmod` | 1,18x |
 | `fp.p256` | 0,98x | | global | **1,72x** |
 
-**Posibles regresiones** (por debajo de 0,95x):
-
-- `fp.p256.mul_fft.d4096` 0,88x y `d8192` 0,85x. La desviación típica de esos escenarios es
-  del 20 % (3-6 ms sobre 16-39 ms) y la fase 7 no toca el camino multi-limb de F_p con
-  p ≥ 2^62. Probablemente es ruido, **sin confirmar**: conviene repetir esos dos escenarios
-  con más rondas.
-- `fp.p101.mul_karatsuba.d512` 0,945x y `fp.p101.divmod.d2000_1000` 0,949x, dentro del margen
-  de ruido habitual.
+**Regresiones aparentes descartadas.** En la suite salieron por debajo de 0,95x
+`fp.p256.mul_fft.d4096` (0,88x), `fp.p256.mul_fft.d8192` (0,85x, con un 20 % de desviación
+típica), `fp.p101.mul_karatsuba.d512` (0,945x) y `fp.p101.divmod.d2000_1000` (0,949x). Al
+repetirlos escenario a escenario (7 rondas, al menos 15 repeticiones y 0,3 s cada uno) quedan
+los cuatro en **0,99x**, con los checksums iguales: era ruido
+([repeticion_regresiones.txt](../../bench/results/fase7/repeticion_regresiones.txt)).
 
 ## Pruebas
 
@@ -89,4 +87,3 @@ JSON en `bench/results/fase7/suite-base.json` y `suite-fase7.json`.
   con las nuevas NTT.
 - Comparativa con FLINT (`compare_libs.py`) y cobertura C++ (`build.py cov-cpp`; con las
   variantes nuevas puede acercarse al límite de secciones COFF de MinGW).
-- Repetir `fp.p256.mul_fft` para descartar la regresión.
