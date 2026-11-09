@@ -938,6 +938,11 @@ template <class Field>
     requires NativeWordField<Field>
 std::shared_ptr<const FFTTables<typename Field::Elem>> tablas_sin_rng(const Field& K, unsigned long k) {
     if (!K.fft_cache_.empty()) {
+        // Fase 8 (revisión de la fase 7): con la caché normal ya llena no se
+        // vuelven a pedir tablas deterministas, así que se liberan.  Las que
+        // sigan en uso (medio::Fija::tab, o un shared_ptr local de una
+        // operación en curso) siguen vivas mientras alguien las tenga.
+        if (!K.fft_cache_det_.empty()) FFTCache<typename Field::Elem>().swap(K.fft_cache_det_);
         (void)tables(K, k);  // la caché no está vacía: la raíz ya existe, no consume el generador
         return K.fft_cache_[k];
     }
@@ -1181,6 +1186,15 @@ std::vector<typename Field::Elem> convolve(const Field& K,
     const std::size_t n = std::size_t(1) << k;
 
     if constexpr (NativeWordField<Field>) {
+        // Fase 8 (revisión de la fase 7): las mariposas suponen coeficientes
+        // canónicos (< p); con otros el resultado sería basura sin aviso.  Los
+        // Poly siempre lo son; esto protege a quien llame directamente.  Se
+        // comprueba antes de pedir las tablas: una entrada inválida no
+        // consume el generador.  Coste O(L), despreciable frente a la NTT.
+        const std::uint64_t p = K.modulus64();
+        for (const auto* v : {&A, &B})
+            for (const Elem& x : *v)
+                if (x >= p) throw std::invalid_argument("fft::convolve: coeficiente no canónico (>= p)");
         // Fp64: siempre por el camino en palabras (p < 2^62).  tables() se
         // llama en el mismo punto que en el camino genérico (mismo consumo
         // del RNG).
