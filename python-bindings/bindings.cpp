@@ -49,6 +49,10 @@
 // la propiedad `backend` dice cuál se usa ('u64' o 'gmp').  Los dos backends
 // dan los mismos resultados, las mismas excepciones y consumen igual el
 // generador aleatorio: la API Python no cambia, solo la velocidad.
+// Fase 7 (propuesta 3): Fp tiene un tercer backend, FpN2 (alcp/fpn.hpp, dos
+// palabras de máquina), que Fp(p) elige con backend="auto" para
+// 2^62 <= p < 2^128 (propiedad backend = 'u128').  Fq no lo usa: sus
+// extensiones con p >= 2^62 siguen en GMP (FqT<FpN2> no está implementado).
 #include "alcp/alcp.hpp"
 
 #include <pybind11/pybind11.h>
@@ -73,6 +77,7 @@ namespace py = pybind11;
 using alcp::BigInt;
 using alcp::Fp;
 using alcp::Fp64;
+using alcp::FpN2;
 using alcp::Fq;
 using alcp::Fq64;
 
@@ -359,14 +364,19 @@ inline bool backend_gmp(const std::string& b) {
 }
 
 struct FpW {
-    using Var = std::variant<Fp, Fp64>;
-    using PolyVar = std::variant<alcp::Poly<Fp>, alcp::Poly<Fp64>>;
+    // Alternativas: 0 = GMP, 1 = 64 bits (p < 2^62), 2 = dos palabras (fase 7,
+    // 2^62 <= p < 2^128).
+    using Var = std::variant<Fp, Fp64, FpN2>;
+    using PolyVar = std::variant<alcp::Poly<Fp>, alcp::Poly<Fp64>, alcp::Poly<FpN2>>;
     Var K;
     FpW(const BigInt& p, bool gmp) : K(crear(p, gmp)) {}
 
-    // Fp64 valida igual que Fp (mismo mensaje si p no es primo).
+    // Fp64 y FpN2 validan igual que Fp (mismo mensaje si p no es primo; un
+    // primo del rango de FpN2 es impar y de <= 128 bits, así que FpN2 no
+    // rechaza ninguno por tamaño).
     static Var crear(const BigInt& p, bool gmp) {
         if (!gmp && Fp64::fits(p)) return Var(std::in_place_type<Fp64>, p);
+        if (!gmp && FpN2::fits(p)) return Var(std::in_place_type<FpN2>, p);
         return Var(std::in_place_type<Fp>, p);
     }
 };
@@ -391,13 +401,18 @@ struct FqW {
     }
 };
 
-// Aplica fn a la alternativa activa de un variant de dos tipos.  Equivale a
-// std::visit, pero con un simple if: std::visit instancia por cada llamada una
-// tabla de despacho y varias funciones auxiliares, y con -O0 --coverage el
-// objeto superaba el número de secciones COFF que admite ld de MinGW.
+// Aplica fn a la alternativa activa de un variant de dos o tres tipos (tres:
+// Fp, Fp64 y FpN2, fase 7).  Equivale a std::visit, pero con un simple if:
+// std::visit instancia por cada llamada una tabla de despacho y varias
+// funciones auxiliares, y con -O0 --coverage el objeto superaba el número de
+// secciones COFF que admite ld de MinGW.
 template <class V, class Fn>
 decltype(auto) visitar2(V& v, Fn&& fn) {
-    static_assert(std::variant_size_v<std::remove_const_t<V>> == 2);
+    constexpr std::size_t n = std::variant_size_v<std::remove_const_t<V>>;
+    static_assert(n == 2 || n == 3);
+    if constexpr (n == 3) {
+        if (v.index() == 2) return fn(*std::get_if<2>(&v));
+    }
     if (v.index() == 0) return fn(*std::get_if<0>(&v));
     return fn(*std::get_if<1>(&v));
 }
@@ -444,6 +459,8 @@ inline Fp::Elem elem_in(const Fp& K, const BigInt& v) { return K.from_int(v); }
 inline BigInt elem_out(const Fp& /*K*/, const Fp::Elem& e) { return e; }
 inline Fp64::Elem elem_in(const Fp64& K, const BigInt& v) { return K.from_int(v); }
 inline BigInt elem_out(const Fp64& K, const Fp64::Elem& e) { return K.to_bigint(e); }
+inline FpN2::Elem elem_in(const FpN2& K, const BigInt& v) { return K.from_int(v); }
+inline BigInt elem_out(const FpN2& K, const FpN2::Elem& e) { return K.to_bigint(e); }
 template <class B>
 typename alcp::FqT<B>::Elem elem_in(const alcp::FqT<B>& K, const BigInt& v) { return K.from_index(v); }
 template <class B>
@@ -470,6 +487,8 @@ std::vector<BigInt> elems_out(const Field& K, const std::vector<typename Field::
 inline Fp64::Elem elem_in(const Fp64& K, const EntInt& x) {
     return x.corto ? reducir_i64(x.v, K.modulus64()) : K.from_int(x.grande);
 }
+// Fase 7: con FpN2, igual sin mpz (FpN2::from_i64 da lo mismo que from_int).
+inline FpN2::Elem elem_in(const FpN2& K, const EntInt& x) { return x.corto ? K.from_i64(x.v) : K.from_int(x.grande); }
 template <class Field>
 typename Field::Elem elem_in(const Field& K, const EntInt& x) { return elem_in(K, x.big()); }
 
@@ -477,10 +496,16 @@ typename Field::Elem elem_in(const Field& K, const EntInt& x) { return elem_in(K
 // elem_in; con Fq NO (elem_in es un índice que se reduce módulo q), así que
 // los demás cuerpos llaman a K.from_int como antes.
 inline Fp64::Elem desde_int(const Fp64& K, const EntInt& x) { return elem_in(K, x); }
+inline FpN2::Elem desde_int(const FpN2& K, const EntInt& x) { return elem_in(K, x); }
 template <class Field>
 typename Field::Elem desde_int(const Field& K, const EntInt& x) { return K.from_int(x.big()); }
 
 inline SalInt elem_sal(const Fp64& /*K*/, const Fp64::Elem& e) { return SalInt{true, e, {}}; }
+// Fase 7: un elemento de FpN2 con la palabra alta nula sale como u64.
+inline SalInt elem_sal(const FpN2& K, const FpN2::Elem& e) {
+    if (e.w[1] == 0) return SalInt{true, e.w[0], {}};
+    return SalInt{false, 0, K.to_bigint(e)};
+}
 template <class Field>
 SalInt elem_sal(const Field& K, const typename Field::Elem& e) { return SalInt{false, 0, elem_out(K, e)}; }
 
@@ -512,20 +537,24 @@ py::object lista_sal(const Field& K, const std::vector<typename Field::Elem>& v)
 // hash aunque no sean iguales, lo que está permitido).
 inline py::tuple clave(const Fp& K) { return py::make_tuple("Fp", K.characteristic()); }
 inline py::tuple clave(const Fp64& K) { return py::make_tuple("Fp", K.characteristic()); }
+inline py::tuple clave(const FpN2& K) { return py::make_tuple("Fp", K.characteristic()); }
 template <class B>
 py::tuple clave(const alcp::FqT<B>& K) {
     return py::make_tuple("Fq", K.characteristic(), py::tuple(py::cast(K.modulus())));
 }
 
 // El repr es evaluable y da un cuerpo igual: si se forzó GMP para un p que
-// cabría en 64 bits, se añade backend='gmp'.
+// cabría en 64 bits, se añade backend='gmp'.  En Fp también para un p del
+// rango de FpN2 (fase 7); en Fq no, porque Fq no tiene backend de dos palabras.
 inline std::string sufijo_backend(const BigInt& p, bool es_gmp) {
     return es_gmp && Fp64::fits(p) ? ", backend='gmp'" : "";
 }
 inline std::string repr_cuerpo(const Fp& K) {
-    return "Fp(" + K.characteristic().get_str() + sufijo_backend(K.characteristic(), true) + ")";
+    const BigInt& p = K.characteristic();
+    return "Fp(" + p.get_str() + (FpN2::fits(p) ? ", backend='gmp'" : sufijo_backend(p, true)) + ")";
 }
 inline std::string repr_cuerpo(const Fp64& K) { return "Fp(" + K.characteristic().get_str() + ")"; }
+inline std::string repr_cuerpo(const FpN2& K) { return "Fp(" + K.characteristic().get_str() + ")"; }
 template <class B>
 std::string repr_cuerpo(const alcp::FqT<B>& K) {
     std::string s = "Fq(" + K.characteristic().get_str() + ", [";
@@ -638,7 +667,8 @@ constexpr const char* set_seed =
 constexpr const char* fp = "Cuerpo primo F_p. Sus elementos son enteros en [0, p).";
 constexpr const char* fp_init =
     "Fp(p, *, backend='auto'): F_p para un primo p. ValueError si p no es primo. backend='auto' usa "
-    "aritmética de 64 bits si p < 2^62 y GMP en otro caso; backend='gmp' fuerza GMP (mismos "
+    "aritmética de 64 bits si p < 2^62, de 128 bits (dos palabras) si p < 2^128 y GMP en otro caso; "
+    "backend='gmp' fuerza GMP (mismos "
     "resultados, solo cambia la velocidad).";
 constexpr const char* fp_n = "Grado de extensión (1).";
 constexpr const char* fq = "Cuerpo F_q = F_p[a]/(g), q = p^n. Sus elementos son índices en base p, en [0, q).";
@@ -665,7 +695,8 @@ constexpr const char* c_hash = "Hash coherente con __eq__ (calculado a partir de
 constexpr const char* c_repr = "Representación evaluable: Fp(p) o Fq(p, [g0, ..., gn]).";
 constexpr const char* c_copia = "Los cuerpos son inmutables: devuelve el mismo objeto.";
 constexpr const char* c_backend =
-    "Aritmética que usa el cuerpo: 'u64' (palabras de 64 bits, p < 2^62) o 'gmp' (enteros de GMP). "
+    "Aritmética que usa el cuerpo: 'u64' (palabras de 64 bits, p < 2^62), 'u128' (dos palabras, "
+    "2^62 <= p < 2^128; solo Fp) o 'gmp' (enteros de GMP). "
     "Dos cuerpos con distinto backend no son iguales ni mezclan sus polinomios.";
 constexpr const char* c_fft_capacity =
     "Mayor k tal que 2^k divide a q - 1: tamaño máximo 2^k de una FFT en este cuerpo.";
@@ -797,7 +828,10 @@ struct OpsCuerpo {
     static bool eq(const W& a, const W& b) { return a.K == b.K; }
     static py::ssize_t hash(const W& f) { return en(f, [](const auto& K) { return py::hash(clave(K)); }); }
     static std::string repr(const W& f) { return en(f, [](const auto& K) { return repr_cuerpo(K); }); }
-    static std::string backend(const W& f) { return f.K.index() == 0 ? "gmp" : "u64"; }
+    static std::string backend(const W& f) {
+        constexpr const char* nombres[] = {"gmp", "u64", "u128"};
+        return nombres[f.K.index()];
+    }
     static std::shared_ptr<W> copia(const std::shared_ptr<W>& f) { return f; }
     static std::shared_ptr<W> copia_profunda(const std::shared_ptr<W>& f, const py::dict& /*memo*/) { return f; }
     static unsigned long fft_capacity(const W& f) { return en(f, [](const auto& K) { return K.fft_capacity(); }); }

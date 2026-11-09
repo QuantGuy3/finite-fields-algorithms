@@ -1001,13 +1001,15 @@ def test_docstrings_en_todo_lo_expuesto():
 # Backends: aritmética de 64 bits ('u64', p < 2^62) frente a GMP ('gmp')
 # ---------------------------------------------------------------------------
 P_TOPE = 2**62 - 57          # mayor primo < 2^62: aún cabe en 64 bits
-P_FUERA = 2**62 + 135        # primo > 2^62: siempre GMP
+P_FUERA = 2**62 + 135        # primo > 2^62: en Fp, dos palabras ('u128', fase 7); en Fq, GMP
 AES = [1, 1, 0, 1, 1, 0, 0, 0, 1]
 
 
 def test_backend_por_defecto_y_forzado():
     assert al.Fp(7).backend == "u64" and al.Fp(P_TOPE).backend == "u64"
-    assert al.is_prime(P_FUERA) and al.Fp(P_FUERA).backend == "gmp" and al.Fp(M127).backend == "gmp"
+    # Fase 7: 2^62 <= p < 2^128 usa FpN2 ('u128'); p >= 2^128, GMP.
+    assert al.is_prime(P_FUERA) and al.Fp(P_FUERA).backend == "u128" and al.Fp(M127).backend == "u128"
+    assert al.Fp(2**128 + 51).backend == "gmp"
     assert al.Fp(7, backend="gmp").backend == "gmp" and al.Fp(7, backend="auto").backend == "u64"
     assert al.Fq(9).backend == "u64" and al.Fq(2, AES).backend == "u64"
     assert al.Fq(M127).backend == "gmp" and al.Fq(M127, [1, 1]).backend == "gmp"

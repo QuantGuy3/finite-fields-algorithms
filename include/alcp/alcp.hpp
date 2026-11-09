@@ -6,6 +6,7 @@
 #include "field.hpp"
 #include "fp.hpp"
 #include "fp64.hpp"
+#include "fpn.hpp"
 #include "fq.hpp"
 #include "polynomial.hpp"
 #include "fft.hpp"

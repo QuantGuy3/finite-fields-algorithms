@@ -36,6 +36,14 @@
 #else
 #define ALCP_BENCH_FP64 0
 #endif
+// Backend de dos palabras (fase 7, alcp/fpn.hpp): con --backend auto, los
+// escenarios fp.* con 2^62 <= p < 2^128 (fp.m127) usan FpN2, como el módulo
+// Python.  Los nombres y los checksums no cambian.
+#if __has_include(<alcp/fpn.hpp>)
+#define ALCP_BENCH_FPN 1
+#else
+#define ALCP_BENCH_FPN 0
+#endif
 
 #include <algorithm>
 #include <chrono>
@@ -165,6 +173,10 @@ void hash_elem(Hasher& h, const Fp64& K, const Fp64::Elem& e) { h.big(K.to_bigin
 void hash_elem(Hasher& h, const Fq64& K, const Fq64::Elem& e) { h.big(K.to_index(e)); }
 Fp64::Elem rand_elem(const Fp64& K, Rng& R) { return K.from_int(R.below(K.characteristic())); }
 Fq64::Elem rand_elem(const Fq64& K, Rng& R) { return K.from_index(R.below(K.cardinality())); }
+#endif
+#if ALCP_BENCH_FPN
+void hash_elem(Hasher& h, const FpN2& K, const FpN2::Elem& e) { h.big(K.to_bigint(e)); }
+FpN2::Elem rand_elem(const FpN2& K, Rng& R) { return K.from_int(R.below(K.characteristic())); }
 #endif
 
 template <class F>
@@ -702,6 +714,9 @@ void with_fp(const std::string& tag, const char* p, const std::string& fdesc, Re
 #if ALCP_BENCH_FP64
     if (use_u64(BigInt(p))) return reg(fp_family_t<Fp64>(tag, p, fdesc));
 #endif
+#if ALCP_BENCH_FPN
+    if (g_backend_auto && FpN2::fits(BigInt(p))) return reg(fp_family_t<FpN2>(tag, p, fdesc));
+#endif
     reg(fp_family_t<Fp>(tag, p, fdesc));
 }
 
@@ -1020,8 +1035,8 @@ void usage() {
         "  --warmup N     ejecuciones de calentamiento no medidas (por defecto 1)\n"
         "  --max-reps N   tope de repeticiones por escenario (por defecto 10000)\n"
         "  --json RUTA    guarda todas las muestras y checksums en JSON\n"
-        "  --backend B    auto (por defecto: 64 bits si p < 2^62, si las cabeceras lo\n"
-        "                 tienen) o gmp (GMP en todos los cuerpos)");
+        "  --backend B    auto (por defecto: 64 bits si p < 2^62 y dos palabras si\n"
+        "                 p < 2^128, si las cabeceras lo tienen) o gmp (GMP en todos)");
 }
 
 bool parse(int argc, char** argv, Options& o) {
