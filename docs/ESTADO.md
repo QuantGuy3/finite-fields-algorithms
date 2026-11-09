@@ -39,7 +39,7 @@ Cobertura C++ (tests C++ + pytest), tras la fase 3: 94,4 % de líneas, 98,4 % de
 
 - Fase 5 hecha (propuestas 1 a 3 de [optimizacion/investigacion-fase5.md](optimizacion/investigacion-fase5.md)); quedan las propuestas 4 a 10.
 - Fase 6: hechas las propuestas 0, 1, 5, 6 y 8. Regresión menor conocida: `fp.m61.divmod.d2000_1000` a 0,95-0,96x.
-- Fase 7: hechas las propuestas 2, 3, 4 y 7. Quedan la caché de raíz determinista (3d), recalibrar Newton, la comparativa con FLINT, y la cobertura C++. Sin regresiones: las cuatro aparentes de la suite quedaron en 0,99x al repetirlas.
+- Fase 7: hechas las propuestas 2, 3, 4 y 7. Quedan la caché de raíz determinista (3d), recalibrar Newton y la cobertura C++. Frente a FLINT (comparativa en [optimizacion/fase7.md](optimizacion/fase7.md)) alcp gana en producto y extensiones pequeñas y pierde en `divmod`/`gcd` con p = 998244353 (0,46-0,58x) y en `factor` con p = 101. Sin regresiones: las cuatro aparentes de la suite quedaron en 0,99x al repetirlas.
 - Half-GCD: acelerar los productos de matrices; con el Euclides en sitio solo gana desde grado 2048-4096 en Fp64.
 - Repetir la suite y la comparativa de la fase 5 enchufado (se midieron con batería).
 - Investigar el `gcd` de grado 500 en Fp64, a 0,78x en la suite, que no se reproduce aislado.
