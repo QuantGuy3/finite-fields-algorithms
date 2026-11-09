@@ -44,6 +44,14 @@
 #else
 #define ALCP_BENCH_FPN 0
 #endif
+// Fase 7 (propuesta 7): extensiones rápidas FqTab/FqSwar si las cabeceras las
+// tienen.  -DALCP_BENCH_SIN_FQ_RAPIDO vuelve a Fq64 (para medir el «antes»
+// con las mismas cabeceras).
+#if ALCP_BENCH_FP64 && __has_include(<alcp/fq_tab.hpp>) && !defined(ALCP_BENCH_SIN_FQ_RAPIDO)
+#define ALCP_BENCH_FQ_RAPIDO 1
+#else
+#define ALCP_BENCH_FQ_RAPIDO 0
+#endif
 
 #include <algorithm>
 #include <chrono>
@@ -177,6 +185,11 @@ Fq64::Elem rand_elem(const Fq64& K, Rng& R) { return K.from_index(R.below(K.card
 #if ALCP_BENCH_FPN
 void hash_elem(Hasher& h, const FpN2& K, const FpN2::Elem& e) { h.big(K.to_bigint(e)); }
 FpN2::Elem rand_elem(const FpN2& K, Rng& R) { return K.from_int(R.below(K.characteristic())); }
+#endif
+#if ALCP_BENCH_FQ_RAPIDO
+// FqTab: el mismo índice en base p (FqSwar usa las de Fq64, de la que deriva).
+void hash_elem(Hasher& h, const FqTab& K, const FqTab::Elem& e) { h.big(K.to_index(e)); }
+FqTab::Elem rand_elem(const FqTab& K, Rng& R) { return K.from_index(R.below(K.cardinality())); }
 #endif
 
 template <class F>
@@ -723,7 +736,15 @@ void with_fp(const std::string& tag, const char* p, const std::string& fdesc, Re
 template <class Reg>
 void with_fq(const std::string& tag, const char* p, std::vector<long> modulus, const std::string& fdesc, Reg reg) {
 #if ALCP_BENCH_FP64
-    if (use_u64(BigInt(p))) return reg(fq_family_t<Fq64, Fp64>(tag, p, std::move(modulus), fdesc));
+    if (use_u64(BigInt(p))) {
+#if ALCP_BENCH_FQ_RAPIDO
+        // Fase 7: q <= 2^16 (q2e8, q7e4) -> FqTab; p pequeño (q3e30) -> FqSwar.
+        const unsigned long n = static_cast<unsigned long>(modulus.size() - 1);
+        if (FqTab::fits(BigInt(p), n)) return reg(fq_family_t<FqTab, Fp64>(tag, p, std::move(modulus), fdesc));
+        if (FqSwar::fits(BigInt(p), n)) return reg(fq_family_t<FqSwar, Fp64>(tag, p, std::move(modulus), fdesc));
+#endif
+        return reg(fq_family_t<Fq64, Fp64>(tag, p, std::move(modulus), fdesc));
+    }
 #endif
     reg(fq_family_t<Fq, Fp>(tag, p, std::move(modulus), fdesc));
 }

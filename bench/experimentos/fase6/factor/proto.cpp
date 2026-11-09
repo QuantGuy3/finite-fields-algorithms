@@ -59,11 +59,15 @@ double medir_us(Fn&& fn, int nent = 16) {
         int veces = 0;
         auto t0 = reloj::now();
         double dt = 0;
+        // Fase 7 (reserva del revisor): la tanda solo termina tras un número
+        // ENTERO de vueltas a las nent entradas.  Antes paraba a los 30 ms aunque
+        // no hubiera pasado por todas, y en los casos lentos (varios ms por
+        // llamada) solo medía las primeras entradas.
         do {
             fn(veces % nent);
             ++veces;
             dt = std::chrono::duration<double, std::micro>(reloj::now() - t0).count();
-        } while (dt < 30000);
+        } while (dt < 30000 || veces % nent != 0);
         mejor = std::min(mejor, dt / veces);
     }
     return mejor;

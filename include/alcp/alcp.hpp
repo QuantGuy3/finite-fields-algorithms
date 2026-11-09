@@ -8,6 +8,8 @@
 #include "fp64.hpp"
 #include "fpn.hpp"
 #include "fq.hpp"
+#include "fq_tab.hpp"
+#include "fq_swar.hpp"
 #include "polynomial.hpp"
 #include "fft.hpp"
 #include "fast.hpp"
