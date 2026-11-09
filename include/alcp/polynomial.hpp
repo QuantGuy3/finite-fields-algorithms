@@ -260,6 +260,241 @@ inline std::vector<W> pliega(const W* v, std::size_t len, std::size_t N, W p) {
 }  // namespace medio
 
 // ---------------------------------------------------------------------------
+// Reducción por tabla de x^(n+i) mod m (fase 8, Fp64 con p < 2^16 y AVX2)
+// ---------------------------------------------------------------------------
+// Sin NTT para el tamaño (F_101, F_7, ...), el Reducer dividía con Newton y
+// dos productos de Kronecker o con la escolar; en factor() con p = 101 y grado
+// 100 la reducción costaba 2,4 veces el producto (docs/optimizacion/fase7.md,
+// «Perfil de factor»).  Con m fijo de grado n se precalculan las filas
+//     T_i = x^(n+i) mod m,   i = 0..n-1,
+// y para a de grado <= 2n-1
+//     a mod m = (a_0..a_{n-1}) + Σ_i a_{n+i}·T_i,
+// un producto matriz-vector: los mismos ~n² productos que la escolar, pero sin
+// la dependencia entre pasos de ésta (cada paso necesita el coeficiente
+// principal ya reducido), así que se vectoriza entero.  Con p < 2^16 cada
+// entrada cabe en 32 bits y cada producto es < 2^32: 8 carriles de 32 bits
+// (vpmulld) si la suma de una columna cabe en 32 bits, y 4 de 64 (vpmuludq)
+// si no.  Las sumas son exactas y solo se reduce al final: el resto es único,
+// así que el resultado es idéntico.  No usa raíces ni el generador.  El
+// Composer sin NTT usa la misma suma para combinar sus potencias h^i mod f
+// (combina; compose de grado 100 en F_101: 27 → 22 µs).
+//
+// Medido en Zen 3 con carga (bench del prototipo, F_101): n = 100: 7,1 → 1,4
+// µs; n = 32: 1,7 → 0,4; n = 256: 24 → 9; n = 384: 38 → 24; construir la
+// tabla cuesta como 1-3 reducciones antiguas (n = 100: 6,5 µs).  Más allá de
+// n = 384 la tabla (n² palabras de 32 bits) sale de la caché L2 y la ventaja
+// desaparece (n = 1024: 237 frente a 173 µs).  Las rutinas llevan
+// target("avx2") y solo se usan si la CPU lo tiene (fft::word::avx2_disponible);
+// sin AVX2 (o a -O0, ver ALCP_NTT_AVX2) el Reducer sigue como antes: la
+// versión escalar no ganaba (n = 100: 6,9 frente a 7,1 µs).
+namespace tabla {
+
+using u32 = std::uint32_t;
+using u64 = std::uint64_t;
+
+inline constexpr std::size_t kMin = 8;    // grados de m admitidos
+inline constexpr std::size_t kMax = 384;  // (tabla de <= 384·392·4 bytes = 588 KiB)
+
+struct Tabla {
+    std::size_t n = 0;    // grado de m = número de filas (Composer: ancho de las filas)
+    std::size_t ld = 0;   // separación entre filas: n + 1 redondeado a múltiplo de 8
+    bool v32 = false;     // ¿caben las sumas en 32 bits?
+    std::vector<u32> buf; // 8 ceros delante y después las filas
+    bool vacia() const { return buf.empty(); }
+    const u32* fila(std::size_t i) const { return buf.data() + 8 + i * ld; }
+};
+
+// ¿Puede usarse la tabla con este cuerpo y este grado?
+inline bool aplicable(const Fp64& K, std::size_t n) {
+    if (n < kMin || n > kMax || K.modulus64() > 65536) return false;
+    return fft::word::avx2_disponible();
+}
+
+#if ALCP_NTT_AVX2
+#define ALCP_TAB_FN __attribute__((target("avx2")))
+
+// Construye las filas: T_0 = -(m_0..m_{n-1})/lc(m) y T_{i+1} = x·T_i mod m,
+// es decir T_{i+1}[j] = T_i[j-1] + c·T_0[j] con c = T_i[n-1].  Con p <= 2^16,
+// x = T_i[j-1] + c·T_0[j] <= (p-1) + (p-1)² < 2^32 y se reduce con Barrett de
+// 32 bits: mu = floor(2^32/p), q = floor(x·mu/2^32) cumple x/p - 2 < q <= x/p,
+// luego r = x - q·p está en [0, 2p) y basta una resta (min_epu32, como vred
+// en fft.hpp).  T_i[-1] lo leen las cargas desplazadas: es el cero final de la
+// fila anterior (ld > n) o, para T_0, uno de los 8 ceros iniciales.
+ALCP_TAB_FN inline void construir(Tabla& t, const std::vector<u32>& r0, u64 p) {
+    const std::size_t n = t.n, ld = t.ld;
+    u32* T = t.buf.data() + 8;
+    std::copy(r0.begin(), r0.end(), T);  // r0 tiene ld entradas (ceros desde n)
+    const __m256i P = _mm256_set1_epi32(static_cast<int>(p));
+    const __m256i MU = _mm256_set1_epi32(static_cast<int>(static_cast<u32>((u64(1) << 32) / p)));
+    const __m256i ALTO = _mm256_set1_epi64x(static_cast<long long>(0xFFFFFFFF00000000ull));
+    for (std::size_t i = 1; i < n; ++i) {
+        const u32* a = T + (i - 1) * ld;
+        u32* b = T + i * ld;
+        const __m256i c = _mm256_set1_epi32(static_cast<int>(a[n - 1]));
+        for (std::size_t j = 0; j < ld; j += 8) {
+            const __m256i x = _mm256_add_epi32(
+                _mm256_loadu_si256(reinterpret_cast<const __m256i*>(a + j - 1)),
+                _mm256_mullo_epi32(c, _mm256_loadu_si256(reinterpret_cast<const __m256i*>(r0.data() + j))));
+            const __m256i qp = _mm256_srli_epi64(_mm256_mul_epu32(x, MU), 32);  // carriles pares
+            const __m256i qi = _mm256_and_si256(_mm256_mul_epu32(_mm256_srli_epi64(x, 32), MU), ALTO);
+            const __m256i q = _mm256_blend_epi32(qp, qi, 0xAA);
+            __m256i r = _mm256_sub_epi32(x, _mm256_mullo_epi32(q, P));
+            r = _mm256_min_epu32(r, _mm256_sub_epi32(r, P));
+            _mm256_storeu_si256(reinterpret_cast<__m256i*>(b + j), r);
+        }
+        // Las columnas n+1..ld-1 salen nulas (T_i[j-1] = 0 y T_0[j] = 0), pero
+        // la n recibe T_i[n-1] y se anula: así las filas siguen con ceros al
+        // final.  (Un bucle aquí lo convierte GCC en memset, y la llamada
+        // obliga a guardar registros ymm en la pila; ver ALCP_NTT_AVX2.)
+        b[n] = 0;
+    }
+}
+
+// acc[j] += Σ_{i<filas} a[i]·T_i[j], j < ld, con sumas de 32 bits (t.v32).
+// Bloques de 32 columnas en 4 registros que recorren todas las filas.
+ALCP_TAB_FN inline void acumula32(const Tabla& t, const u64* a, std::size_t filas, u32* acc) {
+    const std::size_t ld = t.ld;
+    std::size_t j0 = 0;
+    for (; j0 + 32 <= ld; j0 += 32) {
+        __m256i s0 = _mm256_loadu_si256(reinterpret_cast<const __m256i*>(acc + j0));
+        __m256i s1 = _mm256_loadu_si256(reinterpret_cast<const __m256i*>(acc + j0 + 8));
+        __m256i s2 = _mm256_loadu_si256(reinterpret_cast<const __m256i*>(acc + j0 + 16));
+        __m256i s3 = _mm256_loadu_si256(reinterpret_cast<const __m256i*>(acc + j0 + 24));
+        const u32* f = t.fila(0) + j0;
+        for (std::size_t i = 0; i < filas; ++i, f += ld) {
+            const __m256i c = _mm256_set1_epi32(static_cast<int>(a[i]));
+            s0 = _mm256_add_epi32(s0, _mm256_mullo_epi32(c, _mm256_loadu_si256(reinterpret_cast<const __m256i*>(f))));
+            s1 = _mm256_add_epi32(s1, _mm256_mullo_epi32(c, _mm256_loadu_si256(reinterpret_cast<const __m256i*>(f + 8))));
+            s2 = _mm256_add_epi32(s2, _mm256_mullo_epi32(c, _mm256_loadu_si256(reinterpret_cast<const __m256i*>(f + 16))));
+            s3 = _mm256_add_epi32(s3, _mm256_mullo_epi32(c, _mm256_loadu_si256(reinterpret_cast<const __m256i*>(f + 24))));
+        }
+        _mm256_storeu_si256(reinterpret_cast<__m256i*>(acc + j0), s0);
+        _mm256_storeu_si256(reinterpret_cast<__m256i*>(acc + j0 + 8), s1);
+        _mm256_storeu_si256(reinterpret_cast<__m256i*>(acc + j0 + 16), s2);
+        _mm256_storeu_si256(reinterpret_cast<__m256i*>(acc + j0 + 24), s3);
+    }
+    for (; j0 < ld; j0 += 8) {
+        __m256i s0 = _mm256_loadu_si256(reinterpret_cast<const __m256i*>(acc + j0));
+        const u32* f = t.fila(0) + j0;
+        for (std::size_t i = 0; i < filas; ++i, f += ld)
+            s0 = _mm256_add_epi32(s0, _mm256_mullo_epi32(_mm256_set1_epi32(static_cast<int>(a[i])),
+                                                         _mm256_loadu_si256(reinterpret_cast<const __m256i*>(f))));
+        _mm256_storeu_si256(reinterpret_cast<__m256i*>(acc + j0), s0);
+    }
+}
+
+// 4 entradas de 32 bits ampliadas a 64.
+__attribute__((target("avx2"), always_inline)) inline __m256i carga(const u32* q) {
+    return _mm256_cvtepu32_epi64(_mm_loadu_si128(reinterpret_cast<const __m128i*>(q)));
+}
+
+// Lo mismo con sumas de 64 bits: cada entrada (< 2^16) se amplía a 64 bits y
+// se multiplica con vpmuludq (32x32 -> 64).  Bloques de 16 columnas.
+ALCP_TAB_FN inline void acumula64(const Tabla& t, const u64* a, std::size_t filas, u64* acc) {
+    const std::size_t ld = t.ld;
+    std::size_t j0 = 0;
+    for (; j0 + 16 <= ld; j0 += 16) {
+        __m256i s0 = _mm256_loadu_si256(reinterpret_cast<const __m256i*>(acc + j0));
+        __m256i s1 = _mm256_loadu_si256(reinterpret_cast<const __m256i*>(acc + j0 + 4));
+        __m256i s2 = _mm256_loadu_si256(reinterpret_cast<const __m256i*>(acc + j0 + 8));
+        __m256i s3 = _mm256_loadu_si256(reinterpret_cast<const __m256i*>(acc + j0 + 12));
+        const u32* f = t.fila(0) + j0;
+        for (std::size_t i = 0; i < filas; ++i, f += ld) {
+            const __m256i c = _mm256_set1_epi64x(static_cast<long long>(a[i]));
+            s0 = _mm256_add_epi64(s0, _mm256_mul_epu32(c, carga(f)));
+            s1 = _mm256_add_epi64(s1, _mm256_mul_epu32(c, carga(f + 4)));
+            s2 = _mm256_add_epi64(s2, _mm256_mul_epu32(c, carga(f + 8)));
+            s3 = _mm256_add_epi64(s3, _mm256_mul_epu32(c, carga(f + 12)));
+        }
+        _mm256_storeu_si256(reinterpret_cast<__m256i*>(acc + j0), s0);
+        _mm256_storeu_si256(reinterpret_cast<__m256i*>(acc + j0 + 4), s1);
+        _mm256_storeu_si256(reinterpret_cast<__m256i*>(acc + j0 + 8), s2);
+        _mm256_storeu_si256(reinterpret_cast<__m256i*>(acc + j0 + 12), s3);
+    }
+    for (; j0 < ld; j0 += 8) {  // ld es múltiplo de 8
+        __m256i s0 = _mm256_loadu_si256(reinterpret_cast<const __m256i*>(acc + j0));
+        __m256i s1 = _mm256_loadu_si256(reinterpret_cast<const __m256i*>(acc + j0 + 4));
+        const u32* f = t.fila(0) + j0;
+        for (std::size_t i = 0; i < filas; ++i, f += ld) {
+            const __m256i c = _mm256_set1_epi64x(static_cast<long long>(a[i]));
+            s0 = _mm256_add_epi64(s0, _mm256_mul_epu32(c, carga(f)));
+            s1 = _mm256_add_epi64(s1, _mm256_mul_epu32(c, carga(f + 4)));
+        }
+        _mm256_storeu_si256(reinterpret_cast<__m256i*>(acc + j0), s0);
+        _mm256_storeu_si256(reinterpret_cast<__m256i*>(acc + j0 + 4), s1);
+    }
+}
+#undef ALCP_TAB_FN
+#endif  // ALCP_NTT_AVX2
+
+// Tabla de m (aplicable(K, deg m) ya comprobado).
+inline Tabla crea(const Fp64& K, const std::vector<u64>& m) {
+    Tabla t;
+#if ALCP_NTT_AVX2
+    const u64 p = K.modulus64();
+    t.n = m.size() - 1;
+    t.ld = (t.n + 8) & ~std::size_t(7);  // >= n + 1
+    // Cota de una columna: n filas más el coeficiente de partida, cada uno
+    // <= (p-1)²: n·(p-1)² + (p-1) < 2^32 (p = 101: hasta n ≈ 429.000).
+    t.v32 = static_cast<u64>(t.n) * (p - 1) * (p - 1) + (p - 1) < (u64(1) << 32);
+    t.buf.assign(8 + t.n * t.ld, 0);
+    const u64 il = K.inv(m.back());
+    std::vector<u32> r0(t.ld, 0);
+    for (std::size_t j = 0; j < t.n; ++j) r0[j] = static_cast<u32>(K.neg(K.mul(m[j], il)));
+    construir(t, r0, p);
+#else
+    (void)K; (void)m;
+#endif
+    return t;
+}
+
+// Σ_{i<filas} c[i]·T_i[j] + a0[j] (a0 puede ser nulo), reducido módulo p, para
+// j < t.n.  Las sumas de t.v32 caben en 32 bits; si no, en 64 (n <= kMax
+// filas, o k <= n potencias en el Composer, con p <= 2^16: < 2^64 siempre).
+inline std::vector<u64> combina(const Fp64& K, const Tabla& t, const u64* a0, const u64* c, std::size_t filas) {
+    const std::size_t n = t.n;
+    std::vector<u64> r(n);
+#if ALCP_NTT_AVX2
+    if (t.v32) {
+        std::vector<u32> acc(t.ld, 0);
+        if (a0) for (std::size_t j = 0; j < n; ++j) acc[j] = static_cast<u32>(a0[j]);
+        acumula32(t, c, filas, acc.data());
+        for (std::size_t j = 0; j < n; ++j) r[j] = K.reduce64(acc[j]);
+    } else {
+        std::vector<u64> acc(t.ld, 0);
+        if (a0) std::copy(a0, a0 + n, acc.begin());
+        acumula64(t, c, filas, acc.data());
+        for (std::size_t j = 0; j < n; ++j) r[j] = K.reduce64(acc[j]);
+    }
+#else
+    (void)K; (void)t; (void)a0; (void)c; (void)filas;
+#endif
+    return r;
+}
+
+// a mod m para a de grado n..2n-1 (a.size() - n <= n filas).  Devuelve los n
+// coeficientes del resto (sin recortar).
+inline std::vector<u64> reduce(const Fp64& K, const Tabla& t, const std::vector<u64>& a) {
+    return combina(K, t, a.data(), a.data() + t.n, a.size() - t.n);
+}
+
+// Tabla con filas dadas (las potencias h^i mod f del Composer): k filas de
+// ancho n (cada fila con <= n coeficientes < p <= 2^16).
+inline Tabla de_filas(const Fp64& K, std::size_t n, const std::vector<const std::vector<u64>*>& filas) {
+    Tabla t;
+    const u64 p = K.modulus64();
+    t.n = n;
+    t.ld = (n + 8) & ~std::size_t(7);
+    t.v32 = static_cast<u64>(filas.size()) * (p - 1) * (p - 1) < (u64(1) << 32);
+    t.buf.assign(8 + filas.size() * t.ld, 0);
+    for (std::size_t i = 0; i < filas.size(); ++i)
+        for (std::size_t j = 0; j < filas[i]->size(); ++j) t.buf[8 + i * t.ld + j] = static_cast<u32>((*filas[i])[j]);
+    return t;
+}
+
+}  // namespace tabla
+
+// ---------------------------------------------------------------------------
 // Matrices 2x2 del half-GCD con la NTT en palabras (fase 7, solo Fp64)
 // ---------------------------------------------------------------------------
 // Piezas del half-GCD «V3e» (docs/optimizacion/investigacion-fase6.md, tema
@@ -1237,20 +1472,36 @@ public:
     // fft::tablas_sin_rng.)
     class Reducer {
     public:
-        explicit Reducer(const Poly& m) : m_(m) {}
+        explicit Reducer(const Poly& m) : m_(m) {
+            if constexpr (std::is_same_v<Field, Fp64>) {
+                // Fase 8: el estado de la tabla se crea ya (vacío) para que las
+                // copias del Reducer (Composer, Frobenius) compartan la cuenta
+                // de llamadas y la tabla.
+                if (m_.degree() > 0 && tabla::aplicable(m_.field(), static_cast<std::size_t>(m_.degree())))
+                    tab_ = std::make_shared<EstadoTabla>();
+            }
+        }
         const Poly& modulus() const { return m_; }
         Poly reduce(const Poly& a) const {
             const int n = m_.degree();
             if (a.degree() < n) return a;
             const std::size_t nn = static_cast<std::size_t>(n);
             const std::size_t d1 = static_cast<std::size_t>(a.degree() - n) + 1;
-            if (d1 <= nn && prefer_newton(m_.field(), nn, d1, true)) {
-                if (inv_.empty()) inv_ = inverse_series(m_.field(), reversed_head(m_, nn), nn);
-                if constexpr (fft::NativeWordField<Field>) {
-                    // Fase 6: con la NTT ya disponible, transformadas precalculadas.
-                    if (d1 >= medio::kMin && ntt_sin_rng(m_.field(), 2 * d1 - 1) && ntt_sin_rng(m_.field(), nn))
-                        return reduce_ntt(a, d1);
+            const bool newton = d1 <= nn && prefer_newton(m_.field(), nn, d1, true);
+            if constexpr (fft::NativeWordField<Field>) {
+                // Fase 6: con la NTT ya disponible, transformadas precalculadas.
+                if (newton && d1 >= medio::kMin && ntt_sin_rng(m_.field(), 2 * d1 - 1) && ntt_sin_rng(m_.field(), nn)) {
+                    if (inv_.empty()) inv_ = inverse_series(m_.field(), reversed_head(m_, nn), nn);
+                    return reduce_ntt(a, d1);
                 }
+            }
+            if constexpr (std::is_same_v<Field, Fp64>) {
+                // Fase 8: sin NTT para este tamaño, la tabla de x^(n+i) mod m
+                // (namespace tabla) si ya está construida o si ya compensa.
+                if (tab_ && d1 <= nn && usa_tabla()) return Poly(m_.field(), tabla::reduce(m_.field(), tab_->t, a.c_));
+            }
+            if (newton) {
+                if (inv_.empty()) inv_ = inverse_series(m_.field(), reversed_head(m_, nn), nn);
                 return a.divmod_with_inverse(
                             m_, std::vector<Elem>(inv_.begin(), inv_.begin() + static_cast<std::ptrdiff_t>(d1)))
                     .second;
@@ -1259,6 +1510,30 @@ public:
         }
 
     private:
+        // Fase 8: tabla de reducción (solo Fp64 con p <= 2^16 y AVX2) y número
+        // de reducciones hechas sin ella.  Construirla cuesta como 1-3
+        // reducciones antiguas (n²/2 frente a ~n^1,6), así que se construye
+        // cuando ya se han hecho 1 + n/128 reducciones con el mismo módulo
+        // (el criterio del «alquiler de esquíes»: no gasta más del doble de lo
+        // óptimo aunque no lleguen más llamadas).  Un pow_mod hace unas
+        // 2·log2(k) reducciones; ddf_ks, cientos.
+        struct EstadoTabla {
+            tabla::Tabla t;
+            std::size_t llamadas = 0;
+        };
+        bool usa_tabla() const {
+            if constexpr (std::is_same_v<Field, Fp64>) {
+                EstadoTabla& E = *tab_;
+                if (!E.t.vacia()) return true;
+                const std::size_t nn = static_cast<std::size_t>(m_.degree());
+                if (E.llamadas++ < 1 + nn / 128) return false;
+                E.t = tabla::crea(m_.field(), m_.c_);
+                return !E.t.vacia();
+            } else {
+                return false;
+            }
+        }
+
         // Transformadas precalculadas del módulo (fase 6, solo Fp64; el
         // «FFTRep» de NTL): se calculan la primera vez que hacen falta y se
         // comparten entre las copias del Reducer (Composer y Frobenius lo
@@ -1328,6 +1603,7 @@ public:
         Poly m_;
         mutable std::vector<Elem> inv_;  // rev(m)^{-1} mod x^{deg m}, o vacío si aún no hace falta
         mutable std::shared_ptr<RepNTT> rep_;  // fase 6: transformadas (solo Fp64), o nulo
+        std::shared_ptr<EstadoTabla> tab_;     // fase 8: tabla de reducción (solo Fp64), o nulo
     };
 
     // Composición modular de Brent-Kung con h fijo: precalcula h^0..h^{k-1}
@@ -1357,6 +1633,16 @@ public:
             }
             for (std::size_t i = 1; i < k_; ++i) pot_.push_back(red_.reduce(pot_.back().mul_no_rng(hr)));
             gigante_ = red_.reduce(pot_.back().mul_no_rng(hr));
+            if constexpr (std::is_same_v<Field, Fp64>) {
+                // Fase 8: sin NTT, las potencias también como tabla de 32 bits
+                // para combina (la misma suma de productos que el Reducer por
+                // tabla; namespace tabla).  Sumas exactas: mismo resultado.
+                if (n >= tabla::kMin && K.modulus64() <= 65536 && fft::word::avx2_disponible()) {
+                    std::vector<const std::vector<Elem>*> filas;
+                    for (const auto& q : pot_) filas.push_back(&q.c_);
+                    pot_tab_ = tabla::de_filas(K, n, filas);
+                }
+            }
         }
         std::size_t k() const { return k_; }
         // g(h) mod f
@@ -1379,6 +1665,7 @@ public:
         std::vector<Poly> pot_;  // h^0..h^{k-1} mod f
         Poly gigante_{red_.modulus().field()};  // h^k mod f
         mutable medio::Fija gig_ntt_;  // fase 6: transformada del paso gigante (Fp64), o vacía
+        tabla::Tabla pot_tab_;         // fase 8: pot_ en 32 bits (Fp64 sin NTT, p <= 2^16, AVX2), o vacía
 
         // Fase 6 (Fp64): ¿productos con transformada fija?  Solo con la NTT ya
         // disponible para productos de 2n - 1 coeficientes (sin generador) y
@@ -1434,6 +1721,9 @@ public:
             std::size_t n = 0;
             for (std::size_t i = 0; i < cnt; ++i) n = std::max(n, pot_[i].c_.size());
             if constexpr (std::is_same_v<Field, Fp64>) {
+                // Fase 8: con la tabla de potencias, vectorizado (ver el constructor).
+                if (!pot_tab_.vacia())
+                    return Poly(K, tabla::combina(K, pot_tab_, nullptr, g.c_.data() + ini, cnt));
                 // Fase 6 (p pequeño): acumulador de 64 bits; cada s[t] recibe a
                 // lo sumo cnt productos <= (p-1)^2 (Fp64::acc64_cabe).
                 if (K.acc64_cabe(cnt)) {
