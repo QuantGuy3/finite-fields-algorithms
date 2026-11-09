@@ -94,6 +94,82 @@ inline void axpy(W* r, const W* b, std::size_t len, W c, W cs, W p) {
     }
 }
 
+// ---- Filas de la división en AVX2 con p < 2^31 (fase 8) --------------------
+// Los coeficientes siguen guardados en u64, pero con p < 2^31 caben en la
+// mitad baja de cada carril de 64 bits, que es justo lo que lee
+// _mm256_mul_epu32: 4 coeficientes por registro, sin empaquetar ni
+// desempaquetar.  c·b mod p se calcula con el cociente de Shoup de 32 bits
+// cs = floor(c·2^32 / p), precalculado una vez por fila (como la convolución
+// AVX2 de la fase 7): q = floor(cs·b / 2^32) es floor(c·b/p) o uno menos
+// (b < 2^32), así que c·b - q·p está en [0, 2p) y una resta condicional lo deja
+// en [0, p).  Las sumas se reducen igual, de dos en dos, para que todo quepa en
+// 32 bits (2p < 2^32).  Cada coeficiente acaba en su representante canónico de
+// [0, p): resultado idéntico bit a bit al escalar.  Mismo despacho que la NTT
+// AVX2 (word::avx2_disponible; desactivado a -O0, ver ALCP_NTT_AVX2); sin AVX2
+// o con p >= 2^31 se usa el código escalar de siempre.
+#if ALCP_NTT_AVX2
+namespace avx2 {
+
+using V = __m256i;
+
+#define ALCP_EUC_FN __attribute__((target("avx2")))
+#define ALCP_EUC_IN __attribute__((target("avx2"), always_inline)) inline
+
+ALCP_EUC_IN V ld(const W* q) { return _mm256_loadu_si256(reinterpret_cast<const V*>(q)); }
+ALCP_EUC_IN void st(W* q, V v) { _mm256_storeu_si256(reinterpret_cast<V*>(q), v); }
+ALCP_EUC_IN V set1(W x) { return _mm256_set1_epi64x(static_cast<long long>(x)); }
+// x en [0, 2p) -> [0, p): min(x, x - p) sin signo en 32 bits (la mitad alta de
+// cada carril es 0 en x y en P y sigue siéndolo).
+ALCP_EUC_IN V red(V x, V P) { return _mm256_min_epu32(x, _mm256_sub_epi32(x, P)); }
+// c·b mod p en [0, p) con Shoup de 32 bits (b < 2^32 en cada carril).
+ALCP_EUC_IN V mul(V C, V CS, V b, V P) {
+    const V q = _mm256_srli_epi64(_mm256_mul_epu32(CS, b), 32);
+    return red(_mm256_sub_epi64(_mm256_mul_epu32(C, b), _mm256_mul_epu32(q, P)), P);
+}
+// Cociente de Shoup de 32 bits: floor(c·2^32 / p) (c < p < 2^31).
+inline W shoup32(W c, W p) { return (c << 32) / p; }
+
+// r[j] = r[j] + c·b[j] mod p para j < len (como euclides::axpy).
+ALCP_EUC_FN inline void axpy(W* r, const W* b, std::size_t len, W c, W p) {
+    const V P = set1(p), C = set1(c), CS = set1(shoup32(c, p));
+    std::size_t j = 0;
+    for (; j + 4 <= len; j += 4) st(r + j, red(_mm256_add_epi64(ld(r + j), mul(C, CS, ld(b + j), P)), P));
+    for (; j < len; ++j) r[j] = (r[j] + c * b[j]) % p;  // cola: cabe en 64 bits
+}
+
+// r[j] = r[j] + c1·b[j-1] + c0·b[j] mod p para j < n (b[-1] = 0, n >= 1): las
+// dos filas fusionadas del cociente de grado 1 (fase 7).  b[j-1] se lee con
+// una carga no alineada desplazada un coeficiente.
+ALCP_EUC_FN inline void fila2(W* r, const W* b, std::size_t n, W c1, W c0, W p) {
+    const V P = set1(p), C1 = set1(c1), CS1 = set1(shoup32(c1, p)), C0 = set1(c0), CS0 = set1(shoup32(c0, p));
+    r[0] = (r[0] + c0 * b[0]) % p;
+    std::size_t j = 1;
+    for (; j + 4 <= n; j += 4) {
+        const V t = red(_mm256_add_epi64(ld(r + j), mul(C1, CS1, ld(b + j - 1), P)), P);
+        st(r + j, red(_mm256_add_epi64(t, mul(C0, CS0, ld(b + j), P)), P));
+    }
+    for (; j < n; ++j) r[j] = (r[j] + c1 * b[j - 1] + c0 * b[j]) % p;  // < 2^63
+}
+
+#undef ALCP_EUC_FN
+#undef ALCP_EUC_IN
+
+}  // namespace avx2
+#endif  // ALCP_NTT_AVX2
+
+// Longitud mínima de fila para el camino AVX2 (por debajo, el escalar).
+inline constexpr std::size_t kAvx2Min = 8;
+
+// ¿Filas AVX2 para este p? (p < 2^31 y CPU con AVX2; nunca a -O0.)
+inline bool usa_avx2(W p) {
+#if ALCP_NTT_AVX2
+    return p < (W(1) << 31) && fft::word::avx2_disponible();
+#else
+    (void)p;
+    return false;
+#endif
+}
+
 // Grado de un vector (el índice del último no nulo hasta `hasta`), -1 si es cero.
 inline int grado(const std::vector<W>& a, int hasta) {
     while (hasta >= 0 && a[static_cast<std::size_t>(hasta)] == 0) --hasta;
@@ -136,6 +212,14 @@ inline int resto(std::vector<W>& a, int da, const std::vector<W>& b, int db, W i
         }
         W* r = a.data();
         const W* B = b.data();
+#if ALCP_NTT_AVX2
+        if (ldb >= kAvx2Min && usa_avx2(p)) {  // fase 8: la misma pasada en AVX2
+            avx2::fila2(r, B, ldb, c1, c0, p);
+            a[static_cast<std::size_t>(da)] = 0;
+            a[ldb] = 0;
+            return grado(a, db - 1);
+        }
+#endif
         const W mu = ~W(0) / p;
         W prev = 0;  // b[j - 1], 0 para j = 0
         for (std::size_t j = 0; j < ldb; ++j) {
@@ -152,6 +236,22 @@ inline int resto(std::vector<W>& a, int da, const std::vector<W>& b, int db, W i
         a[ldb] = 0;
         return grado(a, db - 1);
     }
+#if ALCP_NTT_AVX2
+    if (ldb >= kAvx2Min && usa_avx2(p)) {
+        // Fase 8: el mismo bucle con las filas en AVX2.  La decisión se toma
+        // fuera del bucle para no tocar el código escalar (con la rama dentro,
+        // gcd_ext_classic con p >= 2^31 perdía un 10-15 %).
+        for (int dr = da; dr >= db; --dr) {
+            const W lr = a[static_cast<std::size_t>(dr)];
+            if (lr == 0) continue;
+            const W factor = static_cast<W>(static_cast<W128>(lr) * inv_lead % p);
+            if (q) (*q)[static_cast<std::size_t>(dr - db)] = factor;
+            avx2::axpy(a.data() + (dr - db), b.data(), ldb, p - factor, p);
+            a[static_cast<std::size_t>(dr)] = 0;
+        }
+        return grado(a, db - 1);
+    }
+#endif
     for (int dr = da; dr >= db; --dr) {
         const W lr = a[static_cast<std::size_t>(dr)];
         if (lr == 0) continue;
@@ -171,6 +271,14 @@ inline std::vector<W> menos_producto(const std::vector<W>& x0, const std::vector
     if (!x1.empty() && !q.empty()) n = std::max(n, q.size() + x1.size() - 1);
     std::vector<W> r(n, 0);
     std::copy(x0.begin(), x0.end(), r.begin());
+#if ALCP_NTT_AVX2
+    if (x1.size() >= kAvx2Min && usa_avx2(p)) {  // fase 8: filas en AVX2 (ver resto)
+        for (std::size_t i = 0; i < q.size(); ++i)
+            if (q[i] != 0) avx2::axpy(r.data() + i, x1.data(), x1.size(), p - q[i], p);
+        while (!r.empty() && r.back() == 0) r.pop_back();
+        return r;
+    }
+#endif
     if (!x1.empty())
         for (std::size_t i = 0; i < q.size(); ++i)
             if (q[i] != 0) {
