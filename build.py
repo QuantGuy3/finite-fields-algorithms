@@ -381,7 +381,10 @@ def flags_de_perfil(perfil: str) -> list[str]:
 # paralelas (Karatsuba y NTT con std::async) y, con contadores no atómicos,
 # dos hilos que pasan a la vez por la misma línea pueden perder o corromper
 # cuentas; gcovr aborta entonces con «Got negative hit value».
-FLAGS_COV = ["-O0", "-g", "--coverage", "-fprofile-update=atomic"]
+# -Wa,-mbig-obj (fase 7): con las variantes nuevas del binding, bindings.o a
+# -O0 supera el límite de secciones del COFF normal y el enlace falla con
+# referencias indefinidas; el formato «big obj» lo evita.
+FLAGS_COV = ["-O0", "-g", "--coverage", "-fprofile-update=atomic", "-Wa,-mbig-obj"]
 
 
 def flags_extra(cli: list[str] | None) -> list[str]:
@@ -930,6 +933,10 @@ def paso_cov_cpp(op: Opciones, timeout: float = 1800) -> Paso:
            # Las cabeceras se instancian en varias unidades de traducción.
            "--merge-mode-functions", "separate",
            "--exclude-throw-branches", "--exclude-unreachable-branches",
+           # Fase 7: aun con -fprofile-update=atomic, gcov devuelve a veces
+           # cuentas negativas en bucles (error de gcov, GCC bug 68080; visto en
+           # polynomial.hpp:707).  Se avisa una vez por fichero en vez de abortar.
+           "--gcov-ignore-parse-errors", "negative_hits.warn_once_per_file",
            "--html-details", str(INFORME_COV / "index.html"),
            "--html-title", "Cobertura C++ de alcp",
            "--txt", str(resumen),

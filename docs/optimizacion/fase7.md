@@ -119,5 +119,9 @@ pasada sin intercalar, así que diferencias menores del 10 % no son significativ
 - Caché de raíz determinista (propuesta 3d) y recalibración de `prefer_newton` y `medio::kMin`
   con las nuevas NTT.
 - Acercarse a FLINT en `divmod`, `gcd` y `factor` con p pequeño (ver la comparativa).
-- Cobertura C++ (`build.py cov-cpp`; con las
-  variantes nuevas puede acercarse al límite de secciones COFF de MinGW).
+- Informe de cobertura C++. `build.py cov-cpp` ya compila todo (se añadió `-Wa,-mbig-obj`
+  a los flags de cobertura: sin él, `bindings.o` a -O0 no enlazaba) y **todos los tests
+  instrumentados y pytest pasan**. Pero gcovr 8.7 aborta porque gcov da cuentas negativas en
+  los tests largos (`test_fase6_newton`, `test_fase7_fq`; por ejemplo `fp64.hpp:228` y
+  `field.hpp:116`), y `--gcov-ignore-parse-errors` no lo evita. Hay que averiguar si son
+  contadores desbordados o el error 68080 de gcov.
