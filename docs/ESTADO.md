@@ -33,11 +33,13 @@ Cobertura C++ (tests C++ + pytest), tras la fase 3: 94,4 % de líneas, 98,4 % de
 | 5 | NTT perezosa sin saltos, Euclides en sitio en Fp64 (también en el caso base de half-GCD) y DDF de Kaltofen–Shoup; despacho, Newton y half-GCD recalibrados. Informe en [optimizacion/fase5.md](optimizacion/fase5.md) | Suite 1,14x sobre el nivel B (128 checksums iguales); `test_fase5` 26 comprobaciones; distancia a FLINT 2,7x → 1,66x (medido con batería) |
 | 5. Corrección | `gcd_ext` en Fp64 por encima del umbral de half-GCD: sigue con `hgcd` y termina con el Euclides extendido en sitio (`cola_ext_w`), en lugar de `paso` sobre `Poly`. Detalle en [optimizacion/fase5.md](optimizacion/fase5.md) | De 0,39-0,74x a 1,4-5,1x frente al clásico (3,5-8,5x sobre la versión anterior) en grados 1024-4096; `test_fase5` 27 comprobaciones |
 | 6 | Propuestas 1, 5, 6 y 8 de la investigación: Newton con producto medio y `Reducer`/`Composer` con transformadas precalculadas; Fp64 con p < 2^32 (acumulador de 64 bits, Barrett, Kronecker directo); DDF de la fase 4 sin `pow_mod` repetido; conversión directa en el binding. Informe en [optimizacion/fase6.md](optimizacion/fase6.md) | Suite 1,17x sobre la fase 5 (128 checksums iguales; con batería); binding 4-11x en conversiones; tests `test_fase6_*` (121 comprobaciones) y `test_fase6_conversiones.py` |
+| 7 | Propuestas 2, 3, 4 y 7: half-GCD V3e; `FpN<2>` para p de 64-128 bits sin GMP (backend `'u128'`); NTT radix 4 con camino AVX2 para p < 2^30; extensiones pequeñas con `FqTab`/`FqSwar`. Informe en [optimizacion/fase7.md](optimizacion/fase7.md) | Suite 1,72x sobre la fase 6 (128 checksums iguales); F_(2^8) 45x, F_(7^4) 10x, F_(2^127−1) 3,6x; tests `test_fase7_*` |
 
 ## Pendiente
 
 - Fase 5 hecha (propuestas 1 a 3 de [optimizacion/investigacion-fase5.md](optimizacion/investigacion-fase5.md)); quedan las propuestas 4 a 10.
-- Fase 6: hechas las propuestas 0, 1, 5, 6 y 8; quedan la 2, 3, 4 y 7 de [optimizacion/investigacion-fase6.md](optimizacion/investigacion-fase6.md). Regresión menor conocida: `fp.m61.divmod.d2000_1000` a 0,95-0,96x.
+- Fase 6: hechas las propuestas 0, 1, 5, 6 y 8. Regresión menor conocida: `fp.m61.divmod.d2000_1000` a 0,95-0,96x.
+- Fase 7: hechas las propuestas 2, 3, 4 y 7. Quedan la caché de raíz determinista (3d), recalibrar Newton y la cobertura C++. Frente a FLINT (comparativa en [optimizacion/fase7.md](optimizacion/fase7.md)) alcp gana en producto y extensiones pequeñas y pierde en `divmod`/`gcd` con p = 998244353 (0,46-0,58x) y en `factor` con p = 101. Sin regresiones: las cuatro aparentes de la suite quedaron en 0,99x al repetirlas.
 - Half-GCD: acelerar los productos de matrices; con el Euclides en sitio solo gana desde grado 2048-4096 en Fp64.
 - Repetir la suite y la comparativa de la fase 5 enchufado (se midieron con batería).
 - Investigar el `gcd` de grado 500 en Fp64, a 0,78x en la suite, que no se reproduce aislado.

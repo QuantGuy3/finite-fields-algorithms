@@ -39,7 +39,10 @@ namespace alcp {
 // Fase 7 (convolución AVX2, p < 2^30): copia en 32 bits de los MISMOS
 // twiddles de WordNTTTables, con cocientes de Shoup de 32 bits
 // floor(w·2^32 / p).  p == 0 significa «no disponible» (CPU sin AVX2,
-// p >= 2^30 o n < 16).  f4/f2 (i4/i2) son los twiddles directos (inversos) de
+// p >= 2^30 o n < 16).  Se construyen junto con las de 64 bits (no a demanda)
+// siempre que se usen: cuestan un 50 % más de memoria por tabla (unos 128 MB
+// más con k = 23), pero ninguna sorpresa a mitad de un producto (revisión de
+// la fase 7).  f4/f2 (i4/i2) son los twiddles directos (inversos) de
 // las etapas half = 4 y half = 2 repetidos para llenar 8 carriles.
 struct Word32NTTTables {
     std::uint32_t p = 0, pinv = 0, c = 0, c_sh = 0;  // pinv = -p^{-1} mod 2^32; c = n^{-1}·2^32 mod p

@@ -855,9 +855,15 @@ struct OpsCuerpo {
     static bool eq(const W& a, const W& b) { return a.K == b.K; }
     static py::ssize_t hash(const W& f) { return en(f, [](const auto& K) { return py::hash(clave(K)); }); }
     static std::string repr(const W& f) { return en(f, [](const auto& K) { return repr_cuerpo(K); }); }
+    // Fase 7: por el tipo del cuerpo, no por el índice de la alternativa (Fp y
+    // Fq tienen variants distintos: en Fq el índice 2 es FqTab, que es 'u64').
     static std::string backend(const W& f) {
-        constexpr const char* nombres[] = {"gmp", "u64", "u128"};
-        return nombres[f.K.index()];
+        return en(f, [](const auto& K) -> std::string {
+            using T = std::decay_t<decltype(K)>;
+            if constexpr (std::is_same_v<T, Fp> || std::is_same_v<T, Fq>) return "gmp";
+            else if constexpr (std::is_same_v<T, FpN2>) return "u128";
+            else return "u64";
+        });
     }
     static std::shared_ptr<W> copia(const std::shared_ptr<W>& f) { return f; }
     static std::shared_ptr<W> copia_profunda(const std::shared_ptr<W>& f, const py::dict& /*memo*/) { return f; }

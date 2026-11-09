@@ -505,6 +505,29 @@ void test_pow_mod_frio(const BigInt& p, unsigned long semilla) {
     }
 }
 
+// Fallo de la revisión (fase 7): producto con MulAlgo::FFT de longitud 1 a 3
+// en frío.  Fp pide las tablas (y la raíz) también con longitud 1; FpN2 debe
+// consumir el generador igual.
+void test_fft_corto_frio(const BigInt& p, unsigned long semilla) {
+    const std::string tag = " (p = " + p.get_str() + ")";
+    for (std::size_t na : {1u, 2u}) {
+        for (std::size_t nb : {1u, 2u}) {
+            Rng R{semilla + na * 3 + nb};
+            const auto ai = rand_ints(R, p, na), bi = rand_ints(R, p, nb);
+            set_seed(semilla);
+            Fp G(p);
+            const PG r = PG::from_ints(G, ai).mul(PG::from_ints(G, bi), MulAlgo::FFT);
+            const bool vg = G.fft_cache_.empty();
+            const BigInt sig = rand_below(pot2(64));
+            set_seed(semilla);
+            FpN2 F(p);
+            const PF fr = PF::from_ints(F, ai).mul(PF::from_ints(F, bi), MulAlgo::FFT);
+            CHECK_MSG(big(fr) == big(r) && vg == F.fft_cache_.empty() && rand_below(pot2(64)) == sig,
+                      ("producto FFT corto en frío (valor, caché y generador)" + tag).c_str());
+        }
+    }
+}
+
 // ---------------------------------------------------------------------------
 // 6. Validación
 // ---------------------------------------------------------------------------
@@ -561,6 +584,7 @@ int main() {
                             BigInt(998244353), BigInt(193), BigInt(257), BigInt(577), pot2(127) - 1, pot2(128) - 159}) {
         test_fft(p, 500 + s);
         test_pow_mod_frio(p, 600 + s);
+        test_fft_corto_frio(p, 700 + s);
         ++s;
     }
     test_validacion();

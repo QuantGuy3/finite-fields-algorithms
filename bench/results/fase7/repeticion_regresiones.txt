@@ -1,0 +1,19 @@
+aviso: las variantes se compilaron con versiones distintas de bench_suite.cpp: f6-desd3=72a35767aa79, f7i534=43c3a709881e
+escenario                        base f6-desd3              f7i534   speedup
+----------------------------------------------------------------------------
+fp.p101.mul_karatsuba.d512             75.0 us             75.5 us    0.993x
+fp.p101.divmod.d2000_1000             124.3 us            124.9 us    0.995x
+fp.p256.mul_fft.d4096                15.566 ms           15.650 ms    0.995x
+fp.p256.mul_fft.d8192                32.895 ms           33.097 ms    0.994x
+
+Media geométrica del speedup (por grupo):
+  fp.p101                      f7i534=0.994x (n=2)
+  fp.p256                      f7i534=0.994x (n=2)
+Media geométrica del speedup (por operación):
+  divmod                       f7i534=0.995x (n=1)
+  mul_fft                      f7i534=0.994x (n=2)
+  mul_karatsuba                f7i534=0.993x (n=1)
+Media geométrica del speedup (global):
+  global                       f7i534=0.994x (n=4)
+
+Checksums: todos coinciden con la base.
