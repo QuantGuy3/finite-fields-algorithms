@@ -65,6 +65,39 @@ repetirlos escenario a escenario (7 rondas, al menos 15 repeticiones y 0,3 s cad
 los cuatro en **0,99x**, con los checksums iguales: era ruido
 ([repeticion_regresiones.txt](../../bench/results/fase7/repeticion_regresiones.txt)).
 
+## Comparativa con FLINT
+
+`python bench/compare_libs.py --libs alcp_native,flint` con python-flint 0.9.0, binding de la
+fase 7. Los tiempos son medianas y los checksums coinciden en todos los escenarios. La columna
+«alcp antes» es la de [comparativa.md](comparativa.md) (7 de noviembre, antes de las fases 6 y 7).
+JSON en `bench/results/fase7/comparativa_flint.json`. Una cifra mayor que 1 en la última
+columna significa que alcp es más rápido.
+
+| Escenario | alcp antes | alcp fase 7 | FLINT | FLINT / alcp fase 7 |
+|---|---|---|---|---|
+| `fp30.mul.d100` | 6.5 µs | 1.5 µs | 4.5 µs | 3.00x |
+| `fp30.mul.d1000` | 110.1 µs | 9.0 µs | 70.3 µs | 7.81x |
+| `fp30.mul.d10000` | 3.63 ms | 272.7 µs | 1.77 ms | 6.50x |
+| `fp30.divmod.d4000` | 2.66 ms | 1.21 ms | 695.2 µs | 0.58x |
+| `fp30.gcd.d1000` | 5.36 ms | 1.28 ms | 592.0 µs | 0.46x |
+| `fp30.irred.d400` | 290.26 ms | 96.75 ms | 218.05 ms | 2.25x |
+| `fp30.factor.d300` | 133.82 ms | 22.48 ms | 23.50 ms | 1.05x |
+| `fp101.factor.d40` | 222.4 µs | 99.2 µs | 70.9 µs | 0.71x |
+| `fp101.factor.d100` | 4.55 ms | 792.0 µs | 454.9 µs | 0.57x |
+| `fp101.irred.d200` | 28.30 ms | 10.48 ms | 7.98 ms | 0.76x |
+| `fp127.mul.d500` | 311.7 µs | 255.3 µs | 333.2 µs | 1.31x |
+| `fp127.factor.d20` | 17.56 ms | 1.52 ms | 2.69 ms | 1.77x |
+| `f2e8.mul.d1000` | 1.07 ms | 250.5 µs | 807.1 µs | 3.22x |
+| `f2e8.factor.d30` | 8.03 ms | 187.5 µs | 8.62 ms | 45.96x |
+| `f3e30.mul.d200` | 971.9 µs | 593.5 µs | 533.2 µs | 0.90x |
+| `f3e30.factor.d5` | 6.22 ms | 1.17 ms | 2.15 ms | 1.84x |
+
+alcp supera a FLINT en el producto, la irreducibilidad en F_998244353, F_(2^127−1) y las
+extensiones pequeñas. Sigue por detrás en `divmod` (0,58x) y `gcd` (0,46x) en
+F_998244353 y en `factor`/`irred` con p = 101 (0,57-0,76x). Esas son las candidatas para la
+recalibración de Newton y de los umbrales de half-GCD que quedan pendientes. Es una sola
+pasada sin intercalar, así que diferencias menores del 10 % no son significativas.
+
 ## Pruebas
 
 - `tests/test_fase7_*.cpp` (hgcd, NTT, FpN2 con 3558 comprobaciones, FqTab/FqSwar) y las
@@ -85,5 +118,6 @@ los cuatro en **0,99x**, con los checksums iguales: era ruido
 
 - Caché de raíz determinista (propuesta 3d) y recalibración de `prefer_newton` y `medio::kMin`
   con las nuevas NTT.
-- Comparativa con FLINT (`compare_libs.py`) y cobertura C++ (`build.py cov-cpp`; con las
+- Acercarse a FLINT en `divmod`, `gcd` y `factor` con p pequeño (ver la comparativa).
+- Cobertura C++ (`build.py cov-cpp`; con las
   variantes nuevas puede acercarse al límite de secciones COFF de MinGW).
