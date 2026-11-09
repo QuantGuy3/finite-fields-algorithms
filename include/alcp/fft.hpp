@@ -16,6 +16,7 @@
 #include "fp.hpp"
 
 #include <algorithm>
+#include <bit>
 #include <concepts>
 #include <cstdint>
 #include <cstdlib>
@@ -28,6 +29,10 @@
 #include <type_traits>
 #include <utility>
 #include <vector>
+
+#if defined(__GNUC__) && defined(__x86_64__)
+#include <immintrin.h>  // fase 7: NTT AVX2 con despacho en tiempo de ejecución
+#endif
 
 // ---------------------------------------------------------------------------
 // Paralelismo (fase 3)
@@ -133,6 +138,71 @@ inline u64 mul_mod(u64 a, u64 b, u64 p) {
     return static_cast<u64>((static_cast<u128>(a) * b) % p);
 }
 
+// ---------------------------------------------------------------------------
+// Despacho AVX2 (fase 7)
+// ---------------------------------------------------------------------------
+// La librería se compila sin -mavx2 (el módulo de Python es «portable»): las
+// rutinas vectoriales llevan __attribute__((target("avx2"))) y solo se usan si
+// __builtin_cpu_supports("avx2"), que se consulta una sola vez.  Sin
+// optimización (-O0: compilaciones de depuración y de cobertura) el camino se
+// desactiva: GCC guarda entonces los __m256i locales en la pila con
+// movimientos alineados a 32 bytes, y en MinGW la pila solo está alineada a 16
+// (GCC, bug 54412).
+#if defined(__GNUC__) && defined(__x86_64__) && defined(__OPTIMIZE__)
+#define ALCP_NTT_AVX2 1
+#else
+#define ALCP_NTT_AVX2 0
+#endif
+
+inline bool avx2_disponible() {
+#if ALCP_NTT_AVX2
+    static const bool si = [] {
+        __builtin_cpu_init();
+        return __builtin_cpu_supports("avx2") != 0;
+    }();
+    return si;
+#else
+    return false;
+#endif
+}
+
+// Copia de 32 bits de los mismos twiddles (W.fwd / W.inv ya rellenas) para la
+// convolución AVX2; requiere p < 2^30 impar y n >= 16.
+inline void build_tables32(WordNTTTables& W, u64 p) {
+    using u32 = std::uint32_t;
+    Word32NTTTables& T = W.w32;
+    auto sh = [p](u64 x) { return static_cast<u32>((x << 32) / p); };  // floor(x·2^32 / p)
+    const std::size_t m = W.fwd.size();
+    T.fwd.resize(m);
+    T.fwd_sh.resize(m);
+    T.inv.resize(m);
+    T.inv_sh.resize(m);
+    for (std::size_t i = 0; i < m; ++i) {
+        T.fwd[i] = static_cast<u32>(W.fwd[i]);
+        T.fwd_sh[i] = sh(W.fwd[i]);
+        T.inv[i] = static_cast<u32>(W.inv[i]);
+        T.inv_sh[i] = sh(W.inv[i]);
+    }
+    // Etapa half = 4 (desde la posición 3): [w0..w3] dos veces; etapa half = 2
+    // (desde la 1): [w0, w1] cuatro veces.
+    for (int l = 0; l < 8; ++l) {
+        T.f4[l] = T.fwd[3 + (l & 3)];
+        T.f4_sh[l] = T.fwd_sh[3 + (l & 3)];
+        T.f2[l] = T.fwd[1 + (l & 1)];
+        T.f2_sh[l] = T.fwd_sh[1 + (l & 1)];
+        T.i4[l] = T.inv[3 + (l & 3)];
+        T.i4_sh[l] = T.inv_sh[3 + (l & 3)];
+        T.i2[l] = T.inv[1 + (l & 1)];
+        T.i2_sh[l] = T.inv_sh[1 + (l & 1)];
+    }
+    u32 x = static_cast<u32>(p);  // p^{-1} mod 2^32 por Newton
+    for (int i = 0; i < 5; ++i) x *= 2 - static_cast<u32>(p) * x;
+    T.pinv = 0u - x;
+    T.c = static_cast<u32>((W.inv_n << 32) % p);  // n^{-1}·2^32 mod p
+    T.c_sh = sh(T.c);
+    T.p = static_cast<u32>(p);
+}
+
 // Rellena las tablas en palabras a partir de las tablas BigInt ya calculadas.
 template <class Elem>
 void build_tables(FFTTables<Elem>& t, u64 p) {
@@ -151,6 +221,17 @@ void build_tables(FFTTables<Elem>& t, u64 p) {
     for (std::size_t i = 0; i < w.inv.size(); ++i) w.inv_sh[i] = shoup(w.inv[i], p);
     w.inv_n = to_word(t.inv_n);
     w.inv_n_sh = shoup(w.inv_n, p);
+    // Fase 7: constantes de Montgomery para la convolución radix 4 (solo p
+    // impar; p = 2 solo admite n = 1 y sigue el camino anterior).
+    if (p & 1) {
+        u64 x = p;  // p·p ≡ 1 mod 8; cada paso de Newton duplica los bits
+        for (int i = 0; i < 6; ++i) x *= 2 - p * x;
+        w.pinv = 0 - x;
+        w.mont_c = static_cast<u64>((static_cast<u128>(w.inv_n) << 64) % p);
+        w.mont_c_sh = shoup(w.mont_c, p);
+        // Fase 7: copia de 32 bits para la convolución AVX2 (n >= 16).
+        if (p < (u64(1) << 30) && w.fwd.size() >= 15 && avx2_disponible()) build_tables32(w, p);
+    }
     w.p = p;
 }
 
@@ -208,6 +289,327 @@ void transform(const FFTTables<Elem>& t, u64* a, std::size_t n, bool inverse) {
         }
     }
 }
+
+// ---------------------------------------------------------------------------
+// Convolución radix 4 sin permutación (fase 7)
+// ---------------------------------------------------------------------------
+// Rutinas PROPIAS de la convolución (transform, que es API pública vía
+// fft::transform y devuelve el orden natural, no cambia).  En una convolución
+// el orden de los valores transformados da igual mientras el producto punto a
+// punto empareje los mismos índices, así que:
+//   * la directa es DIF (Gentleman-Sande): entrada natural, salida en orden de
+//     bits invertido, sin la permutación t.swaps;
+//   * la inversa es DIT sobre esa entrada en orden de bits invertido y deja la
+//     salida en orden natural, también sin permutación;
+//   * las etapas se agrupan de dos en dos (radix 4: cuatro valores en registros
+//     por cada pasada de memoria) y la última pareja (len = 4), cuyos twiddles
+//     son 1 salvo uno, se especializa;
+//   * el producto punto a punto es de Montgomery y lleva fusionado el factor
+//     n^{-1} (desaparece la pasada de escalado de la inversa).
+// Mismos twiddles que transform (tablas fwd/inv por etapas).  La aritmética es
+// exacta módulo p y la salida se normaliza a [0, p): el resultado es idéntico
+// al del camino anterior.  Medido en la fase 6 (bench/results/fase6/ntt.txt,
+// variante «B4e»): 1,5-1,8x en la convolución completa.
+//
+// Representantes perezosos (Harvey): la directa trabaja en [0, 2p), el producto
+// devuelve [0, 2p) y la inversa trabaja en [0, 4p); 4p < 2^64 porque p < 2^62.
+
+// x en [0, 2m) -> [0, m) sin saltos.
+inline u64 red(u64 x, u64 m) { return x - (m & (0 - static_cast<u64>(x >= m))); }
+// w·y mod p con Shoup SIN la corrección final: en [0, 2p) para cualquier y < 2^64.
+inline u64 shoup_lazy(u64 w, u64 ws, u64 y, u64 p) {
+    return w * y - static_cast<u64>((static_cast<u128>(ws) * y) >> 64) * p;
+}
+
+// Directa DIF radix 4 en sitio: a[0..n) en [0, 2p) (o [0, p)) en orden
+// natural -> transformada en orden de bits invertido, en [0, 2p).
+inline void dif_r4(const WordNTTTables& W, u64* a, std::size_t n) {
+    const u64 p = W.p, p2 = 2 * p;
+    const u64* TW = W.fwd.data();
+    const u64* TS = W.fwd_sh.data();
+    std::size_t len = n;
+    if (n >= 2 && (std::countr_zero(n) & 1)) {
+        // k impar: una etapa radix 2 (len = n) y el resto, de dos en dos.
+        const std::size_t half = n >> 1;
+        const u64* tw = TW + (half - 1);
+        const u64* ts = TS + (half - 1);
+        for (std::size_t j = 0; j < half; ++j) {
+            const u64 u = a[j], v = a[j + half];
+            a[j] = red(u + v, p2);
+            a[j + half] = shoup_lazy(tw[j], ts[j], u - v + p2, p);
+        }
+        len = half;
+    }
+    for (; len > 4; len >>= 2) {
+        // Etapas len (twiddles w1, half = 2q) y len/2 (w2, half = q) fusionadas.
+        const std::size_t q = len >> 2;
+        const u64 *w1 = TW + (2 * q - 1), *s1 = TS + (2 * q - 1);
+        const u64 *w2 = TW + (q - 1), *s2 = TS + (q - 1);
+        for (std::size_t i = 0; i < n; i += len) {
+            u64* x = a + i;
+            for (std::size_t j = 0; j < q; ++j) {
+                const u64 a0 = x[j], a1 = x[j + q], a2 = x[j + 2 * q], a3 = x[j + 3 * q];
+                const u64 b0 = red(a0 + a2, p2), b2 = shoup_lazy(w1[j], s1[j], a0 - a2 + p2, p);
+                const u64 b1 = red(a1 + a3, p2), b3 = shoup_lazy(w1[j + q], s1[j + q], a1 - a3 + p2, p);
+                x[j] = red(b0 + b1, p2);
+                x[j + q] = shoup_lazy(w2[j], s2[j], b0 - b1 + p2, p);
+                x[j + 2 * q] = red(b2 + b3, p2);
+                x[j + 3 * q] = shoup_lazy(w2[j], s2[j], b2 - b3 + p2, p);
+            }
+        }
+    }
+    if (len == 4) {
+        // Última pareja de etapas: w_4^0 = w_2^0 = 1, una sola multiplicación
+        // (por w_4^1) por cada cuatro valores.
+        const u64 w4 = TW[2], w4s = TS[2];
+        for (std::size_t i = 0; i < n; i += 4) {
+            const u64 a0 = a[i], a1 = a[i + 1], a2 = a[i + 2], a3 = a[i + 3];
+            const u64 b0 = red(a0 + a2, p2), b2 = red(a0 - a2 + p2, p2);
+            const u64 b1 = red(a1 + a3, p2), b3 = shoup_lazy(w4, w4s, a1 - a3 + p2, p);
+            a[i] = red(b0 + b1, p2);
+            a[i + 1] = red(b0 - b1 + p2, p2);
+            a[i + 2] = red(b2 + b3, p2);
+            a[i + 3] = red(b2 - b3 + p2, p2);
+        }
+    }
+}
+
+// Inversa DIT radix 4 en sitio SIN el factor n^{-1} (va en el producto punto a
+// punto): a[0..n) en [0, 4p) en orden de bits invertido -> orden natural, en
+// [0, 4p).  Es la exacta inversa de dif_r4 salvo el factor n.
+inline void dit_r4(const WordNTTTables& W, u64* a, std::size_t n) {
+    const u64 p = W.p, p2 = 2 * p;
+    const u64* TW = W.inv.data();
+    const u64* TS = W.inv_sh.data();
+    std::size_t len = 4;
+    if (n >= 4) {
+        const u64 w4 = TW[2], w4s = TS[2];
+        for (std::size_t i = 0; i < n; i += 4) {
+            const u64 a0 = red(a[i], p2), a1 = red(a[i + 1], p2);
+            const u64 a2 = red(a[i + 2], p2), a3 = red(a[i + 3], p2);
+            const u64 b0 = a0 + a1, b1 = a0 - a1 + p2;  // [0, 4p)
+            const u64 b2 = a2 + a3, b3 = a2 - a3 + p2;
+            const u64 u0 = red(b0, p2), v2 = red(b2, p2);
+            a[i] = u0 + v2;
+            a[i + 2] = u0 - v2 + p2;
+            const u64 u1 = red(b1, p2), v3 = shoup_lazy(w4, w4s, b3, p);
+            a[i + 1] = u1 + v3;
+            a[i + 3] = u1 - v3 + p2;
+        }
+        len = 16;
+    }
+    for (; len <= n; len <<= 2) {
+        const std::size_t q = len >> 2;
+        const u64 *w1 = TW + (2 * q - 1), *s1 = TS + (2 * q - 1);  // half 2q
+        const u64 *w2 = TW + (q - 1), *s2 = TS + (q - 1);          // half q
+        for (std::size_t i = 0; i < n; i += len) {
+            u64* x = a + i;
+            for (std::size_t j = 0; j < q; ++j) {
+                const u64 a0 = red(x[j], p2), a2 = red(x[j + 2 * q], p2);
+                u64 v = shoup_lazy(w2[j], s2[j], x[j + q], p);
+                const u64 b0 = a0 + v, b1 = a0 - v + p2;
+                v = shoup_lazy(w2[j], s2[j], x[j + 3 * q], p);
+                const u64 b2 = a2 + v, b3 = a2 - v + p2;
+                const u64 u0 = red(b0, p2), u1 = red(b1, p2);
+                v = shoup_lazy(w1[j], s1[j], b2, p);
+                x[j] = u0 + v;
+                x[j + 2 * q] = u0 - v + p2;
+                v = shoup_lazy(w1[j + q], s1[j + q], b3, p);
+                x[j + q] = u1 + v;
+                x[j + 3 * q] = u1 - v + p2;
+            }
+        }
+    }
+    if (n >= 2 && (std::countr_zero(n) & 1)) {
+        // k impar: falta la última etapa radix 2 (len = n).
+        const std::size_t half = n >> 1;
+        const u64* tw = TW + (half - 1);
+        const u64* ts = TS + (half - 1);
+        for (std::size_t j = 0; j < half; ++j) {
+            const u64 u = red(a[j], p2);
+            const u64 v = shoup_lazy(tw[j], ts[j], a[j + half], p);
+            a[j] = u + v;
+            a[j + half] = u - v + p2;
+        }
+    }
+}
+
+// a[i] <- a[i]·b[i]·n^{-1} mod p, en [0, 2p), con a[i], b[i] en [0, 2p).
+// REDC(a·b) = a·b·2^{-64} está en [0, 2p) porque a·b < 4p^2 y 4p < 2^64; el
+// producto por mont_c = n^{-1}·2^64 (Shoup perezoso) quita el 2^{-64} y pone
+// el n^{-1}.  Requiere p impar (W.pinv != 0).
+inline u64 mul_mont_n(const WordNTTTables& W, u64 a, u64 b) {
+    const u128 t = static_cast<u128>(a) * b;
+    const u64 m = static_cast<u64>(t) * W.pinv;
+    const u64 u = static_cast<u64>((t + static_cast<u128>(m) * W.p) >> 64);
+    return shoup_lazy(W.mont_c, W.mont_c_sh, u, W.p);
+}
+
+// ---------------------------------------------------------------------------
+// Convolución AVX2 (fase 7): 8 carriles de 32 bits, p < 2^30
+// ---------------------------------------------------------------------------
+// Con p < 2^30 los representantes perezosos [0, 4p) caben en 32 bits y cada
+// registro lleva 8 valores.  Mismo esquema que la convolución radix 4 (DIF sin
+// permutación, producto de Montgomery con n^{-1}, DIT sin permutación), con
+// mariposas radix 2 vectoriales y las cuatro etapas pequeñas (half = 8, 4, 2,
+// 1) fusionadas sobre bloques de 16 valores en dos registros.  Mismos
+// twiddles (Word32NTTTables).  Medido en la fase 6 (variante «AVX» de
+// bench/experimentos/fase6/ntt/ntt_fase6.cpp): 7,8-9,9x en la convolución.
+// Todas las cargas y almacenamientos son no alineados (loadu/storeu: nada
+// supone alineación de 32 bytes) y las funciones con __m256i en su interfaz
+// se expanden siempre en línea, así que ningún __m256i cruza una llamada.
+#if ALCP_NTT_AVX2
+namespace avx2 {
+
+using u32 = std::uint32_t;
+using V = __m256i;
+
+#define ALCP_AVX2_FN __attribute__((target("avx2")))
+#define ALCP_AVX2_IN __attribute__((target("avx2"), always_inline)) inline
+
+ALCP_AVX2_IN V ld(const u32* q) { return _mm256_loadu_si256(reinterpret_cast<const V*>(q)); }
+ALCP_AVX2_IN void st(u32* q, V v) { _mm256_storeu_si256(reinterpret_cast<V*>(q), v); }
+ALCP_AVX2_IN V set1(u32 x) { return _mm256_set1_epi32(static_cast<int>(x)); }
+// x en [0, 2m) -> [0, m): min(x, x - m) sin signo (si x < m, x - m da la vuelta).
+ALCP_AVX2_IN V vred(V x, V m) { return _mm256_min_epu32(x, _mm256_sub_epi32(x, m)); }
+// w·y con Shoup de 32 bits (ws = floor(w·2^32 / p)), en [0, 2p) para y < 2^32.
+ALCP_AVX2_IN V vshoup(V w, V ws, V y, V P) {
+    const V pe = _mm256_mul_epu32(ws, y);                                             // carriles pares
+    const V po = _mm256_mul_epu32(_mm256_srli_epi64(ws, 32), _mm256_srli_epi64(y, 32));  // impares
+    const V q = _mm256_blend_epi32(_mm256_srli_epi64(pe, 32), po, 0xAA);              // parte alta
+    return _mm256_sub_epi32(_mm256_mullo_epi32(w, y), _mm256_mullo_epi32(q, P));
+}
+// Mariposa DIF perezosa: entradas y salidas en [0, 2p).
+ALCP_AVX2_IN void vdif(V& x, V& y, V w, V ws, V P, V P2) {
+    const V s = vred(_mm256_add_epi32(x, y), P2);
+    const V d = _mm256_add_epi32(_mm256_sub_epi32(x, y), P2);
+    x = s;
+    y = vshoup(w, ws, d, P);
+}
+// Ídem con twiddle 1.
+ALCP_AVX2_IN void vdif1(V& x, V& y, V P2) {
+    const V s = vred(_mm256_add_epi32(x, y), P2);
+    const V d = vred(_mm256_add_epi32(_mm256_sub_epi32(x, y), P2), P2);
+    x = s;
+    y = d;
+}
+// Mariposa DIT perezosa: entradas y salidas en [0, 4p).
+ALCP_AVX2_IN void vdit(V& x, V& y, V w, V ws, V P, V P2) {
+    const V u = vred(x, P2);
+    const V v = vshoup(w, ws, y, P);
+    x = _mm256_add_epi32(u, v);
+    y = _mm256_add_epi32(_mm256_sub_epi32(u, v), P2);
+}
+ALCP_AVX2_IN void vdit1(V& x, V& y, V P2) {
+    const V u = vred(x, P2);
+    const V v = vred(y, P2);
+    x = _mm256_add_epi32(u, v);
+    y = _mm256_add_epi32(_mm256_sub_epi32(u, v), P2);
+}
+// Reparto de un bloque de 16 valores (a0 = 0..7, a1 = 8..15) en los pares de
+// las etapas half = 4, 2 y 1 (X = primeros elementos, Y = segundos) y vuelta.
+// rep4 y rep2 son involuciones (aplicadas dos veces dejan el bloque igual);
+// para half = 1 la vuelta es jun1.
+ALCP_AVX2_IN void rep4(V a0, V a1, V& X, V& Y) {
+    X = _mm256_permute2x128_si256(a0, a1, 0x20);
+    Y = _mm256_permute2x128_si256(a0, a1, 0x31);
+}
+ALCP_AVX2_IN void rep2(V a0, V a1, V& X, V& Y) {
+    X = _mm256_unpacklo_epi64(a0, a1);
+    Y = _mm256_unpackhi_epi64(a0, a1);
+}
+ALCP_AVX2_IN void rep1(V a0, V a1, V& X, V& Y) {
+    const __m256 f0 = _mm256_castsi256_ps(a0), f1 = _mm256_castsi256_ps(a1);
+    X = _mm256_castps_si256(_mm256_shuffle_ps(f0, f1, 0x88));
+    Y = _mm256_castps_si256(_mm256_shuffle_ps(f0, f1, 0xDD));
+}
+ALCP_AVX2_IN void jun1(V X, V Y, V& a0, V& a1) {
+    a0 = _mm256_unpacklo_epi32(X, Y);
+    a1 = _mm256_unpackhi_epi32(X, Y);
+}
+
+// Directa DIF en sitio: a[0..n) en [0, p), n >= 16 -> orden de bits invertido,
+// en [0, 2p).
+ALCP_AVX2_FN inline void dif(const Word32NTTTables& T, u32* a, std::size_t n) {
+    const V P = set1(T.p), P2 = set1(2 * T.p);
+    for (std::size_t len = n; len >= 32; len >>= 1) {
+        const std::size_t half = len >> 1;
+        const u32* tw = T.fwd.data() + (half - 1);
+        const u32* ts = T.fwd_sh.data() + (half - 1);
+        for (std::size_t i = 0; i < n; i += len)
+            for (std::size_t j = 0; j < half; j += 8) {
+                V x = ld(a + i + j), y = ld(a + i + j + half);
+                vdif(x, y, ld(tw + j), ld(ts + j), P, P2);
+                st(a + i + j, x);
+                st(a + i + j + half, y);
+            }
+    }
+    const V W8 = ld(T.fwd.data() + 7), W8s = ld(T.fwd_sh.data() + 7);
+    const V W4 = ld(T.f4), W4s = ld(T.f4_sh), W2 = ld(T.f2), W2s = ld(T.f2_sh);
+    for (std::size_t i = 0; i < n; i += 16) {
+        V a0 = ld(a + i), a1 = ld(a + i + 8), X, Y;
+        vdif(a0, a1, W8, W8s, P, P2);
+        rep4(a0, a1, X, Y); vdif(X, Y, W4, W4s, P, P2); rep4(X, Y, a0, a1);
+        rep2(a0, a1, X, Y); vdif(X, Y, W2, W2s, P, P2); rep2(X, Y, a0, a1);
+        rep1(a0, a1, X, Y); vdif1(X, Y, P2); jun1(X, Y, a0, a1);
+        st(a + i, a0);
+        st(a + i + 8, a1);
+    }
+}
+
+// Inversa DIT en sitio sin n^{-1}: a[0..n) en [0, 4p) en orden de bits
+// invertido, n >= 16 -> orden natural, en [0, 4p).
+ALCP_AVX2_FN inline void dit(const Word32NTTTables& T, u32* a, std::size_t n) {
+    const V P = set1(T.p), P2 = set1(2 * T.p);
+    {
+        const V W8 = ld(T.inv.data() + 7), W8s = ld(T.inv_sh.data() + 7);
+        const V W4 = ld(T.i4), W4s = ld(T.i4_sh), W2 = ld(T.i2), W2s = ld(T.i2_sh);
+        for (std::size_t i = 0; i < n; i += 16) {
+            V a0 = ld(a + i), a1 = ld(a + i + 8), X, Y;
+            rep1(a0, a1, X, Y); vdit1(X, Y, P2); jun1(X, Y, a0, a1);
+            rep2(a0, a1, X, Y); vdit(X, Y, W2, W2s, P, P2); rep2(X, Y, a0, a1);
+            rep4(a0, a1, X, Y); vdit(X, Y, W4, W4s, P, P2); rep4(X, Y, a0, a1);
+            vdit(a0, a1, W8, W8s, P, P2);
+            st(a + i, a0);
+            st(a + i + 8, a1);
+        }
+    }
+    for (std::size_t len = 32; len <= n; len <<= 1) {
+        const std::size_t half = len >> 1;
+        const u32* tw = T.inv.data() + (half - 1);
+        const u32* ts = T.inv_sh.data() + (half - 1);
+        for (std::size_t i = 0; i < n; i += len)
+            for (std::size_t j = 0; j < half; j += 8) {
+                V x = ld(a + i + j), y = ld(a + i + j + half);
+                vdit(x, y, ld(tw + j), ld(ts + j), P, P2);
+                st(a + i + j, x);
+                st(a + i + j + half, y);
+            }
+    }
+}
+
+// a[i] <- a[i]·b[i]·n^{-1} en [0, 2p), con a[i], b[i] en [0, 2p) (n múltiplo
+// de 8): REDC de 32 bits (a·b < 4p^2 < 2^62, resultado en [0, 2p)) y Shoup por
+// c = n^{-1}·2^32.  b puede ser a (cuadrado).
+ALCP_AVX2_FN inline void punto(const Word32NTTTables& T, u32* a, const u32* b, std::size_t n) {
+    const V P = set1(T.p), PI = set1(T.pinv), C = set1(T.c), CS = set1(T.c_sh);
+    for (std::size_t i = 0; i < n; i += 8) {
+        const V x = ld(a + i), y = ld(b + i);
+        const V te = _mm256_mul_epu32(x, y);  // carriles pares, 64 bits
+        const V me = _mm256_mul_epu32(te, PI);
+        const V ue = _mm256_srli_epi64(_mm256_add_epi64(te, _mm256_mul_epu32(me, P)), 32);
+        const V to = _mm256_mul_epu32(_mm256_srli_epi64(x, 32), _mm256_srli_epi64(y, 32));  // impares
+        const V mo = _mm256_mul_epu32(to, PI);
+        const V uo = _mm256_add_epi64(to, _mm256_mul_epu32(mo, P));  // la parte alta ya está en su carril
+        st(a + i, vshoup(C, CS, _mm256_blend_epi32(ue, uo, 0xAA), P));
+    }
+}
+
+#undef ALCP_AVX2_FN
+#undef ALCP_AVX2_IN
+
+}  // namespace avx2
+#endif  // ALCP_NTT_AVX2
 
 }  // namespace word
 
@@ -606,8 +1008,65 @@ std::vector<Elem> convolve_word(const FFTTables<Elem>& t, const std::vector<Elem
                                 const std::vector<Elem>& B, std::size_t n, std::size_t L) {
     using word::u64;
     const u64 p = t.word.p;
+#if ALCP_NTT_AVX2
+    if (t.word.w32.p != 0) {
+        // Fase 7: el mismo esquema en 8 carriles de 32 bits (p < 2^30, n >= 16
+        // y CPU con AVX2: si no, w32.p == 0).  Ver «Convolución AVX2».
+        using u32 = std::uint32_t;
+        const Word32NTTTables& T = t.word.w32;
+        std::vector<u32> wa(n, 0);
+        for (std::size_t i = 0; i < A.size(); ++i) wa[i] = static_cast<u32>(word::to_word(A[i]));
+        if (&A == &B) {  // cuadrado: una sola transformada directa
+            word::avx2::dif(T, wa.data(), n);
+            word::avx2::punto(T, wa.data(), wa.data(), n);
+        } else {
+            std::vector<u32> wb(n, 0);
+            for (std::size_t i = 0; i < B.size(); ++i) wb[i] = static_cast<u32>(word::to_word(B[i]));
+            if (n >= kParWordMin && par::max_threads() > 1) {
+                auto fb = std::async(std::launch::async, [&] { word::avx2::dif(T, wb.data(), n); });
+                word::avx2::dif(T, wa.data(), n);
+                fb.get();
+            } else {
+                word::avx2::dif(T, wa.data(), n);
+                word::avx2::dif(T, wb.data(), n);
+            }
+            word::avx2::punto(T, wa.data(), wb.data(), n);
+        }
+        word::avx2::dit(T, wa.data(), n);
+        // [0, 4p) -> [0, p) al copiar los L coeficientes del resultado.
+        std::vector<Elem> out(L);
+        for (std::size_t i = 0; i < L; ++i) word::set_word(out[i], word::red(word::red(wa[i], 2 * p), p));
+        return out;
+    }
+#endif
     std::vector<u64> wa(n, 0);
     for (std::size_t i = 0; i < A.size(); ++i) wa[i] = word::to_word(A[i]);
+    if (t.word.pinv != 0) {
+        // Fase 7: directa DIF radix 4, producto de Montgomery con n^{-1} e
+        // inversa DIT radix 4, sin permutaciones (ver «Convolución radix 4»).
+        const WordNTTTables& W = t.word;
+        if (&A == &B) {  // cuadrado: una sola transformada directa
+            word::dif_r4(W, wa.data(), n);
+            for (std::size_t i = 0; i < n; ++i) wa[i] = word::mul_mont_n(W, wa[i], wa[i]);
+        } else {
+            std::vector<u64> wb(n, 0);
+            for (std::size_t i = 0; i < B.size(); ++i) wb[i] = word::to_word(B[i]);
+            if (n >= kParWordMin && par::max_threads() > 1) {
+                auto fb = std::async(std::launch::async, [&] { word::dif_r4(W, wb.data(), n); });
+                word::dif_r4(W, wa.data(), n);
+                fb.get();
+            } else {
+                word::dif_r4(W, wa.data(), n);
+                word::dif_r4(W, wb.data(), n);
+            }
+            for (std::size_t i = 0; i < n; ++i) wa[i] = word::mul_mont_n(W, wa[i], wb[i]);
+        }
+        word::dit_r4(W, wa.data(), n);
+        // Solo hacen falta los L primeros coeficientes: se normalizan al copiar.
+        std::vector<Elem> out(L);
+        for (std::size_t i = 0; i < L; ++i) word::set_word(out[i], word::red(word::red(wa[i], 2 * p), p));
+        return out;
+    }
     if (&A == &B) {  // cuadrado: una sola transformada directa
         word::transform(t, wa.data(), n, false);
         for (std::size_t i = 0; i < n; ++i) wa[i] = word::mul_mod(wa[i], wa[i], p);
