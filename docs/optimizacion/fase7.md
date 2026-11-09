@@ -98,6 +98,35 @@ F_998244353 y en `factor`/`irred` con p = 101 (0,57-0,76x). Esas son las candida
 recalibración de Newton y de los umbrales de half-GCD que quedan pendientes. Es una sola
 pasada sin intercalar, así que diferencias menores del 10 % no son significativas.
 
+### Comparativa final (con 3d, el resto fusionado y los umbrales recalibrados)
+
+Misma comparativa al final de la fase. La máquina estaba más lenta, unas 2,4 veces también
+para FLINT, así que solo se comparan cocientes. Es una sola pasada sin intercalar: diferencias
+menores del 10 % no son significativas. JSON en `bench/results/fase7/comparativa_flint_final.json`.
+
+| Escenario | FLINT / alcp (fase 7 inicial) | FLINT / alcp (final) |
+|---|---|---|
+| `fp30.mul.d100` | 3,00x | **2,57x** |
+| `fp30.mul.d1000` | 7,81x | **7,83x** |
+| `fp30.mul.d10000` | 6,50x | **6,01x** |
+| `fp30.divmod.d4000` | 0,58x | **1,82x** |
+| `fp30.gcd.d1000` | 0,46x | **0,65x** |
+| `fp30.irred.d400` | 2,25x | **3,02x** |
+| `fp30.factor.d300` | 1,05x | **1,09x** |
+| `fp101.factor.d40` | 0,71x | **0,78x** |
+| `fp101.factor.d100` | 0,57x | **0,61x** |
+| `fp101.irred.d200` | 0,76x | **1,10x** |
+| `fp127.mul.d500` | 1,31x | **1,31x** |
+| `fp127.factor.d20` | 1,77x | **1,68x** |
+| `f2e8.mul.d1000` | 3,22x | **3,31x** |
+| `f2e8.factor.d30` | 45,96x | **50,32x** |
+| `f3e30.mul.d200` | 0,90x | **0,91x** |
+| `f3e30.factor.d5` | 1,84x | **1,82x** |
+
+alcp ya supera a FLINT en `divmod` y en la irreducibilidad con p = 101. Sigue detrás en `gcd`
+de grado 1000 en F_998244353 (0,65x), en `factor` con p = 101 (0,61-0,78x; ver el perfil más
+abajo) y, por poco, en el producto en F_(3^30).
+
 ## Propuesta 3d: tablas NTT con raíz determinista
 
 **Problema.** En `Fp64`, las rutas que no deben consumir el generador aleatorio
