@@ -696,7 +696,9 @@ constexpr const char* fp_init =
     "Fp(p, *, backend='auto'): F_p para un primo p. ValueError si p no es primo. backend='auto' usa "
     "aritmética de 64 bits si p < 2^62, de 128 bits (dos palabras) si p < 2^128 y GMP en otro caso; "
     "backend='gmp' fuerza GMP (mismos "
-    "resultados, solo cambia la velocidad).";
+    "resultados, solo cambia la velocidad). El repr de un cuerpo con backend='gmp' incluye "
+    "backend='gmp' cuando p < 2^128 (hasta la fase 6, solo cuando p < 2^62), para que "
+    "eval(repr(F)) dé un cuerpo igual.";
 constexpr const char* fp_n = "Grado de extensión (1).";
 constexpr const char* fq = "Cuerpo F_q = F_p[a]/(g), q = p^n. Sus elementos son índices en base p, en [0, q).";
 constexpr const char* fq_init_q =
@@ -724,7 +726,8 @@ constexpr const char* c_copia = "Los cuerpos son inmutables: devuelve el mismo o
 constexpr const char* c_backend =
     "Aritmética que usa el cuerpo: 'u64' (palabras de 64 bits, p < 2^62), 'u128' (dos palabras, "
     "2^62 <= p < 2^128; solo Fp) o 'gmp' (enteros de GMP). "
-    "Dos cuerpos con distinto backend no son iguales ni mezclan sus polinomios.";
+    "Dos cuerpos con distinto backend no son iguales ni mezclan sus polinomios; por eso el repr "
+    "añade backend='gmp' cuando el valor por defecto elegiría otro ('u64' o 'u128').";
 constexpr const char* c_fft_capacity =
     "Mayor k tal que 2^k divide a q - 1: tamaño máximo 2^k de una FFT en este cuerpo.";
 constexpr const char* c_fft_base_root =
