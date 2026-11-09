@@ -922,10 +922,30 @@ def paso_cov_cpp(op: Opciones, timeout: float = 1800) -> Paso:
         borrar(INFORME_COV)
     INFORME_COV.mkdir(parents=True)
     resumen = INFORME_COV / "resumen.txt"
+    # Fase 7: gcov se ejecuta aquí en formato de TEXTO y gcovr lee esos
+    # ficheros (--gcov-use-existing-files).  Con el formato JSON que gcovr pide
+    # por defecto, el gcov de MinGW trunca las cuentas a 32 bits (long de
+    # Windows): una línea ejecutada 3.990.095.217 veces (Fp64::acc_fma en
+    # test_fase6_newton) salía como -304.872.079 y gcovr abortaba con
+    # «execution_count must not be a negative value».  El texto conserva la
+    # cuenta completa.  -l (nombres largos: <gcda>##<fuente>.gcov) evita que
+    # una cabecera instanciada en varios tests se sobrescriba; sin -p, porque
+    # las rutas completas superan el límite de longitud de Windows.
+    dir_gcov = COV / "gcov"
+    if dir_gcov.exists():
+        borrar(dir_gcov)
+    dir_gcov.mkdir(parents=True)
+    fallos_gcov = []
+    for gcda in sorted(obj.glob("*.gcda")):
+        rg = correr([gcov, "-b", "-c", "-l", "-o", str(obj), str(gcda)], cwd=dir_gcov,
+                    env=env_ejecucion(), timeout=timeout)
+        if not rg.ok:
+            fallos_gcov.append(gcda.name)
+    if fallos_gcov:
+        UI.nota("gcov falló con: " + ", ".join(fallos_gcov))
     cmd = [sys.executable, "-m", "gcovr",
            "--root", str(RAIZ),
-           "--object-directory", str(obj),
-           "--gcov-executable", gcov,
+           "--gcov-use-existing-files",
            # Los filtros relativos se interpretan respecto al cwd (RAIZ) y
            # usan siempre «/» como separador, también en Windows.
            "--filter", "include/alcp/",
@@ -933,15 +953,11 @@ def paso_cov_cpp(op: Opciones, timeout: float = 1800) -> Paso:
            # Las cabeceras se instancian en varias unidades de traducción.
            "--merge-mode-functions", "separate",
            "--exclude-throw-branches", "--exclude-unreachable-branches",
-           # Fase 7: aun con -fprofile-update=atomic, gcov devuelve a veces
-           # cuentas negativas en bucles (error de gcov, GCC bug 68080; visto en
-           # polynomial.hpp:707).  Se avisa una vez por fichero en vez de abortar.
-           "--gcov-ignore-parse-errors", "negative_hits.warn_once_per_file",
            "--html-details", str(INFORME_COV / "index.html"),
            "--html-title", "Cobertura C++ de alcp",
            "--txt", str(resumen),
            "--print-summary",
-           str(obj)]
+           str(dir_gcov)]
     r = correr(cmd, env=env_ejecucion(), timeout=timeout)
     UI.linea("OK" if r.ok else "FALLO", "gcovr", r.segundos)
     if r.ok and resumen.exists():

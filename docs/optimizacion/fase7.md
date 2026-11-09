@@ -281,6 +281,29 @@ Queda como trabajo futuro.
 - `build.py all`: «TODO CORRECTO» (16 tests C++, oráculo y 837 pruebas de pytest). Los avisos
   `FPX_FACTOR`/`FQX_FACTOR` del oráculo vienen de la referencia Python y ya existían antes.
 
+## Cobertura C++
+
+`build.py cov-cpp` volvió a funcionar. Tenía dos problemas:
+
+- **El enlace del binding instrumentado.** `bindings.o` a -O0 supera el límite de secciones
+  de un objeto COFF normal, y el enlace fallaba con referencias indefinidas. Se añadió
+  `-Wa,-mbig-obj` a los flags de cobertura.
+- **Cuentas negativas en gcovr.** Por defecto, gcovr pide a gcov su salida JSON, y el gcov de
+  MinGW trunca ahí las cuentas a 32 bits (`long` de Windows). `Fp64::acc_fma` se ejecuta
+  3.990.095.217 veces en `test_fase6_newton` y aparecía como −304.872.079 (exactamente
+  2^32 menos). Ahora `build.py` ejecuta gcov en formato de texto, que conserva la cuenta
+  completa (`gcov -b -c -l` en `build/cov/gcov/`), y gcovr lee esos ficheros con
+  `--gcov-use-existing-files`. No es el error 68080 de gcov que se sospechaba.
+
+Resultado con todos los tests instrumentados y pytest pasando: **90,7 % de líneas**
+(12.205 de 13.454). Por fichero:
+
+- `polynomial.hpp`: 89 %
+- `fft.hpp`: 76 %. La convolución AVX2 no se compila a -O0.
+- `fp64.hpp`: 97 %
+- `fpn.hpp`, `fq_tab.hpp` y `fq_swar.hpp`: 99 %
+- `bindings.cpp`: 98 %
+
 ## Observaciones de la revisión no resueltas
 
 - `FqTab` reutiliza `kFrobPresupuesto` y `kParKaratsubaMin` de `Fp64` sin calibrar.
@@ -294,9 +317,3 @@ Queda como trabajo futuro.
 
 - Recalibrar Newton con 2^16 < p < 2^32 sin NTT (p. ej. 2^31 − 1).
 - Acercarse a FLINT en `gcd` con F_998244353 y en `factor`/`irred` con p = 101.
-- Informe de cobertura C++. `build.py cov-cpp` ya compila todo (se añadió `-Wa,-mbig-obj`
-  a los flags de cobertura: sin él, `bindings.o` a -O0 no enlazaba) y **todos los tests
-  instrumentados y pytest pasan**. Pero gcovr 8.7 aborta porque gcov da cuentas negativas en
-  los tests largos (`test_fase6_newton`, `test_fase7_fq`; por ejemplo `fp64.hpp:228` y
-  `field.hpp:116`), y `--gcov-ignore-parse-errors` no lo evita. Hay que averiguar si son
-  contadores desbordados o el error 68080 de gcov.
