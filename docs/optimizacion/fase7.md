@@ -220,6 +220,31 @@ Suite intercalada frente a la versión anterior: **1,011x** global, **checksums 
 `fp.ntt.pow_mod.d128_k5` va **2,24x** más rápido (con 112 el `Reducer` ya usa Newton en
 grado 128); el resto queda en ±5 % (`bench/results/fase7/newton-recalibrado.md`).
 
+**Umbral del half-GCD en `gcd`.** Con el Euclides clásico 1,4-1,6x más rápido (resto
+fusionado), el cruce sube. Se barrió `ALCP_HGCD_UMBRAL` con F_998244353, F_65537 y F_101
+(`bench/results/fase7/calibra_hgcd.txt`):
+
+- Con NTT, el half-GCD pierde a 1280 y 1536 (0,81-0,90x) y gana desde 2048 (1,13-1,17x). El
+  umbral de `gcd` pasa de 960 a **1792**.
+- En F_101 (sin NTT) sigue ganando desde 768 y no se cambia.
+- `gcd_ext` no se tocó: su cruce (256) está muy por debajo.
+
+## Perfil de `factor` con p = 101 (por qué sigue detrás de FLINT)
+
+`factor()` de grado 100 en F_101: la DDF de Kaltofen–Shoup se lleva el **97 %** del tiempo.
+El resto suma un 3 %: radical, EDF y multiplicidades (programa en el scratchpad de la sesión,
+no versionado). En la DDF, un producto modular de grado 100 cuesta unos 10 µs: 3 µs del
+producto (Kronecker) y 7 µs de la reducción. Cada paso de Frobenius (x^q, q = 101) son 9
+productos, unos 93 µs, y una composición de Brent–Kung unos 120 µs.
+
+Para acercarse a FLINT habría que cambiar el algoritmo, no los umbrales. Por ejemplo:
+
+- la matriz de Frobenius (Berlekamp), que aplica a ↦ a^q mod g con n² operaciones (unos
+  7 µs), aunque cuesta n productos modulares construirla;
+- agrupar los MCD de la DDF.
+
+Queda como trabajo futuro.
+
 ## Pruebas
 
 - `tests/test_fase7_*.cpp` (hgcd, NTT, FpN2 con 3558 comprobaciones, FqTab/FqSwar) y las

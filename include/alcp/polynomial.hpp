@@ -2186,6 +2186,11 @@ private:
     //     Desde la propuesta 3d, los valores «con NTT» se usan aunque la caché
     //     esté vacía (gcd_ext en frío sigue yendo al clásico; ver gcd_ext).
     //     Fase 5: 2048 / 1024, 4096 / 2048 y 8192 / 4096 según p.
+    //     Fase 7, tras el resto fusionado de euclides::resto (el clásico es
+    //     1,4-1,6x más rápido con p < 2^31): con NTT, gcd pierde a 1280 y 1536
+    //     (0,81-0,90x) y gana desde 2048 (1,13-1,17x): 1792
+    //     (bench/results/fase7/calibra_hgcd.txt).  Con p < 2^16 sin NTT (F_101)
+    //     sigue ganando desde 768 (1,06x; 1,10x a 1000): no cambia.
     //   * Fp con GMP: 384 / 128.   * F_q: 384 / 192.   * FpN2 (fase 7): 4096 / 768.
     static std::size_t umbral_hgcd(const Field& K, bool ext) {
 #ifdef ALCP_HGCD_UMBRAL
@@ -2193,7 +2198,7 @@ private:
         return ALCP_HGCD_UMBRAL;  // solo para calibrar (bench/calibra_hgcd.cpp)
 #endif
         if constexpr (fft::NativeWordField<Field>) {
-            if (hgcd_con_ntt(K)) return ext ? 256 : 960;
+            if (hgcd_con_ntt(K)) return ext ? 256 : 1792;  // fase 7: gcd 960 -> 1792 (resto fusionado)
             const std::size_t bits = mpz_sizeinbase(K.characteristic().get_mpz_t(), 2);
             if (bits <= 16) return ext ? 256 : 768;
             if (bits <= 32) return ext ? 1024 : 4096;
