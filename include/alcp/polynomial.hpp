@@ -36,6 +36,7 @@
 #include "fft.hpp"
 #include "field.hpp"
 #include "fp64.hpp"  // acumulador de 64 bits de Poly<Fp64> (fase 6)
+#include "fpn.hpp"   // umbrales de Poly<FpN2> (fase 7)
 #include "kronecker.hpp"
 
 #include <algorithm>
@@ -340,9 +341,11 @@ public:
     // 256 si el elemento es un entero GMP (F_p), 1024 si es una palabra de
     // máquina (Fp64: el producto cuesta unos nanosegundos y con 64-512
     // coeficientes crear los hilos cuesta más que el propio producto) y 64 si
-    // es un vector (F_q: cada producto de elementos ya cuesta O(n^2)).
+    // es un vector (F_q: cada producto de elementos ya cuesta O(n^2)).  Fase 7:
+    // FpN2 (dos palabras, producto de ~10 ns) se trata como una palabra.
     static constexpr std::size_t kParKaratsubaMin =
-        std::is_same_v<Elem, BigInt> ? 256 : (std::is_arithmetic_v<Elem> ? 1024 : 64);
+        std::is_same_v<Elem, BigInt> ? 256
+                                     : ((std::is_arithmetic_v<Elem> || std::is_same_v<Field, FpN2>) ? 1024 : 64);
 
     // Número máximo de intentos aleatorios de equal_degree_split antes de
     // concluir que la entrada no cumple la precondición (ver equal_degree).
@@ -480,7 +483,16 @@ public:
             if (use_fft && !old_fft && K_->fft_cache_.empty()) use_fft = false;
             // (Se construyen las tablas, que piden la raíz: así la caché deja
             // de estar vacía y los productos siguientes pueden usar la FFT.)
-            if (old_fft && !use_fft) (void)fft::tables(*K_, fft::ceil_log2(L));
+            if constexpr (std::is_same_v<Field, FpN2>) {
+                // Fase 7: FpN2 nunca prefiere la FFT, pero debe pedir la raíz
+                // EXACTAMENTE cuando la pediría Poly<Fp> con el mismo p (mismo
+                // generador que Fp): ver pide_raiz_como_fp.
+                use_fft = false;
+                if (K_->fft_cache_.empty() && pide_raiz_como_fp(*K_, small, std::max(na, nb), L, can_fft, old_fft))
+                    (void)fft::tables(*K_, fft::ceil_log2(L));
+            } else if (old_fft && !use_fft) {
+                (void)fft::tables(*K_, fft::ceil_log2(L));
+            }
             // Fase 4 (nivel B): Kronecker sobre Z cuando es más rápido.  Va después
             // de la línea anterior, así que el consumo del generador no cambia.
             if (prefer_kronecker(*K_, small, can_fft))
@@ -1937,8 +1949,17 @@ private:
     //     (bench/calibra_ntt_kronecker.cpp, entradas variadas): con 48
     //     coeficientes el escolar aún gana (5,4 frente a 6,8 µs); con 64 gana
     //     la NTT (7,1 frente a 9,6 µs).
+    //   * FpN2 (fase 7, p de 2 palabras): no tiene NTT especializada y la
+    //     genérica (mariposas con K.mul) pierde con el escolar o Karatsuba por
+    //     debajo de 128 coeficientes (64: 40 frente a 19 µs) y con Kronecker
+    //     desde 128 (que prefer_kronecker elige antes): nunca se prefiere.  La
+    //     regla «original» de mul sigue construyendo las tablas cuando toca,
+    //     así que el generador se consume igual.
     static bool prefer_fft(const Field& K, std::size_t small, std::size_t large, std::size_t L) {
-        if constexpr (fft::NativeWordField<Field>) {
+        if constexpr (std::is_same_v<Field, FpN2>) {
+            (void)K; (void)small; (void)large; (void)L;
+            return false;
+        } else if constexpr (fft::NativeWordField<Field>) {
             (void)K; (void)L;
             return small >= 128 || (small >= 64 && large <= 4 * small);
         }
@@ -1948,6 +1969,31 @@ private:
             case fft::Backend::Generic:
             default: return small >= 64 || (small >= 32 && large <= 2 * small);
         }
+    }
+
+    // Fase 7: ¿construiría Poly<Fp>::mul (regla Auto) las tablas FFT de un
+    // cuerpo F_p con la caché vacía para este producto?  Poly<FpN2> reproduce
+    // esa decisión para consumir el generador igual que Fp.  En Fp:
+    //   * use_fft = can_fft && prefer_fft con el backend de Fp (Word si
+    //     p < 2^62, Limb si no), anulado con la caché vacía si !old_fft;
+    //   * si old_fft && !use_fft, se piden las tablas sin usarlas;
+    //   * si use_fft, la FFT se usa (y pide las tablas) salvo que gane
+    //     Kronecker, que en Fp (elementos BigInt) es siempre con small >= 32.
+    // (Medido: sin esto, un producto 40x40 en frío en F_998244353 pedía la
+    // raíz con FpN2 y no con Fp.)
+    static bool pide_raiz_como_fp(const Field& K, std::size_t small, std::size_t large, std::size_t L, bool can_fft,
+                                  bool old_fft) {
+        (void)large;
+        bool use = false;
+        if (can_fft) {
+            if (mpz_sizeinbase(K.characteristic().get_mpz_t(), 2) <= fft::word::kMaxBits)
+                use = L >= 4;                                   // Backend::Word
+            else
+                use = small >= 16 || (small >= 8 && L <= 128);  // Backend::Limb (p impar)
+        }
+        if (use && !old_fft) use = false;  // la caché está vacía
+        if (old_fft && !use) return true;
+        return use && small < 32;
     }
 
     // ---- Frobenius (fase 4, nivel B) ----------------------------------------
@@ -2050,7 +2096,7 @@ private:
     //     Sin tablas FFT en la caché se usan los valores «sin NTT» aunque el
     //     cuerpo admita NTT (gcd_ext, además, va al clásico; ver gcd_ext).
     //     Fase 5: 2048 / 1024, 4096 / 2048 y 8192 / 4096 según p.
-    //   * Fp con GMP: 384 / 128.   * F_q: 384 / 192.
+    //   * Fp con GMP: 384 / 128.   * F_q: 384 / 192.   * FpN2 (fase 7): 4096 / 768.
     static std::size_t umbral_hgcd(const Field& K, bool ext) {
 #ifdef ALCP_HGCD_UMBRAL
         (void)K; (void)ext;
@@ -2065,6 +2111,12 @@ private:
         } else if constexpr (std::is_same_v<Elem, BigInt>) {
             (void)K;
             return ext ? 128 : 384;
+        } else if constexpr (std::is_same_v<Field, FpN2>) {
+            // Fase 7 (F_(2^127-1), con carga, half-GCD forzado frente al
+            // clásico): gcd no gana hasta 2048 (44,9 frente a 48,8 ms);
+            // gcd_ext gana desde 768 (19,8 frente a 15,9 ms; 2048: 2,0x).
+            (void)K;
+            return ext ? 768 : 4096;
         } else {
             (void)K;
             return ext ? 192 : 384;
@@ -2361,9 +2413,15 @@ private:
     //     coeficientes (1024: 154 frente a 292 µs; 2048: 336 frente a 976 µs;
     //     bench/calibra_ntt_kronecker.cpp).  Antes ganaba entre 128 y 1024
     //     porque cada mariposa costaba 14 ns por fallos de predicción.
+    //   * FpN2 (fase 7): desde 128 coeficientes, con o sin NTT (huecos de
+    //     ~2·128 bits; F_(2^127-1), con carga: 128: 63 frente a 79 µs de
+    //     Karatsuba; 512: 387 frente a 719; 1024: 880 frente a 2230).
     static bool prefer_kronecker(const Field& K, std::size_t small, bool can_fft) {
         if (small < 32) return false;
-        if constexpr (ks::Extension<Field>) {
+        if constexpr (std::is_same_v<Field, FpN2>) {
+            (void)K; (void)can_fft;
+            return small >= 128;
+        } else if constexpr (ks::Extension<Field>) {
             (void)K; (void)can_fft;
             return true;
         } else if constexpr (std::is_same_v<Elem, BigInt>) {
@@ -2397,7 +2455,7 @@ private:
     //     Fase 5: con p < 2^32 y NTT para el tamaño (mariposas perezosas),
     //     128 / 512 (F_998244353: 1,22x amortizado a 128, 1,34x aislada a 512;
     //     bench/results/fase5/calibra_newton.txt).
-    //   * Fp (GMP): 96 / 256.
+    //   * Fp (GMP): 96 / 256.   * FpN2 (fase 7): 384 / 1024.
     //   * F_q de grado e: con p < 2^32, max(32, 192/e) / max(64, 1024/e)
     //     (F_9: 96 / 512; F_256: 32 / 128; F_(3^30): 32 / 64); con p mayor
     //     (F_((2^61-1)^2)): 384 / 1024.
@@ -2414,6 +2472,11 @@ private:
             else umbral = amortizado ? 768 : 1536;
         } else if constexpr (std::is_same_v<Elem, BigInt>) {
             umbral = amortizado ? 96 : 256;
+        } else if constexpr (std::is_same_v<Field, FpN2>) {
+            // Fase 7 (F_(2^127-1), con carga, productos de Kronecker):
+            // amortizada gana desde ~384 (512: 0,57 frente a 0,81 ms de la
+            // escolar); aislada desde 1024 (2,7 frente a 3,2 ms).
+            umbral = amortizado ? 384 : 1024;
         } else if constexpr (requires { K.extension_degree(); }) {
             const std::size_t e = std::max<std::size_t>(1, K.extension_degree());
             if (bits <= 32) umbral = amortizado ? std::max<std::size_t>(32, 192 / e) : std::max<std::size_t>(64, 1024 / e);

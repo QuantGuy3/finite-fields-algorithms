@@ -24,6 +24,7 @@
 #include "bigint.hpp"
 #include "field.hpp"
 #include "fp64.hpp"
+#include "fpn.hpp"
 
 #include <algorithm>
 #include <bit>
@@ -126,11 +127,16 @@ inline Limbs como_limbs(const BigInt& x) {
     return {mpz_limbs_read(x.get_mpz_t()), static_cast<std::size_t>(mpz_size(x.get_mpz_t())), 0};
 }
 inline Limbs como_limbs(std::uint64_t x) { return {nullptr, x ? 1u : 0u, x}; }
+// Fase 7: elemento de FpN2 (dos palabras contiguas, la baja primero).
+inline Limbs como_limbs(const alcp::detail::Palabras2& x) {
+    return {reinterpret_cast<const limb*>(x.w), x.w[1] ? 2u : (x.w[0] ? 1u : 0u), 0};
+}
 
 }  // namespace detail
 
 // Producto de a[0..na) y b[0..nb) (na, nb >= 1) en el cuerpo PRIMO K, cuyos
-// elementos son BigInt (Fp) o palabras canónicas (Fp64).
+// elementos son BigInt (Fp), palabras canónicas (Fp64) o pares de palabras
+// (FpN2, fase 7).
 template <class Field>
 std::vector<typename Field::Elem> mul_primo(const Field& K, const typename Field::Elem* a, std::size_t na,
                                             const typename Field::Elem* b, std::size_t nb) {
@@ -207,6 +213,14 @@ std::vector<typename Field::Elem> mul_primo(const Field& K, const typename Field
             std::size_t n = nw;
             while (n > 1 && t[n - 1] == 0) --n;
             r[k] = static_cast<std::uint64_t>(mpn_mod_1(t.data(), static_cast<mp_size_t>(n), pl));
+        }
+        return r;
+    } else if constexpr (requires { K.reduce_limbs(t.data(), nw); }) {
+        // Fase 7 (FpN2): cada hueco se reduce con el acumulador de 5 palabras
+        // del cuerpo (doble REDC), sin pasar por un mpz.  Mismo resto exacto.
+        for (std::size_t k = 0; k < L; ++k) {
+            detail::leer(C.data(), C.size(), k * bits, bits, t.data(), nw);
+            r[k] = K.reduce_limbs(t.data(), nw);
         }
         return r;
     } else {
