@@ -508,6 +508,10 @@ public:
             case MulAlgo::FFT: {
                 if (fft::fft_exponent(*K_, na + nb - 1) < 0)
                     return mul_karatsuba(o);  // field cannot host this size
+                // Fase 7 (revisión de FpN2): convolve de Fp y Fp64 pide siempre
+                // las tablas (y la raíz, con el generador), también con
+                // longitud 1; el camino genérico de FpN2 no lo hacía con n <= 1.
+                if constexpr (std::is_same_v<Field, FpN2>) (void)fft::tables(*K_, fft::ceil_log2(na + nb - 1));
                 return Poly(*K_, fft::convolve(*K_, c_, o.c_));
             }
             case MulAlgo::Karatsuba: return mul_karatsuba(o);
