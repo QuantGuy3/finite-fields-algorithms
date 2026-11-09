@@ -302,7 +302,11 @@ def cmd_build(a: argparse.Namespace) -> int:
     out_dir.mkdir(parents=True, exist_ok=True)
     exe = out_dir / EXE_NAME
     ldflags = a.ldflags if a.ldflags is not None else default_ldflags()
-    cmd = [a.cxx, "-std=c++23", "-Wall", "-Wextra", *_split_flags(a.cxxflags), f"-I{include}",
+    # Fase 7: en Windows (COFF) la suite supera el límite de secciones de un
+    # objeto normal y el enlace falla con referencias indefinidas; «big obj» lo
+    # evita.  No cambia el código generado.  (En ELF el ensamblador no lo acepta.)
+    big_obj = ["-Wa,-mbig-obj"] if sys.platform == "win32" else []
+    cmd = [a.cxx, "-std=c++23", "-Wall", "-Wextra", *big_obj, *_split_flags(a.cxxflags), f"-I{include}",
            str(SUITE_SRC), *_split_flags(ldflags), "-o", str(exe)]
     print("$ " + " ".join(shlex.quote(c) for c in cmd), flush=True)
     t0 = time.perf_counter()

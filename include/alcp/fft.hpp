@@ -803,19 +803,26 @@ inline unsigned long ceil_log2(std::size_t n) {
 // Precondición comprobada (std::invalid_argument): k <= K.fft_capacity() y
 // 2^k representable en std::size_t.  Solo se comprueba al construir una tabla
 // nueva: las que ya están en la caché se validaron al insertarlas.
-template <class Field>
-const FFTTables<typename Field::Elem>& tables(const Field& K, unsigned long k) {
-    using Elem = typename Field::Elem;
-    // Acceso directo por índice: la caché es un vector indexado por k.
-    if (k < K.fft_cache_.size() && K.fft_cache_[k]) return *K.fft_cache_[k];
+namespace detail {
 
+// Comprueba la precondición de tables()/tablas_sin_rng() (ver arriba).
+template <class Field>
+void valida_k(const Field& K, unsigned long k) {
     if (k >= static_cast<unsigned long>(std::numeric_limits<std::size_t>::digits) - 1)
-        throw std::invalid_argument("fft::tables: k = " + std::to_string(k) + " demasiado grande");
+        throw std::invalid_argument("fft::tables/tablas_sin_rng: k = " + std::to_string(k) + " demasiado grande");
     if (k > K.fft_capacity())
-        throw std::invalid_argument("fft::tables: el cuerpo no tiene raíces de la unidad de orden 2^" +
+        throw std::invalid_argument("fft::tables/tablas_sin_rng: el cuerpo no tiene raíces de la unidad de orden 2^" +
                                     std::to_string(k) + " (capacidad FFT " +
                                     std::to_string(K.fft_capacity()) + ")");
+}
 
+// Construye las tablas de tamaño n = 2^k a partir de una raíz base de orden
+// 2^capacidad (base).  Es el cuerpo de tables() de siempre, con la raíz como
+// parámetro para poder usar también la raíz determinista (tablas_sin_rng).
+template <class Field>
+std::shared_ptr<const FFTTables<typename Field::Elem>> construye_tablas(const Field& K, unsigned long k,
+                                                                         const typename Field::Elem& base) {
+    using Elem = typename Field::Elem;
     auto t = std::make_shared<FFTTables<Elem>>();
     t->k = k;
     const std::size_t n = std::size_t(1) << k;
@@ -824,7 +831,7 @@ const FFTTables<typename Field::Elem>& tables(const Field& K, unsigned long k) {
     // Primitive n-th root of unity: base_root has order 2^capacity, so raising
     // it to 2^(capacity - k) yields an element of order exactly n.
     unsigned long cap = K.fft_capacity();
-    Elem g = K.pow(K.fft_base_root(), BigInt(1) << (cap - k));
+    Elem g = K.pow(base, BigInt(1) << (cap - k));
     Elem g_inv = K.inv(g);
 
     t->fwd.resize(half);
@@ -871,10 +878,75 @@ const FFTTables<typename Field::Elem>& tables(const Field& K, unsigned long k) {
     } else if constexpr (NativeWordField<Field>) {
         word::build_tables(*t, K.modulus64());
     }
+    return t;
+}
 
+}  // namespace detail
+
+template <class Field>
+const FFTTables<typename Field::Elem>& tables(const Field& K, unsigned long k) {
+    // Acceso directo por índice: la caché es un vector indexado por k.
+    if (k < K.fft_cache_.size() && K.fft_cache_[k]) return *K.fft_cache_[k];
+    detail::valida_k(K, k);
+    // fft_base_root() saca la raíz del generador aleatorio la primera vez.
+    auto t = detail::construye_tablas(K, k, K.fft_base_root());
     if (K.fft_cache_.size() <= k) K.fft_cache_.resize(k + 1);
     K.fft_cache_[k] = t;
     return *t;
+}
+
+// ---------------------------------------------------------------------------
+// Tablas sin el generador aleatorio (fase 7, propuesta 3d; solo Fp64)
+// ---------------------------------------------------------------------------
+// Las rutas que no deben consumir el generador (mul_no_rng, Newton, Reducer,
+// Composer, half-GCD) solo podían usar la NTT si la caché ya tenía tablas, es
+// decir, si la raíz base ya se había sacado del generador.  Desde Python, cada
+// cuerpo nace con la caché vacía y esas rutas iban por Kronecker o Karatsuba.
+//
+// El producto calculado con la NTT no depende de la raíz primitiva elegida
+// (es la convolución exacta módulo p), así que esas rutas pueden usar tablas
+// construidas con una raíz DETERMINISTA, guardadas en una caché aparte
+// (fft_cache_det_).  fft_base_root(), tables() y fft_cache_ no cambian: el
+// generador se consume exactamente igual que antes.
+//
+// Raíz determinista: el primer a = 2, 3, ... tal que c = a^((p-1)/2^cap)
+// cumple c^(2^(cap-1)) != 1.  Termina: c tiene orden 2^cap exactamente si y
+// solo si a no es un resto cuadrático (a^((p-1)/2) = c^(2^(cap-1)) = -1), y
+// hay no restos en [2, p-1] porque p es un primo impar.
+//
+// Cuidado: una transformada solo se puede combinar con otra hecha con las
+// MISMAS tablas.  tablas_sin_rng() devuelve las de fft_cache_ si ya existen y
+// las deterministas si no, y la caché puede llenarse entre dos llamadas (p. ej.
+// un Reducer que vive durante un factor()).  Por eso medio::Fija guarda el
+// puntero a las tablas con las que se transformó, y las rutas que no guardan
+// transformadas piden las tablas una sola vez por operación.
+template <class Field>
+    requires NativeWordField<Field>
+typename Field::Elem raiz_det(const Field& K) {
+    const unsigned long cap = K.fft_capacity();
+    if (cap == 0) throw std::invalid_argument("fft::raiz_det: el cuerpo no admite NTT (capacidad FFT 0)");
+    const BigInt pm1 = K.characteristic() - 1;
+    const BigInt cofactor = pm1 >> cap;
+    const BigInt half = BigInt(1) << (cap - 1);  // cap >= 1 (comprobado arriba)
+    for (unsigned long a = 2;; ++a) {
+        const auto c = K.pow(K.from_int(BigInt(a)), cofactor);
+        if (K.pow(c, half) != K.one()) return c;
+    }
+}
+
+template <class Field>
+    requires NativeWordField<Field>
+std::shared_ptr<const FFTTables<typename Field::Elem>> tablas_sin_rng(const Field& K, unsigned long k) {
+    if (!K.fft_cache_.empty()) {
+        (void)tables(K, k);  // la caché no está vacía: la raíz ya existe, no consume el generador
+        return K.fft_cache_[k];
+    }
+    if (k < K.fft_cache_det_.size() && K.fft_cache_det_[k]) return K.fft_cache_det_[k];
+    detail::valida_k(K, k);
+    auto t = detail::construye_tablas(K, k, raiz_det(K));
+    if (K.fft_cache_det_.size() <= k) K.fft_cache_det_.resize(k + 1);
+    K.fft_cache_det_[k] = t;
+    return t;
 }
 
 namespace detail {

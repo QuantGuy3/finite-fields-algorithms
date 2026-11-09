@@ -1,0 +1,198 @@
+{
+ "maquina": {
+  "cpu": "AMD Ryzen 7 7730U with Radeon Graphics",
+  "logical_cpus": 16,
+  "physical_cores": 8,
+  "os": "Windows-11-10.0.26300-SP0",
+  "machine": "AMD64",
+  "python": "3.15.1",
+  "python_executable": "~\\Documents\\Archivos\\Proyectos\\finite-fields-algorithms\\.venv\\Scripts\\python.exe",
+  "power_plan": "Power Scheme GUID: 381b4222-f694-41f0-9685-ff5bb260df2e  (Balanced)",
+  "power": {
+   "ac_online": false,
+   "battery_percent": 93,
+   "battery_saver": false,
+   "no_battery": false
+  },
+  "date": "2026-11-09T15:00:38+01:00"
+ },
+ "versiones": {
+  "alcp_native": "rama local",
+  "flint": "0.9.0"
+ },
+ "parametros": {
+  "reps": 5,
+  "min_time": 0.5,
+  "timeout": 180
+ },
+ "escenarios": [
+  {
+   "escenario": "fp30.mul.d100",
+   "grupo": "F_998244353",
+   "descripcion": "producto de dos polinomios de grado 100",
+   "coinciden": true,
+   "resultados": {
+    "alcp_native": {
+     "estado": "ok",
+     "min_s": 3.2999087125062943e-06,
+     "mediana_s": 3.500026650726795e-06,
+     "reps": 500,
+     "preparacion_s": 0.08283079997636378,
+     "checksum": "b114213b41a4315b"
+    },
+    "flint": {
+     "estado": "ok",
+     "min_s": 8.79995059221983e-06,
+     "mediana_s": 8.900067768990993e-06,
+     "reps": 500,
+     "preparacion_s": 0.23454610002227128,
+     "checksum": "b114213b41a4315b"
+    }
+   }
+  },
+  {
+   "escenario": "fp30.mul.d1000",
+   "grupo": "F_998244353",
+   "descripcion": "producto de dos polinomios de grado 1000",
+   "coinciden": true,
+   "resultados": {
+    "alcp_native": {
+     "estado": "ok",
+     "min_s": 2.129992935806513e-05,
+     "mediana_s": 2.159993164241314e-05,
+     "reps": 500,
+     "preparacion_s": 0.07758699997793883,
+     "checksum": "9ac84640941f412d"
+    },
+    "flint": {
+     "estado": "ok",
+     "min_s": 0.00016689999029040337,
+     "mediana_s": 0.0001677999971434474,
+     "reps": 500,
+     "preparacion_s": 0.11678269994445145,
+     "checksum": "9ac84640941f412d"
+    }
+   }
+  },
+  {
+   "escenario": "fp30.mul.d10000",
+   "grupo": "F_998244353",
+   "descripcion": "producto de dos polinomios de grado 10000",
+   "coinciden": true,
+   "resultados": {
+    "alcp_native": {
+     "estado": "ok",
+     "min_s": 0.0006016999250277877,
+     "mediana_s": 0.0007720499415881932,
+     "reps": 500,
+     "preparacion_s": 0.06983370007947087,
+     "checksum": "c15ad70226e92353"
+    },
+    "flint": {
+     "estado": "ok",
+     "min_s": 0.004063399974256754,
+     "mediana_s": 0.004298500018194318,
+     "reps": 106,
+     "preparacion_s": 0.1271195999579504,
+     "checksum": "c15ad70226e92353"
+    }
+   }
+  },
+  {
+   "escenario": "fp30.divmod.d4000",
+   "grupo": "F_998244353",
+   "descripcion": "división con resto de grado 4000 entre grado 2000",
+   "coinciden": true,
+   "resultados": {
+    "alcp_native": {
+     "estado": "ok",
+     "min_s": 0.0009459999855607748,
+     "mediana_s": 0.0009595000883564353,
+     "reps": 475,
+     "preparacion_s": 0.07171069993637502,
+     "checksum": "56f1631511a58669"
+    },
+    "flint": {
+     "estado": "ok",
+     "min_s": 0.0016430000541731715,
+     "mediana_s": 0.0016728000482544303,
+     "reps": 267,
+     "preparacion_s": 0.11330510000698268,
+     "checksum": "56f1631511a58669"
+    }
+   }
+  },
+  {
+   "escenario": "fp30.gcd.d1000",
+   "grupo": "F_998244353",
+   "descripcion": "mcd de dos polinomios de grado 1000",
+   "coinciden": true,
+   "resultados": {
+    "alcp_native": {
+     "estado": "ok",
+     "min_s": 0.002755899913609028,
+     "mediana_s": 0.002921900013461709,
+     "reps": 158,
+     "preparacion_s": 0.07118660002015531,
+     "checksum": "080a9ed428559ef6"
+    },
+    "flint": {
+     "estado": "ok",
+     "min_s": 0.0014536000089719892,
+     "mediana_s": 0.0015218999469652772,
+     "reps": 294,
+     "preparacion_s": 0.12024239997845143,
+     "checksum": "080a9ed428559ef6"
+    }
+   }
+  },
+  {
+   "escenario": "fp30.irred.d400",
+   "grupo": "F_998244353",
+   "descripcion": "test de irreducibilidad de un polinomio IRREDUCIBLE de grado 400",
+   "coinciden": true,
+   "resultados": {
+    "alcp_native": {
+     "estado": "ok",
+     "min_s": 0.24534749996382743,
+     "mediana_s": 0.25749689992517233,
+     "reps": 5,
+     "preparacion_s": 8.600007276982069e-05,
+     "checksum": "3cbc87c7681f34db"
+    },
+    "flint": {
+     "estado": "ok",
+     "min_s": 0.5623787000076845,
+     "mediana_s": 0.582993199932389,
+     "reps": 5,
+     "preparacion_s": 0.17174600006546825,
+     "checksum": "3cbc87c7681f34db"
+    }
+   }
+  },
+  {
+   "escenario": "fp30.factor.d300",
+   "grupo": "F_998244353",
+   "descripcion": "factor() de un polinomio mónico aleatorio de grado 300",
+   "coinciden": true,
+   "resultados": {
+    "alcp_native": {
+     "estado": "ok",
+     "min_s": 0.05680189991835505,
+     "mediana_s": 0.057808700017631054,
+     "reps": 9,
+     "preparacion_s": 0.07182740001007915,
+     "checksum": "2a631a3edb0cf14d"
+    },
+    "flint": {
+     "estado": "ok",
+     "min_s": 0.060103700030595064,
+     "mediana_s": 0.06174010003451258,
+     "reps": 9,
+     "preparacion_s": 0.11824750003870577,
+     "checksum": "2a631a3edb0cf14d"
+    }
+   }
+  }
+ ]
+}
