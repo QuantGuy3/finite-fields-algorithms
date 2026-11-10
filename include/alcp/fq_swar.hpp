@@ -11,7 +11,8 @@
 //     bits (y sus cuatro desplazamientos de 0..3 huecos); cada a_i·B suma una
 //     fila entera de la convolución con ceil(n/4) + 1 productos de palabra en
 //     lugar de n (F_(3^30): 9 en vez de 30).  La reducción módulo g es igual
-//     (-g empaquetado y desplazado), y módulo p se reduce una vez por hueco;
+//     (fase 8: con la tabla empaquetada de t^k mod g, k = n..2n-2), y módulo p
+//     se reduce una vez por hueco;
 //   * Acc de tamaño fijo (std::array): sin memoria dinámica por coeficiente,
 //     con un contador que normaliza los huecos módulo p antes de que puedan
 //     desbordar (nunca con las cotas de factor() en F_(3^30));
@@ -21,6 +22,11 @@
 //   * productos de Kronecker (kronecker.hpp, mul_extension): cada hueco del
 //     producto de enteros se lee con una máscara y el bloque de 2n-1 huecos se
 //     reduce con la reducción escalar de 64 bits (gancho reducir_huecos).
+//     Fase 8: el producto de los huecos se hace con la NTT módulo 998244353
+//     (mul_extension_ntt) o con huecos de 16 bits alineados que ya son el
+//     acumulador de este cuerpo (mul_extension16), y cada bloque se reduce con
+//     reducir_carriles / reducir_bloque16 (F_(3^30), grado 200: de 1,6 a
+//     0,7 ms, con carga).
 //
 // MISMO CUERPO Y MISMOS ELEMENTOS QUE Fq64: FqSwar deriva de Fq64 (Elem =
 // std::vector<uint64_t> con los coeficientes en [0, p)), hereda constructores,
@@ -39,6 +45,7 @@
 
 #include <algorithm>
 #include <array>
+#include <bit>
 #include <cstddef>
 #include <cstdint>
 #include <stdexcept>
@@ -167,28 +174,43 @@ public:
     }
     Elem acc_reduce(Acc& s) const { return reducir16(s.w.data()); }
 
-    // --- gancho de kronecker.hpp ---------------------------------------------
-    // Reduce módulo g y módulo p un bloque de 2n-1 huecos de 64 bits (cada uno
-    // < 2^62); consume s.
-    Elem reducir_huecos(u64* s) const {
-        const std::size_t e = e_;
-        for (std::size_t k = 2 * e - 1; k-- > e;) {
-            const u64 c = red_(s[k]);
-            u64* __restrict d = s + (k - e);
-            for (std::size_t t = 0; t < e; ++t) d[t] += c * ng_[t];
-        }
-        Elem r(e);
-        for (std::size_t i = 0; i < e; ++i) r[i] = red_(s[i]);
-        return r;
+    // --- ganchos de kronecker.hpp, fase 8 -------------------------------------
+    // Producto de Kronecker con m = min(na, nb)·n términos por hueco: ¿cabe
+    // cada hueco en 16 bits, incluidos los (n-1)·(p-1)^2 que le suma la
+    // reducción módulo g (reducir16)?  Entonces vale mul_extension16.
+    // F_(3^30): hasta m = 16354 (544 coeficientes); F_(5^10): hasta 4086.
+    bool kronecker16(std::size_t m) const { return m <= m16_; }
+    // Palabras de un bloque de 2n-1 huecos de 16 bits.
+    std::size_t palabras_bloque16() const { return ns_ - 1; }
+    // Reduce módulo g y módulo p un bloque de 2n-1 huecos de 16 bits (lee las
+    // palabras 0..palabras_bloque16()-1 y no las modifica).
+    Elem reducir_bloque16(const u64* S) const { return reducir16(S); }
+    // Reduce módulo p y módulo g un bloque de 2n-1 coeficientes de 64 bits
+    // (mul_extension_ntt): cada uno se reduce módulo p y se empaqueta en un
+    // hueco de 16 bits; después, reducir16 (cada hueco bajo recibe a lo sumo
+    // (n-1)·(p-1)^2 más: cabe por fits()).
+    Elem reducir_carriles(const u64* s) const {
+        std::array<u64, std::tuple_size_v<decltype(Acc::w)>> S{};
+        for (std::size_t k = 0; k < 2 * e_ - 1; ++k) S[k / 4] |= red_(s[k]) << (16 * (k % 4));
+        return reducir16(S.data());
+    }
+    // Ancho justo de un hueco con m términos: m·(p-1)^2 < 2^bits (63 si no
+    // cabe en una palabra, que el llamador trata como «demasiado ancho»).
+    std::size_t bits_justos(std::size_t m) const {
+        const u64 pm = (p_ - 1) * (p_ - 1);  // < 2^15 por fits()
+        if (m >= (std::size_t(1) << 48)) return 63;
+        return static_cast<std::size_t>(std::bit_width(static_cast<u64>(m) * pm));
     }
 
 private:
     u64 p_ = 2;
     std::size_t e_ = 1, nb_ = 1, ns_ = 1;
     u64 lim16_ = 1;
+    std::size_t m16_ = 0;  // máximo m de kronecker16
     detail::Barrett64 red_;
     std::array<u64, kMaxE + 1> ng_{}, g_{};          // -g_t y g_t en [0, p)
-    std::array<std::array<u64, kNB + 1>, 4> ngsh_{};  // -g empaquetado, desplazado 0..3 huecos
+    // Fase 8: t^k mod g para k = n..2n-2, empaquetado (nb_ palabras por fila).
+    std::vector<u64> rt_;
 
     void construir() {
         e_ = extension_degree();
@@ -208,9 +230,18 @@ private:
         // más lim16_ convoluciones (<= n·pm cada una) más la reducción módulo g
         // ((n-1)·pm) no llega a 2^16.  Con p = 2 y pm = 1 la cota es grande.
         lim16_ = pm == 0 ? ~u64(0) : ((u64(1) << 16) - 1 - e_ * pm - p_) / (e_ * pm);
-        std::array<u64, kNB + 1> base_w{};
-        for (std::size_t t = 0; t < e_; ++t) base_w[t / 4] |= ng_[t] << (16 * (t % 4));
-        desplazar(base_w.data(), ngsh_);
+        // Fase 8: m·pm + (n-1)·pm <= 2^16 - 1 (pm >= 1 porque p >= 2).
+        m16_ = static_cast<std::size_t>(((u64(1) << 16) - 1 - (e_ - 1) * pm) / pm);
+        // t^n mod g = -g (sin el término principal); t^(k+1) = t·t^k mod g.
+        rt_.assign((e_ - 1) * nb_, 0);
+        std::array<u64, kMaxE> cur{};
+        for (std::size_t t = 0; t < e_; ++t) cur[t] = ng_[t];
+        for (std::size_t k = 0; k + 1 < e_; ++k) {
+            for (std::size_t t = 0; t < e_; ++t) rt_[k * nb_ + t / 4] |= cur[t] << (16 * (t % 4));
+            const u64 top = cur[e_ - 1];
+            for (std::size_t t = e_ - 1; t > 0; --t) cur[t] = red_(cur[t - 1] + top * ng_[t]);
+            cur[0] = red_(top * ng_[0]);
+        }
     }
 
     static u64 hueco(const u64* S, std::size_t k) { return (S[k / 4] >> (16 * (k % 4))) & 0xFFFF; }
@@ -239,19 +270,27 @@ private:
             for (std::size_t w = 0; w <= nb; ++w) D[w] += ai * Bp[w];
         }
     }
-    // Reduce la convolución S (2n-1 huecos) módulo g y módulo p; consume S.
-    Elem reducir16(u64* S) const {
+    // Reduce la convolución S (2n-1 huecos) módulo g y módulo p; no modifica S.
+    // Fase 8: con la tabla rt_ de t^k mod g (k = n..2n-2), el resultado es
+    // S_bajo + Σ_k (S_k mod p)·(t^k mod g).  Antes se reducía en cascada
+    // (cada hueco alto restaba c·g desplazado y el siguiente hueco dependía
+    // del anterior): la cadena de dependencias Barrett -> productos -> hueco
+    // siguiente limitaba la velocidad.  Ahora los n-1 coeficientes altos son
+    // independientes.  Cada hueco bajo recibe a lo sumo (n-1)·(p-1)^2, la
+    // misma cota que en cascada, así que valen lim16_ y m16_.  Mismo elemento
+    // (el resto módulo g es único).
+    Elem reducir16(const u64* S) const {
         const std::size_t e = e_, nb = nb_;
-        for (std::size_t k = 2 * e - 1; k-- > e;) {
+        std::array<u64, kNB> R;
+        for (std::size_t w = 0; w < nb; ++w) R[w] = S[w];
+        if (e % 4) R[nb - 1] &= (u64(1) << (16 * (e % 4))) - 1;  // fuera los huecos altos
+        const u64* __restrict T = rt_.data();
+        for (std::size_t k = e; k < 2 * e - 1; ++k, T += nb) {
             const u64 c = red_(hueco(S, k));
-            if (c == 0) continue;
-            const std::size_t base = k - e;
-            const u64* __restrict G = ngsh_[base & 3].data();
-            u64* __restrict D = S + (base >> 2);
-            for (std::size_t w = 0; w <= nb; ++w) D[w] += c * G[w];
+            for (std::size_t w = 0; w < nb; ++w) R[w] += c * T[w];
         }
         Elem r(e);
-        for (std::size_t i = 0; i < e; ++i) r[i] = red_(hueco(S, i));
+        for (std::size_t i = 0; i < e; ++i) r[i] = red_(hueco(R.data(), i));
         return r;
     }
 };
