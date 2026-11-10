@@ -1,6 +1,7 @@
 // alcp/alcp.hpp — umbrella header for the whole library.
 #pragma once
 
+#include "version.hpp"
 #include "errors.hpp"
 #include "bigint.hpp"
 #include "field.hpp"

@@ -46,7 +46,7 @@ from .field import (GF, ExtensionField, ExtensionFieldElement, FieldElement, Fin
                     PrimeField, PrimeFieldElement)
 from .poly import Factorization, Polynomial, PolynomialRing
 
-__version__ = "0.2.0"
+__version__ = "1.0.0"
 
 __all__ = [
     # cuerpos y elementos

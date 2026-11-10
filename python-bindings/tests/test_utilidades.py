@@ -19,6 +19,8 @@ class Indice:
 
 def test_api_publica():
     assert alcp.__version__ and isinstance(alcp.__version__, str)
+    # La versión del paquete es la del núcleo C++ (alcp/version.hpp) que expone el módulo nativo.
+    assert alcp.__version__ == alcp.alcp_native.__version__
     for nombre in alcp.__all__:
         assert hasattr(alcp, nombre), nombre
     assert alcp.alcp_native is _nativo.nativo
