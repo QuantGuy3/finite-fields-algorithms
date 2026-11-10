@@ -1,0 +1,88 @@
+# fase 7, propuesta 4 (ntt): bench/experimentos/fase7/ntt/bench_ntt.cpp, -O2, ALCP_THREADS=1
+# CON CARGA (otros agentes compilando y midiendo a la vez): cifras orientativas
+# tiempo por llamada a fft::convolve (mejor de 5 tandas de >= 30 ms, 8 entradas rotando)
+# old = 80b983d, r4 = radix 4 escalar, avx = radix 4 + AVX2 con despacho
+=== old
+Fp64 F_998244353           n =   256  producto       6.5 us  cuadrado       4.5 us  control 633f10cc4529b3e8
+Fp64 F_998244353           n =  2048  producto      70.8 us  cuadrado      49.8 us  control 8d8bed306fbb1e7f
+Fp64 F_998244353           n = 32768  producto    1972.7 us  cuadrado    1467.5 us  control fd36737f02eeedb2
+Fp64 F_4179340454199820289 n =   256  producto       9.3 us  cuadrado       6.9 us  control 55dc303cf6ecefb4
+Fp64 F_4179340454199820289 n =  2048  producto      91.0 us  cuadrado      72.3 us  control 27b340dca4f6fb08
+Fp64 F_4179340454199820289 n = 32768  producto    2220.0 us  cuadrado    1572.8 us  control e983d245d4a05bb5
+Fp   F_998244353           n =   256  producto      16.7 us  cuadrado      14.1 us  control 633f10cc4529b3e8
+Fp   F_998244353           n =  2048  producto     169.1 us  cuadrado     133.8 us  control 8d8bed306fbb1e7f
+Fp   F_998244353           n = 32768  producto    2961.0 us  cuadrado    2219.0 us  control fd36737f02eeedb2
+Fp   F_4179340454199820289 n =   256  producto      16.4 us  cuadrado      14.4 us  control 55dc303cf6ecefb4
+Fp   F_4179340454199820289 n =  2048  producto     165.4 us  cuadrado     140.3 us  control 27b340dca4f6fb08
+Fp   F_4179340454199820289 n = 32768  producto    2867.3 us  cuadrado    2187.2 us  control e983d245d4a05bb5
+# sumidero 1202748338701614251
+=== r4
+Fp64 F_998244353           n =   256  producto       4.5 us  cuadrado       3.2 us  control 633f10cc4529b3e8
+Fp64 F_998244353           n =  2048  producto      48.2 us  cuadrado      33.7 us  control 8d8bed306fbb1e7f
+Fp64 F_998244353           n = 32768  producto    1200.3 us  cuadrado     912.2 us  control fd36737f02eeedb2
+Fp64 F_4179340454199820289 n =   256  producto       6.5 us  cuadrado       4.5 us  control 55dc303cf6ecefb4
+Fp64 F_4179340454199820289 n =  2048  producto      82.9 us  cuadrado      40.9 us  control 27b340dca4f6fb08
+Fp64 F_4179340454199820289 n = 32768  producto    1317.3 us  cuadrado     879.4 us  control e983d245d4a05bb5
+Fp   F_998244353           n =   256  producto      12.7 us  cuadrado      11.5 us  control 633f10cc4529b3e8
+Fp   F_998244353           n =  2048  producto     125.6 us  cuadrado     118.6 us  control 8d8bed306fbb1e7f
+Fp   F_998244353           n = 32768  producto    1983.1 us  cuadrado    1594.2 us  control fd36737f02eeedb2
+Fp   F_4179340454199820289 n =   256  producto      12.6 us  cuadrado      11.1 us  control 55dc303cf6ecefb4
+Fp   F_4179340454199820289 n =  2048  producto     127.4 us  cuadrado     109.4 us  control 27b340dca4f6fb08
+Fp   F_4179340454199820289 n = 32768  producto    1996.7 us  cuadrado    1689.0 us  control e983d245d4a05bb5
+# sumidero 16880955551968522477
+=== avx
+Fp64 F_998244353           n =   256  producto       1.1 us  cuadrado       0.8 us  control 633f10cc4529b3e8
+Fp64 F_998244353           n =  2048  producto      10.3 us  cuadrado       7.4 us  control 8d8bed306fbb1e7f
+Fp64 F_998244353           n = 32768  producto     222.2 us  cuadrado     166.0 us  control fd36737f02eeedb2
+Fp64 F_4179340454199820289 n =   256  producto       4.4 us  cuadrado       3.2 us  control 55dc303cf6ecefb4
+Fp64 F_4179340454199820289 n =  2048  producto      47.9 us  cuadrado      32.9 us  control 27b340dca4f6fb08
+Fp64 F_4179340454199820289 n = 32768  producto    1257.7 us  cuadrado     879.0 us  control e983d245d4a05bb5
+Fp   F_998244353           n =   256  producto       9.2 us  cuadrado       9.1 us  control 633f10cc4529b3e8
+Fp   F_998244353           n =  2048  producto      88.9 us  cuadrado      88.6 us  control 8d8bed306fbb1e7f
+Fp   F_998244353           n = 32768  producto    1047.8 us  cuadrado     941.7 us  control fd36737f02eeedb2
+Fp   F_4179340454199820289 n =   256  producto      12.0 us  cuadrado      10.6 us  control 55dc303cf6ecefb4
+Fp   F_4179340454199820289 n =  2048  producto     130.5 us  cuadrado     116.5 us  control 27b340dca4f6fb08
+Fp   F_4179340454199820289 n = 32768  producto    1833.1 us  cuadrado    1492.0 us  control e983d245d4a05bb5
+# sumidero 1507274702511070684
+=== old
+Fp64 F_998244353           n =   256  producto       7.0 us  cuadrado       4.8 us  control 633f10cc4529b3e8
+Fp64 F_998244353           n =  2048  producto      73.0 us  cuadrado      49.5 us  control 8d8bed306fbb1e7f
+Fp64 F_998244353           n = 32768  producto    1994.2 us  cuadrado    1352.0 us  control fd36737f02eeedb2
+Fp64 F_4179340454199820289 n =   256  producto       8.6 us  cuadrado       6.3 us  control 55dc303cf6ecefb4
+Fp64 F_4179340454199820289 n =  2048  producto      88.2 us  cuadrado      64.5 us  control 27b340dca4f6fb08
+Fp64 F_4179340454199820289 n = 32768  producto    2210.9 us  cuadrado    1587.0 us  control e983d245d4a05bb5
+Fp   F_998244353           n =   256  producto      16.3 us  cuadrado      13.8 us  control 633f10cc4529b3e8
+Fp   F_998244353           n =  2048  producto     161.8 us  cuadrado     126.2 us  control 8d8bed306fbb1e7f
+Fp   F_998244353           n = 32768  producto    2705.6 us  cuadrado    2178.0 us  control fd36737f02eeedb2
+Fp   F_4179340454199820289 n =   256  producto      17.0 us  cuadrado      25.5 us  control 55dc303cf6ecefb4
+Fp   F_4179340454199820289 n =  2048  producto     279.7 us  cuadrado     142.2 us  control 27b340dca4f6fb08
+Fp   F_4179340454199820289 n = 32768  producto    2912.0 us  cuadrado    2173.8 us  control e983d245d4a05bb5
+# sumidero 15479074016162769877
+=== r4
+Fp64 F_998244353           n =   256  producto       4.6 us  cuadrado       3.7 us  control 633f10cc4529b3e8
+Fp64 F_998244353           n =  2048  producto      54.7 us  cuadrado      35.5 us  control 8d8bed306fbb1e7f
+Fp64 F_998244353           n = 32768  producto    1254.3 us  cuadrado     894.4 us  control fd36737f02eeedb2
+Fp64 F_4179340454199820289 n =   256  producto       4.6 us  cuadrado       3.3 us  control 55dc303cf6ecefb4
+Fp64 F_4179340454199820289 n =  2048  producto      48.7 us  cuadrado      34.2 us  control 27b340dca4f6fb08
+Fp64 F_4179340454199820289 n = 32768  producto    1272.1 us  cuadrado     919.4 us  control e983d245d4a05bb5
+Fp   F_998244353           n =   256  producto      14.3 us  cuadrado      12.6 us  control 633f10cc4529b3e8
+Fp   F_998244353           n =  2048  producto     130.2 us  cuadrado     117.8 us  control 8d8bed306fbb1e7f
+Fp   F_998244353           n = 32768  producto    2081.7 us  cuadrado    1630.5 us  control fd36737f02eeedb2
+Fp   F_4179340454199820289 n =   256  producto      13.1 us  cuadrado      11.9 us  control 55dc303cf6ecefb4
+Fp   F_4179340454199820289 n =  2048  producto     124.2 us  cuadrado     104.6 us  control 27b340dca4f6fb08
+Fp   F_4179340454199820289 n = 32768  producto    1956.9 us  cuadrado    1722.0 us  control e983d245d4a05bb5
+# sumidero 15673696244334850656
+=== avx
+Fp64 F_998244353           n =   256  producto       1.2 us  cuadrado       0.9 us  control 633f10cc4529b3e8
+Fp64 F_998244353           n =  2048  producto      10.7 us  cuadrado       8.0 us  control 8d8bed306fbb1e7f
+Fp64 F_998244353           n = 32768  producto     230.9 us  cuadrado     176.3 us  control fd36737f02eeedb2
+Fp64 F_4179340454199820289 n =   256  producto       4.6 us  cuadrado       3.0 us  control 55dc303cf6ecefb4
+Fp64 F_4179340454199820289 n =  2048  producto      46.8 us  cuadrado      35.3 us  control 27b340dca4f6fb08
+Fp64 F_4179340454199820289 n = 32768  producto    1300.0 us  cuadrado     821.8 us  control e983d245d4a05bb5
+Fp   F_998244353           n =   256  producto       8.7 us  cuadrado       8.3 us  control 633f10cc4529b3e8
+Fp   F_998244353           n =  2048  producto      87.3 us  cuadrado      91.5 us  control 8d8bed306fbb1e7f
+Fp   F_998244353           n = 32768  producto    1130.7 us  cuadrado    1019.5 us  control fd36737f02eeedb2
+Fp   F_4179340454199820289 n =   256  producto      11.9 us  cuadrado      10.0 us  control 55dc303cf6ecefb4
+Fp   F_4179340454199820289 n =  2048  producto     116.4 us  cuadrado     115.1 us  control 27b340dca4f6fb08
+Fp   F_4179340454199820289 n = 32768  producto    1928.2 us  cuadrado    1440.7 us  control e983d245d4a05bb5
+# sumidero 14335899014838433299

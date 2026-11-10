@@ -1,0 +1,4 @@
+tablas 2^1..2^11 en un cuerpo nuevo:    102.0 us
+tablas 2^1..2^12 en un cuerpo nuevo:    194.5 us
+tablas 2^1..2^13 en un cuerpo nuevo:    372.6 us
+raíces distintas: sí;  convoluciones distintas: 0 de 8   (checksum 3ce2)

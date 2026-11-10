@@ -1,0 +1,99 @@
+Fecha: 2026-11-07 22:18:26
+CPU: AMD Ryzen 7 7730U with Radeon Graphics
+Alimentacion: enchufado (Win32_Battery.BatteryStatus=2, AC)
+ALCP_THREADS=1, ejecucion en serie, sin otros procesos midiendo
+
+===== build/fase6/newton/newton_proto.exe =====
+newton_proto: F_998244353, punto a punto en prototipos: '%' (como la librería)
+ALCP_THREADS=1
+
+== Transformada en palabras (directa), us
+  N=  512  transformada      3.8   punto a punto %:    0.8   Barrett:    0.4
+  N= 1024  transformada      8.4   punto a punto %:    1.6   Barrett:    0.8
+  N= 2048  transformada     18.2   punto a punto %:    3.2   Barrett:    1.6
+  N= 4096  transformada     39.8   punto a punto %:    6.4   Barrett:    3.1
+  N= 8192  transformada     91.7   punto a punto %:   12.8   Barrett:    6.2
+
+== divmod grado 4000 / grado 2000 (us)
+  librería, cuerpo FRÍO (Kronecker)  : total   1337.2 | inversión    703.0 | cociente+resto    630.4 | 1 producto 2000x2000 Kronecker    306.5
+  librería, cuerpo CALIENTE (NTT)    : total    779.9 | inversión    497.1 | cociente+resto    283.3 | producto 2001x2001 NTT    141.5, 2001x2001    139.2
+  prototipo a) (tablas ya hechas)    : total    402.6 | inversión    195.0 | cociente+resto    207.6
+  -> ganancia frente a caliente: total 1.94x, inversión 2.55x;  frente a frío: 3.32x
+
+== pow_mod(a, q, m), deg m = 300, q = p (29 cuadrados + 7 productos)
+  librería: pow_mod    2727.9 | a*a    19.2  a*b    27.7 (a*a/a*b = 0.69) | reduce    56.7 (rev(a)*ginv   27.7 + m*q   27.8 + resto    1.2)
+            modelo 29(sq+red)+7(mul+red) = 2791.8  (cuadrados 20 %, productos 7 %, reducciones 73 %)
+  prototipo b) reduce    28.5 (1.99x) | sqr+reduce    47.3 (lib    75.9, 1.61x) | mul+reduce    55.8 (lib    84.4, 1.51x)
+  pow_mod: lib    2727.9 | v1 (productos lib + Reducer b)    1705.6 (1.60x) | v2 (todo en palabras)    1733.7 (1.57x)
+  Composer k=18: compose lib   1491.5 | proto    849.5 (1.76x) ;  construir+compose lib   2927.4 | proto   1694.9 (1.73x)
+
+== pow_mod(a, q, m), deg m = 1000, q = p (29 cuadrados + 7 productos)
+  librería: pow_mod    6089.0 | a*a    41.5  a*b    60.8 (a*a/a*b = 0.68) | reduce   127.4 (rev(a)*ginv   60.7 + m*q   60.7 + resto    6.0)
+            modelo 29(sq+red)+7(mul+red) = 6217.1  (cuadrados 19 %, productos 7 %, reducciones 74 %)
+  prototipo b) reduce    62.7 (2.03x) | sqr+reduce   103.8 (lib   168.9, 1.63x) | mul+reduce   122.9 (lib   188.3, 1.53x)
+  pow_mod: lib    6089.0 | v1 (productos lib + Reducer b)    3760.9 (1.62x) | v2 (todo en palabras)    3830.3 (1.59x)
+  Composer k=32: compose lib   6783.7 | proto   4035.0 (1.68x) ;  construir+compose lib  12633.2 | proto   7321.6 (1.73x)
+
+== Extremo a extremo en la librería (referencia para estimar)
+  is_irreducible grado 400 (irreducible):   135833.2 us
+  factor grado 300 (aleatorio)          :    42221.6 us
+  producto modular grado 400: lib    85.8 | proto    56.6 (1.52x) | proto con operando fijo transformado    47.3 (1.81x)
+
+fallos de comprobación: 0   checksum cfe39182038cb3a9
+[exit 0]
+
+===== build/fase6/newton/newton_proto.exe barrett =====
+newton_proto: F_998244353, punto a punto en prototipos: Barrett
+ALCP_THREADS=1
+
+== Transformada en palabras (directa), us
+  N=  512  transformada      3.8   punto a punto %:    0.8   Barrett:    0.4
+  N= 1024  transformada      8.4   punto a punto %:    1.6   Barrett:    0.8
+  N= 2048  transformada     18.3   punto a punto %:    3.2   Barrett:    1.6
+  N= 4096  transformada     40.2   punto a punto %:    6.4   Barrett:    3.1
+  N= 8192  transformada     90.9   punto a punto %:   12.8   Barrett:    6.1
+
+== divmod grado 4000 / grado 2000 (us)
+  librería, cuerpo FRÍO (Kronecker)  : total   1326.3 | inversión    693.2 | cociente+resto    617.9 | 1 producto 2000x2000 Kronecker    304.0
+  librería, cuerpo CALIENTE (NTT)    : total    777.7 | inversión    493.5 | cociente+resto    281.4 | producto 2001x2001 NTT    138.8, 2001x2001    138.1
+  prototipo a) (tablas ya hechas)    : total    386.1 | inversión    186.5 | cociente+resto    199.5
+  -> ganancia frente a caliente: total 2.01x, inversión 2.65x;  frente a frío: 3.44x
+
+== pow_mod(a, q, m), deg m = 300, q = p (29 cuadrados + 7 productos)
+  librería: pow_mod    2739.3 | a*a    19.2  a*b    27.8 (a*a/a*b = 0.69) | reduce    56.9 (rev(a)*ginv   27.8 + m*q   27.9 + resto    1.2)
+            modelo 29(sq+red)+7(mul+red) = 2799.9  (cuadrados 20 %, productos 7 %, reducciones 73 %)
+  prototipo b) reduce    28.4 (2.00x) | sqr+reduce    47.1 (lib    76.1, 1.62x) | mul+reduce    55.2 (lib    84.7, 1.53x)
+  pow_mod: lib    2739.3 | v1 (productos lib + Reducer b)    1713.2 (1.60x) | v2 (todo en palabras)    1715.1 (1.60x)
+  Composer k=18: compose lib   1460.0 | proto    836.7 (1.74x) ;  construir+compose lib   2895.1 | proto   1680.3 (1.72x)
+
+== pow_mod(a, q, m), deg m = 1000, q = p (29 cuadrados + 7 productos)
+  librería: pow_mod    6002.3 | a*a    41.8  a*b    60.5 (a*a/a*b = 0.69) | reduce   126.9 (rev(a)*ginv   60.4 + m*q   60.4 + resto    6.1)
+            modelo 29(sq+red)+7(mul+red) = 6203.3  (cuadrados 20 %, productos 7 %, reducciones 74 %)
+  prototipo b) reduce    62.4 (2.03x) | sqr+reduce   102.5 (lib   168.7, 1.65x) | mul+reduce   120.4 (lib   187.4, 1.56x)
+  pow_mod: lib    6002.3 | v1 (productos lib + Reducer b)    3752.2 (1.60x) | v2 (todo en palabras)    3745.4 (1.60x)
+  Composer k=32: compose lib   6729.7 | proto   3960.5 (1.70x) ;  construir+compose lib  12553.5 | proto   7193.6 (1.75x)
+
+== Extremo a extremo en la librería (referencia para estimar)
+  is_irreducible grado 400 (irreducible):   136162.6 us
+  factor grado 300 (aleatorio)          :    42103.8 us
+  producto modular grado 400: lib    85.4 | proto    56.2 (1.52x) | proto con operando fijo transformado    47.7 (1.79x)
+
+fallos de comprobación: 0   checksum 704947d1d1c847ef
+[exit 0]
+
+===== build/fase6/newton/coste_tablas.exe =====
+tablas 2^1..2^11 en un cuerpo nuevo:     96.8 us
+tablas 2^1..2^12 en un cuerpo nuevo:    182.5 us
+tablas 2^1..2^13 en un cuerpo nuevo:    361.5 us
+raíces distintas: sí;  convoluciones distintas: 0 de 8   (checksum 41b9)
+[exit 0]
+
+===== .venv/Scripts/python.exe bench/experimentos/fase6/newton/flint_ref.py =====
+python-flint 0.9.0 — F_998244353, us (mejor de 3 tandas, 16 entradas)
+  flint divmod 4000/2000     :     704.2
+  flint pow_mod deg m =  300 :    1544.4
+  flint pow_mod deg m =  300 (con mod_rev_inv precalculado):    1537.2
+  flint pow_mod deg m = 1000 :   10129.4
+  flint pow_mod deg m = 1000 (con mod_rev_inv precalculado):   10152.8
+  (binding de alcp no disponible: No module named 'alcp' )
+[exit 0]

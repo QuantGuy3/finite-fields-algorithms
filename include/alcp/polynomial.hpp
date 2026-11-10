@@ -10,18 +10,46 @@
 //   * ring arithmetic (+, -, *, divmod, /, %, scalar mul, monic, derivative)
 //   * multiplication that AUTO-DISPATCHES schoolbook / Karatsuba / FFT by size
 //   * gcd, extended gcd, modular inverse, modular exponentiation
-//   * Rabin irreducibility test
+//   * test de irreducibilidad de Ben-Or (gcd(f, x^{q^i} - x) para i <= n/2)
 //   * Cantor-Zassenhaus factorization
 //        radical (square-free part) -> distinct-degree -> equal-degree,
 //        with per-factor multiplicities  (port of factorizacion.py, unified)
+//   * evaluación (Horner), composición f(g(x)), test libre de cuadrados
+//
+// Cuerpo común: todas las operaciones binarias (+, -, *, mul, divmod, /, %,
+// gcd, gcd_ext, inv_mod, pow_mod, multiplicity, compose) exigen que ambos
+// operandos estén sobre el mismo cuerpo: el mismo objeto (camino rápido, una
+// comparación de punteros) o un cuerpo con los mismos parámetros (same_field).
+// Si no, lanzan std::invalid_argument("polinomios sobre cuerpos distintos").
+// operator== NO lanza: dos polinomios sobre cuerpos distintos son distintos.
+//
+// Vida del cuerpo: Poly guarda un puntero al cuerpo, que debe sobrevivir al
+// polinomio.  Por eso los constructores y factorías que reciben un cuerpo
+// temporal (rvalue) están borrados (= delete): Poly<Fp>(Fp(7)) no compila.
+//
+// Errores: dividir por el polinomio cero lanza alcp::division_by_zero (deriva
+// de std::domain_error); los argumentos inválidos, std::invalid_argument.
 #pragma once
 
 #include "bigint.hpp"
+#include "errors.hpp"
 #include "fft.hpp"
+#include "field.hpp"
+#include "fp64.hpp"  // acumulador de 64 bits de Poly<Fp64> (fase 6)
+#include "fpn.hpp"   // umbrales de Poly<FpN2> (fase 7)
+#include "kronecker.hpp"
 
 #include <algorithm>
+#include <atomic>
+#include <cstddef>
+#include <cstdint>
+#include <future>
+#include <memory>
+#include <mutex>  // std::call_once (fase 8)
+#include <optional>
 #include <stdexcept>
 #include <string>
+#include <type_traits>
 #include <utility>
 #include <vector>
 
@@ -29,7 +57,720 @@ namespace alcp {
 
 // Which multiplication algorithm to use.  Auto picks by operand size; the
 // explicit modes exist so tests can cross-check them against each other.
-enum class MulAlgo { Auto, Schoolbook, Karatsuba, FFT };
+enum class MulAlgo { Auto, Schoolbook, Karatsuba, FFT, Kronecker };
+
+// Cómo calcular la sucesión de Frobenius H_i = x^{q^i} mod f en is_irreducible
+// y distinct_degree (fase 4, nivel B): Potencia = H_i = H_{i-1}^q (el original);
+// Composicion = H_i = H_{i-1}(H_1) por composición modular de Brent-Kung con
+// las potencias de H_1 precalculadas; Auto elige (ver Frobenius).
+enum class FrobeniusAlgo { Auto, Potencia, Composicion };
+
+// ---------------------------------------------------------------------------
+// Euclides en sitio sobre palabras de máquina (fase 5, solo Fp64)
+// ---------------------------------------------------------------------------
+// gcd_classic y gcd_ext_classic de Fp64 hacen los MISMOS cocientes, en el
+// mismo orden, que el algoritmo original, pero sobre dos vectores u64 que se
+// intercambian, sin reservar un vector de acumuladores de 128 bits en cada
+// paso.  Cada fila de la división es un axpy con el multiplicador de Shoup del
+// factor (precalculado una vez por fila) y sin saltos dependientes de los datos.
+// Como la aritmética es exacta módulo p, el resultado es idéntico.  Medido en
+// docs/optimizacion/investigacion-fase5.md: 2,4x a 3,6x frente a la versión
+// anterior.  Requiere p < 2^62 (garantizado por Fp64).
+namespace euclides {
+
+using W = std::uint64_t;
+using W128 = unsigned __int128;
+
+// Cociente de Shoup de c: floor(c·2^64 / p), con 0 <= c < p.
+inline W shoup(W c, W p) { return static_cast<W>((static_cast<W128>(c) << 64) / p); }
+
+// r[j] = r[j] + c·b[j] mod p para j < len (r[j], b[j], c en [0, p)), sin saltos.
+inline void axpy(W* r, const W* b, std::size_t len, W c, W cs, W p) {
+    for (std::size_t j = 0; j < len; ++j) {
+        const W q = static_cast<W>((static_cast<W128>(cs) * b[j]) >> 64);
+        W v = c * b[j] - q * p;                    // c·b[j] mod p, en [0, 2p)
+        v -= p & (0 - static_cast<W>(v >= p));     // en [0, p)
+        W s = r[j] + v - p;                        // en (-p, p) como entero con signo
+        s += p & (0 - (s >> 63));                  // en [0, p)
+        r[j] = s;
+    }
+}
+
+// ---- Filas de la división en AVX2 con p < 2^31 (fase 8) --------------------
+// Los coeficientes siguen guardados en u64, pero con p < 2^31 caben en la
+// mitad baja de cada carril de 64 bits, que es justo lo que lee
+// _mm256_mul_epu32: 4 coeficientes por registro, sin empaquetar ni
+// desempaquetar.  c·b mod p se calcula con el cociente de Shoup de 32 bits
+// cs = floor(c·2^32 / p), precalculado una vez por fila (como la convolución
+// AVX2 de la fase 7): q = floor(cs·b / 2^32) es floor(c·b/p) o uno menos
+// (b < 2^32), así que c·b - q·p está en [0, 2p) y una resta condicional lo deja
+// en [0, p).  Las sumas se reducen igual, de dos en dos, para que todo quepa en
+// 32 bits (2p < 2^32).  Cada coeficiente acaba en su representante canónico de
+// [0, p): resultado idéntico bit a bit al escalar.  Mismo despacho que la NTT
+// AVX2 (word::avx2_disponible; desactivado a -O0, ver ALCP_NTT_AVX2); sin AVX2
+// o con p >= 2^31 se usa el código escalar de siempre.
+#if ALCP_NTT_AVX2
+namespace avx2 {
+
+using V = __m256i;
+
+#define ALCP_EUC_FN __attribute__((target("avx2")))
+#define ALCP_EUC_IN __attribute__((target("avx2"), always_inline)) inline
+
+ALCP_EUC_IN V ld(const W* q) { return _mm256_loadu_si256(reinterpret_cast<const V*>(q)); }
+ALCP_EUC_IN void st(W* q, V v) { _mm256_storeu_si256(reinterpret_cast<V*>(q), v); }
+ALCP_EUC_IN V set1(W x) { return _mm256_set1_epi64x(static_cast<long long>(x)); }
+// x en [0, 2p) -> [0, p): min(x, x - p) sin signo en 32 bits (la mitad alta de
+// cada carril es 0 en x y en P y sigue siéndolo).
+ALCP_EUC_IN V red(V x, V P) { return _mm256_min_epu32(x, _mm256_sub_epi32(x, P)); }
+// c·b mod p en [0, p) con Shoup de 32 bits (b < 2^32 en cada carril).
+ALCP_EUC_IN V mul(V C, V CS, V b, V P) {
+    const V q = _mm256_srli_epi64(_mm256_mul_epu32(CS, b), 32);
+    return red(_mm256_sub_epi64(_mm256_mul_epu32(C, b), _mm256_mul_epu32(q, P)), P);
+}
+// Cociente de Shoup de 32 bits: floor(c·2^32 / p) (c < p < 2^31).
+inline W shoup32(W c, W p) { return (c << 32) / p; }
+
+// r[j] = r[j] + c·b[j] mod p para j < len (como euclides::axpy).
+ALCP_EUC_FN inline void axpy(W* r, const W* b, std::size_t len, W c, W p) {
+    const V P = set1(p), C = set1(c), CS = set1(shoup32(c, p));
+    std::size_t j = 0;
+    for (; j + 4 <= len; j += 4) st(r + j, red(_mm256_add_epi64(ld(r + j), mul(C, CS, ld(b + j), P)), P));
+    for (; j < len; ++j) r[j] = (r[j] + c * b[j]) % p;  // cola: cabe en 64 bits
+}
+
+// r[j] = r[j] + c1·b[j-1] + c0·b[j] mod p para j < n (b[-1] = 0, n >= 1): las
+// dos filas fusionadas del cociente de grado 1 (fase 7).  b[j-1] se lee con
+// una carga no alineada desplazada un coeficiente.
+ALCP_EUC_FN inline void fila2(W* r, const W* b, std::size_t n, W c1, W c0, W p) {
+    const V P = set1(p), C1 = set1(c1), CS1 = set1(shoup32(c1, p)), C0 = set1(c0), CS0 = set1(shoup32(c0, p));
+    r[0] = (r[0] + c0 * b[0]) % p;
+    std::size_t j = 1;
+    for (; j + 4 <= n; j += 4) {
+        const V t = red(_mm256_add_epi64(ld(r + j), mul(C1, CS1, ld(b + j - 1), P)), P);
+        st(r + j, red(_mm256_add_epi64(t, mul(C0, CS0, ld(b + j), P)), P));
+    }
+    for (; j < n; ++j) r[j] = (r[j] + c1 * b[j - 1] + c0 * b[j]) % p;  // < 2^63
+}
+
+#undef ALCP_EUC_FN
+#undef ALCP_EUC_IN
+
+}  // namespace avx2
+#endif  // ALCP_NTT_AVX2
+
+// Longitud mínima de fila para el camino AVX2 (por debajo, el escalar).
+inline constexpr std::size_t kAvx2Min = 8;
+
+// ¿Filas AVX2 para este p? (p < 2^31 y CPU con AVX2; nunca a -O0.)
+inline bool usa_avx2(W p) {
+#if ALCP_NTT_AVX2
+    return p < (W(1) << 31) && fft::word::avx2_disponible();
+#else
+    (void)p;
+    return false;
+#endif
+}
+
+// Grado de un vector (el índice del último no nulo hasta `hasta`), -1 si es cero.
+inline int grado(const std::vector<W>& a, int hasta) {
+    while (hasta >= 0 && a[static_cast<std::size_t>(hasta)] == 0) --hasta;
+    return hasta;
+}
+
+// a <- a mod b en sitio (b[db] != 0, inv_lead = b[db]^{-1}); devuelve el nuevo
+// grado de a.  Si q no es nulo, guarda en él el cociente (da - db + 1
+// coeficientes).  Es la división escolar original: para cada grado dr de
+// arriba abajo, factor = a[dr]·inv_lead y a -= factor·x^(dr-db)·b; los
+// coeficientes nulos que aparecen se saltan.
+inline int resto(std::vector<W>& a, int da, const std::vector<W>& b, int db, W inv_lead, W p,
+                 std::vector<W>* q) {
+    if (q) q->assign(da >= db ? static_cast<std::size_t>(da - db + 1) : 0, 0);
+    if (da < db) return da;
+    const std::size_t ldb = static_cast<std::size_t>(db);
+    if (da == db + 1 && db >= 1 && p < (W(1) << 31)) {
+        // Fase 7: cociente de grado 1, el caso típico del Euclides, con p < 2^31.  Las dos
+        // filas de la división escolar (factor f1 en grado da, f0 en grado db)
+        // se aplican en UNA pasada: a[j] += c1·b[j-1] + c0·b[j], c = -f.  f0
+        // depende de a[db] DESPUÉS de la primera fila, que se calcula aparte.
+        // Mismos factores (y por tanto mismo cociente) y mismo resto módulo p:
+        // resultado idéntico.  La suma a[j] + c1·b + c0·b cabe en 64 bits
+        // (< 2^31 + 2^63) y se reduce una sola vez (Barrett, como fma2).  Con
+        // p >= 2^31 no compensa (medido: F_(2^61-1) 0,94x por la reducción de
+        // 128 bits extra de a[db]) y se usa el bucle general.
+        // Con p < 2^31 los productos caben en 64 bits (también c1·b + a[db] <
+        // 2^62 + 2^31): % de 64 bits, no de 128.
+        const auto mulmod = [p](W x, W y) { return x * y % p; };
+        const W l1 = a[static_cast<std::size_t>(da)];
+        const W f1 = l1 == 0 ? 0 : mulmod(l1, inv_lead);
+        const W c1 = f1 == 0 ? 0 : p - f1;
+        W adb = a[ldb];
+        if (c1 != 0) adb = (c1 * b[ldb - 1] + adb) % p;
+        const W f0 = adb == 0 ? 0 : mulmod(adb, inv_lead);
+        const W c0 = f0 == 0 ? 0 : p - f0;
+        if (q) {
+            (*q)[0] = f0;
+            (*q)[1] = f1;
+        }
+        W* r = a.data();
+        const W* B = b.data();
+#if ALCP_NTT_AVX2
+        if (ldb >= kAvx2Min && usa_avx2(p)) {  // fase 8: la misma pasada en AVX2
+            avx2::fila2(r, B, ldb, c1, c0, p);
+            a[static_cast<std::size_t>(da)] = 0;
+            a[ldb] = 0;
+            return grado(a, db - 1);
+        }
+#endif
+        const W mu = ~W(0) / p;
+        W prev = 0;  // b[j - 1], 0 para j = 0
+        for (std::size_t j = 0; j < ldb; ++j) {
+            const W s = r[j] + c1 * prev + c0 * B[j];
+            prev = B[j];
+            const W qq = static_cast<W>((static_cast<W128>(s) * mu) >> 64);
+            // mu = floor((2^64-1)/p) cumple 2^64 - p·mu <= p, así que qq es
+            // floor(s/p) o uno menos: v en [0, 2p) (revisión de la fase 7).
+            W v = s - qq * p;
+            v -= p & (0 - static_cast<W>(v >= p));
+            r[j] = v;
+        }
+        a[static_cast<std::size_t>(da)] = 0;
+        a[ldb] = 0;
+        return grado(a, db - 1);
+    }
+#if ALCP_NTT_AVX2
+    if (ldb >= kAvx2Min && usa_avx2(p)) {
+        // Fase 8: el mismo bucle con las filas en AVX2.  La decisión se toma
+        // fuera del bucle para no tocar el código escalar (con la rama dentro,
+        // gcd_ext_classic con p >= 2^31 perdía un 10-15 %).
+        for (int dr = da; dr >= db; --dr) {
+            const W lr = a[static_cast<std::size_t>(dr)];
+            if (lr == 0) continue;
+            const W factor = static_cast<W>(static_cast<W128>(lr) * inv_lead % p);
+            if (q) (*q)[static_cast<std::size_t>(dr - db)] = factor;
+            avx2::axpy(a.data() + (dr - db), b.data(), ldb, p - factor, p);
+            a[static_cast<std::size_t>(dr)] = 0;
+        }
+        return grado(a, db - 1);
+    }
+#endif
+    for (int dr = da; dr >= db; --dr) {
+        const W lr = a[static_cast<std::size_t>(dr)];
+        if (lr == 0) continue;
+        const W factor = static_cast<W>(static_cast<W128>(lr) * inv_lead % p);
+        if (q) (*q)[static_cast<std::size_t>(dr - db)] = factor;
+        const W c = p - factor;  // -factor (factor != 0)
+        axpy(a.data() + (dr - db), b.data(), ldb, c, shoup(c, p), p);
+        a[static_cast<std::size_t>(dr)] = 0;
+    }
+    return grado(a, db - 1);
+}
+
+// x0 - q·x1 (vectores sin ceros por arriba; vacío = 0), recortado.
+inline std::vector<W> menos_producto(const std::vector<W>& x0, const std::vector<W>& q,
+                                     const std::vector<W>& x1, W p) {
+    std::size_t n = x0.size();
+    if (!x1.empty() && !q.empty()) n = std::max(n, q.size() + x1.size() - 1);
+    std::vector<W> r(n, 0);
+    std::copy(x0.begin(), x0.end(), r.begin());
+#if ALCP_NTT_AVX2
+    if (x1.size() >= kAvx2Min && usa_avx2(p)) {  // fase 8: filas en AVX2 (ver resto)
+        for (std::size_t i = 0; i < q.size(); ++i)
+            if (q[i] != 0) avx2::axpy(r.data() + i, x1.data(), x1.size(), p - q[i], p);
+        while (!r.empty() && r.back() == 0) r.pop_back();
+        return r;
+    }
+#endif
+    if (!x1.empty())
+        for (std::size_t i = 0; i < q.size(); ++i)
+            if (q[i] != 0) {
+                const W c = p - q[i];
+                axpy(r.data() + i, x1.data(), x1.size(), c, shoup(c, p), p);
+            }
+    while (!r.empty() && r.back() == 0) r.pop_back();
+    return r;
+}
+
+}  // namespace euclides
+
+// ---------------------------------------------------------------------------
+// Producto medio y transformadas fijas en Fp64 (fase 6)
+// ---------------------------------------------------------------------------
+// Piezas en palabras de máquina para la división de Newton, el Reducer y el
+// Composer (ver docs/optimizacion/investigacion-fase6.md, tema «newton», y el
+// prototipo bench/experimentos/fase6/newton/newton_proto.cpp).  Son la misma
+// NTT de fft.hpp (mismas tablas, mismas mariposas): lo que cambia es CUÁNTAS
+// transformadas se hacen y de qué tamaño, aprovechando que solo hacen falta
+// unos coeficientes concretos del producto (producto medio, resto módulo
+// x^N - 1) o que un operando se repite (transformada fija, el «FFTRep» de NTL).
+// La aritmética es exacta módulo p, así que los resultados son idénticos.
+//
+// Generador aleatorio: las tablas se piden con fft::tablas_sin_rng, que nunca
+// lo consume (fase 7: tablas de la caché si ya existen; si no, con la raíz
+// determinista).
+namespace medio {
+
+using W = std::uint64_t;
+using Tab = FFTTables<W>;
+
+// Tamaño mínimo (coeficientes) para usar estas rutas: por debajo la NTT no
+// gana al escolar con acumulación perezosa (prefer_fft de Fp64 exige 64).
+inline constexpr std::size_t kMin = 64;
+
+inline void directa(const Tab& t, std::vector<W>& a) { fft::word::transform(t, a.data(), a.size(), false); }
+inline void inversa(const Tab& t, std::vector<W>& a) { fft::word::transform(t, a.data(), a.size(), true); }
+
+// a[i] <- a[i]·b[i] mod p (producto punto a punto, como convolve_word).
+inline void producto(std::vector<W>& a, const std::vector<W>& b, W p) {
+    for (std::size_t i = 0; i < a.size(); ++i) a[i] = fft::word::mul_mod(a[i], b[i], p);
+}
+
+// Transformada de un operando que se reutiliza, con los cocientes de Shoup de
+// cada valor: el producto punto a punto por ella no divide.
+// Fase 7: guarda las tablas con las que se transformó; el otro operando hay
+// que transformarlo con ESAS tablas (*tab), no con las que haya en la caché
+// en ese momento (ver fft::tablas_sin_rng: la raíz puede ser otra).
+struct Fija {
+    std::vector<W> w, ws;
+    std::size_t len = 0;  // coeficientes del operando antes de transformar
+    std::shared_ptr<const Tab> tab;
+    bool vacia() const { return w.empty(); }
+};
+
+// Transforma a (ya rellenado con ceros hasta el tamaño de *t) y prepara Shoup.
+inline Fija fija(std::shared_ptr<const Tab> t, std::vector<W> a, std::size_t len, W p) {
+    directa(*t, a);
+    Fija F;
+    F.tab = std::move(t);
+    F.ws.resize(a.size());
+    for (std::size_t i = 0; i < a.size(); ++i) F.ws[i] = fft::word::shoup(a[i], p);
+    F.w = std::move(a);
+    F.len = len;
+    return F;
+}
+
+// a[i] <- a[i]·F[i] mod p con los cocientes de Shoup de F.
+inline void aplica(const Fija& F, std::vector<W>& a, W p) {
+    for (std::size_t i = 0; i < a.size(); ++i) a[i] = fft::word::mul_shoup(F.w[i], F.ws[i], a[i], p);
+}
+
+// v[0..len) plegado módulo x^N - 1: r[i mod N] += v[i].  Con len <= N es la
+// copia rellenada con ceros.
+inline std::vector<W> pliega(const W* v, std::size_t len, std::size_t N, W p) {
+    std::vector<W> r(N, 0);
+    for (std::size_t i = 0; i < len; ++i) {
+        if (i < N) { r[i] = v[i]; continue; }
+        W s = r[i % N] + v[i];
+        s -= p & (0 - static_cast<W>(s >= p));
+        r[i % N] = s;
+    }
+    return r;
+}
+
+}  // namespace medio
+
+// ---------------------------------------------------------------------------
+// Reducción por tabla de x^(n+i) mod m (fase 8, Fp64 con p < 2^16 y AVX2)
+// ---------------------------------------------------------------------------
+// Sin NTT para el tamaño (F_101, F_7, ...), el Reducer dividía con Newton y
+// dos productos de Kronecker o con la escolar; en factor() con p = 101 y grado
+// 100 la reducción costaba 2,4 veces el producto (docs/optimizacion/fase7.md,
+// «Perfil de factor»).  Con m fijo de grado n se precalculan las filas
+//     T_i = x^(n+i) mod m,   i = 0..n-1,
+// y para a de grado <= 2n-1
+//     a mod m = (a_0..a_{n-1}) + Σ_i a_{n+i}·T_i,
+// un producto matriz-vector: los mismos ~n² productos que la escolar, pero sin
+// la dependencia entre pasos de ésta (cada paso necesita el coeficiente
+// principal ya reducido), así que se vectoriza entero.  Con p < 2^16 cada
+// entrada cabe en 32 bits y cada producto es < 2^32: 8 carriles de 32 bits
+// (vpmulld) si la suma de una columna cabe en 32 bits, y 4 de 64 (vpmuludq)
+// si no.  Las sumas son exactas y solo se reduce al final: el resto es único,
+// así que el resultado es idéntico.  No usa raíces ni el generador.  El
+// Composer sin NTT usa la misma suma para combinar sus potencias h^i mod f
+// (combina; compose de grado 100 en F_101: 27 → 22 µs).
+//
+// Medido en Zen 3 con carga (bench del prototipo, F_101): n = 100: 7,1 → 1,4
+// µs; n = 32: 1,7 → 0,4; n = 256: 24 → 9; n = 384: 38 → 24; construir la
+// tabla cuesta como 1-3 reducciones antiguas (n = 100: 6,5 µs).  Más allá de
+// n = 384 la tabla (n² palabras de 32 bits) sale de la caché L2 y la ventaja
+// desaparece (n = 1024: 237 frente a 173 µs).  Las rutinas llevan
+// target("avx2") y solo se usan si la CPU lo tiene (fft::word::avx2_disponible);
+// sin AVX2 (o a -O0, ver ALCP_NTT_AVX2) el Reducer sigue como antes: la
+// versión escalar no ganaba (n = 100: 6,9 frente a 7,1 µs).
+namespace tabla {
+
+using u32 = std::uint32_t;
+using u64 = std::uint64_t;
+
+inline constexpr std::size_t kMin = 8;    // grados de m admitidos
+inline constexpr std::size_t kMax = 384;  // (tabla de <= 384·392·4 bytes = 588 KiB)
+
+struct Tabla {
+    std::size_t n = 0;    // grado de m = número de filas (Composer: ancho de las filas)
+    std::size_t ld = 0;   // separación entre filas: n + 1 redondeado a múltiplo de 8
+    bool v32 = false;     // ¿caben las sumas en 32 bits?
+    std::vector<u32> buf; // 8 ceros delante y después las filas
+    bool vacia() const { return buf.empty(); }
+    const u32* fila(std::size_t i) const { return buf.data() + 8 + i * ld; }
+};
+
+// ¿Puede usarse la tabla con este cuerpo y este grado?
+inline bool aplicable(const Fp64& K, std::size_t n) {
+    if (n < kMin || n > kMax || K.modulus64() > 65536) return false;
+    return fft::word::avx2_disponible();
+}
+
+#if ALCP_NTT_AVX2
+#define ALCP_TAB_FN __attribute__((target("avx2")))
+
+// Construye las filas: T_0 = -(m_0..m_{n-1})/lc(m) y T_{i+1} = x·T_i mod m,
+// es decir T_{i+1}[j] = T_i[j-1] + c·T_0[j] con c = T_i[n-1].  Con p <= 2^16,
+// x = T_i[j-1] + c·T_0[j] <= (p-1) + (p-1)² < 2^32 y se reduce con Barrett de
+// 32 bits: mu = floor(2^32/p), q = floor(x·mu/2^32) cumple x/p - 2 < q <= x/p,
+// luego r = x - q·p está en [0, 2p) y basta una resta (min_epu32, como vred
+// en fft.hpp).  T_i[-1] lo leen las cargas desplazadas: es el cero final de la
+// fila anterior (ld > n) o, para T_0, uno de los 8 ceros iniciales.
+ALCP_TAB_FN inline void construir(Tabla& t, const std::vector<u32>& r0, u64 p) {
+    const std::size_t n = t.n, ld = t.ld;
+    u32* T = t.buf.data() + 8;
+    std::copy(r0.begin(), r0.end(), T);  // r0 tiene ld entradas (ceros desde n)
+    const __m256i P = _mm256_set1_epi32(static_cast<int>(p));
+    const __m256i MU = _mm256_set1_epi32(static_cast<int>(static_cast<u32>((u64(1) << 32) / p)));
+    const __m256i ALTO = _mm256_set1_epi64x(static_cast<long long>(0xFFFFFFFF00000000ull));
+    for (std::size_t i = 1; i < n; ++i) {
+        const u32* a = T + (i - 1) * ld;
+        u32* b = T + i * ld;
+        const __m256i c = _mm256_set1_epi32(static_cast<int>(a[n - 1]));
+        for (std::size_t j = 0; j < ld; j += 8) {
+            const __m256i x = _mm256_add_epi32(
+                _mm256_loadu_si256(reinterpret_cast<const __m256i*>(a + j - 1)),
+                _mm256_mullo_epi32(c, _mm256_loadu_si256(reinterpret_cast<const __m256i*>(r0.data() + j))));
+            const __m256i qp = _mm256_srli_epi64(_mm256_mul_epu32(x, MU), 32);  // carriles pares
+            const __m256i qi = _mm256_and_si256(_mm256_mul_epu32(_mm256_srli_epi64(x, 32), MU), ALTO);
+            const __m256i q = _mm256_blend_epi32(qp, qi, 0xAA);
+            __m256i r = _mm256_sub_epi32(x, _mm256_mullo_epi32(q, P));
+            r = _mm256_min_epu32(r, _mm256_sub_epi32(r, P));
+            _mm256_storeu_si256(reinterpret_cast<__m256i*>(b + j), r);
+        }
+        // Las columnas n+1..ld-1 salen nulas (T_i[j-1] = 0 y T_0[j] = 0), pero
+        // la n recibe T_i[n-1] y se anula: así las filas siguen con ceros al
+        // final.  (Un bucle aquí lo convierte GCC en memset, y la llamada
+        // obliga a guardar registros ymm en la pila; ver ALCP_NTT_AVX2.)
+        b[n] = 0;
+    }
+}
+
+// acc[j] += Σ_{i<filas} a[i]·T_i[j], j < ld, con sumas de 32 bits (t.v32).
+// Bloques de 32 columnas en 4 registros que recorren todas las filas.
+ALCP_TAB_FN inline void acumula32(const Tabla& t, const u64* a, std::size_t filas, u32* acc) {
+    const std::size_t ld = t.ld;
+    std::size_t j0 = 0;
+    for (; j0 + 32 <= ld; j0 += 32) {
+        __m256i s0 = _mm256_loadu_si256(reinterpret_cast<const __m256i*>(acc + j0));
+        __m256i s1 = _mm256_loadu_si256(reinterpret_cast<const __m256i*>(acc + j0 + 8));
+        __m256i s2 = _mm256_loadu_si256(reinterpret_cast<const __m256i*>(acc + j0 + 16));
+        __m256i s3 = _mm256_loadu_si256(reinterpret_cast<const __m256i*>(acc + j0 + 24));
+        const u32* f = t.fila(0) + j0;
+        for (std::size_t i = 0; i < filas; ++i, f += ld) {
+            const __m256i c = _mm256_set1_epi32(static_cast<int>(a[i]));
+            s0 = _mm256_add_epi32(s0, _mm256_mullo_epi32(c, _mm256_loadu_si256(reinterpret_cast<const __m256i*>(f))));
+            s1 = _mm256_add_epi32(s1, _mm256_mullo_epi32(c, _mm256_loadu_si256(reinterpret_cast<const __m256i*>(f + 8))));
+            s2 = _mm256_add_epi32(s2, _mm256_mullo_epi32(c, _mm256_loadu_si256(reinterpret_cast<const __m256i*>(f + 16))));
+            s3 = _mm256_add_epi32(s3, _mm256_mullo_epi32(c, _mm256_loadu_si256(reinterpret_cast<const __m256i*>(f + 24))));
+        }
+        _mm256_storeu_si256(reinterpret_cast<__m256i*>(acc + j0), s0);
+        _mm256_storeu_si256(reinterpret_cast<__m256i*>(acc + j0 + 8), s1);
+        _mm256_storeu_si256(reinterpret_cast<__m256i*>(acc + j0 + 16), s2);
+        _mm256_storeu_si256(reinterpret_cast<__m256i*>(acc + j0 + 24), s3);
+    }
+    for (; j0 < ld; j0 += 8) {
+        __m256i s0 = _mm256_loadu_si256(reinterpret_cast<const __m256i*>(acc + j0));
+        const u32* f = t.fila(0) + j0;
+        for (std::size_t i = 0; i < filas; ++i, f += ld)
+            s0 = _mm256_add_epi32(s0, _mm256_mullo_epi32(_mm256_set1_epi32(static_cast<int>(a[i])),
+                                                         _mm256_loadu_si256(reinterpret_cast<const __m256i*>(f))));
+        _mm256_storeu_si256(reinterpret_cast<__m256i*>(acc + j0), s0);
+    }
+}
+
+// 4 entradas de 32 bits ampliadas a 64.
+__attribute__((target("avx2"), always_inline)) inline __m256i carga(const u32* q) {
+    return _mm256_cvtepu32_epi64(_mm_loadu_si128(reinterpret_cast<const __m128i*>(q)));
+}
+
+// Lo mismo con sumas de 64 bits: cada entrada (< 2^16) se amplía a 64 bits y
+// se multiplica con vpmuludq (32x32 -> 64).  Bloques de 16 columnas.
+ALCP_TAB_FN inline void acumula64(const Tabla& t, const u64* a, std::size_t filas, u64* acc) {
+    const std::size_t ld = t.ld;
+    std::size_t j0 = 0;
+    for (; j0 + 16 <= ld; j0 += 16) {
+        __m256i s0 = _mm256_loadu_si256(reinterpret_cast<const __m256i*>(acc + j0));
+        __m256i s1 = _mm256_loadu_si256(reinterpret_cast<const __m256i*>(acc + j0 + 4));
+        __m256i s2 = _mm256_loadu_si256(reinterpret_cast<const __m256i*>(acc + j0 + 8));
+        __m256i s3 = _mm256_loadu_si256(reinterpret_cast<const __m256i*>(acc + j0 + 12));
+        const u32* f = t.fila(0) + j0;
+        for (std::size_t i = 0; i < filas; ++i, f += ld) {
+            const __m256i c = _mm256_set1_epi64x(static_cast<long long>(a[i]));
+            s0 = _mm256_add_epi64(s0, _mm256_mul_epu32(c, carga(f)));
+            s1 = _mm256_add_epi64(s1, _mm256_mul_epu32(c, carga(f + 4)));
+            s2 = _mm256_add_epi64(s2, _mm256_mul_epu32(c, carga(f + 8)));
+            s3 = _mm256_add_epi64(s3, _mm256_mul_epu32(c, carga(f + 12)));
+        }
+        _mm256_storeu_si256(reinterpret_cast<__m256i*>(acc + j0), s0);
+        _mm256_storeu_si256(reinterpret_cast<__m256i*>(acc + j0 + 4), s1);
+        _mm256_storeu_si256(reinterpret_cast<__m256i*>(acc + j0 + 8), s2);
+        _mm256_storeu_si256(reinterpret_cast<__m256i*>(acc + j0 + 12), s3);
+    }
+    for (; j0 < ld; j0 += 8) {  // ld es múltiplo de 8
+        __m256i s0 = _mm256_loadu_si256(reinterpret_cast<const __m256i*>(acc + j0));
+        __m256i s1 = _mm256_loadu_si256(reinterpret_cast<const __m256i*>(acc + j0 + 4));
+        const u32* f = t.fila(0) + j0;
+        for (std::size_t i = 0; i < filas; ++i, f += ld) {
+            const __m256i c = _mm256_set1_epi64x(static_cast<long long>(a[i]));
+            s0 = _mm256_add_epi64(s0, _mm256_mul_epu32(c, carga(f)));
+            s1 = _mm256_add_epi64(s1, _mm256_mul_epu32(c, carga(f + 4)));
+        }
+        _mm256_storeu_si256(reinterpret_cast<__m256i*>(acc + j0), s0);
+        _mm256_storeu_si256(reinterpret_cast<__m256i*>(acc + j0 + 4), s1);
+    }
+}
+#undef ALCP_TAB_FN
+#endif  // ALCP_NTT_AVX2
+
+// Versiones escalares de construir y de la suma (fase 8, revisión): mismos
+// valores exactos que las AVX2.  No se usan para ganar tiempo (no ganaban a la
+// reducción antigua) sino para que crea y combina den SIEMPRE el resultado
+// correcto aunque no haya AVX2 en la CPU o en esta unidad de compilación
+// (ALCP_NTT_AVX2 = 0, p. ej. -O0): si por ODR se mezclan unidades -O0 y -O2,
+// o si alguien las llama sin pasar por aplicable(), no devuelven ceros.  Las
+// prueba tests/test_fase8_reducer.cpp frente a las vectoriales.
+inline void construir_escalar(Tabla& t, const std::vector<u32>& r0, const Fp64& K) {
+    const std::size_t n = t.n, ld = t.ld;
+    u32* T = t.buf.data() + 8;
+    std::copy(r0.begin(), r0.end(), T);
+    for (std::size_t i = 1; i < n; ++i) {
+        const u32* a = T + (i - 1) * ld;
+        u32* b = T + i * ld;
+        const u64 c = a[n - 1];
+        // T_i[j-1] + c·T_0[j] <= (p-1) + (p-1)² < 2^32 con p <= 2^16.
+        for (std::size_t j = 0; j < n; ++j) b[j] = static_cast<u32>(K.reduce64((j ? a[j - 1] : 0) + c * r0[j]));
+    }
+}
+
+inline std::vector<u64> combina_escalar(const Fp64& K, const Tabla& t, const u64* a0, const u64* c,
+                                        std::size_t filas) {
+    // filas <= kMax y p <= 2^16: filas·(p-1)² + (p-1) < 2^64.
+    const std::size_t n = t.n;
+    std::vector<u64> acc(n, 0);
+    if (a0) std::copy(a0, a0 + n, acc.begin());
+    for (std::size_t i = 0; i < filas; ++i) {
+        const u32* f = t.fila(i);
+        for (std::size_t j = 0; j < n; ++j) acc[j] += c[i] * f[j];
+    }
+    for (auto& x : acc) x = K.reduce64(x);
+    return acc;
+}
+
+// Cabecera de la tabla de m: tamaños, cota de 32 bits y T_0.
+inline Tabla prepara(const Fp64& K, const std::vector<u64>& m, std::vector<u32>& r0) {
+    Tabla t;
+    const u64 p = K.modulus64();
+    t.n = m.size() - 1;
+    t.ld = (t.n + 8) & ~std::size_t(7);  // >= n + 1
+    // Cota de una columna: n filas más el coeficiente de partida, cada uno
+    // <= (p-1)²: n·(p-1)² + (p-1) < 2^32 (p = 101: hasta n ≈ 429.000).
+    t.v32 = static_cast<u64>(t.n) * (p - 1) * (p - 1) + (p - 1) < (u64(1) << 32);
+    t.buf.assign(8 + t.n * t.ld, 0);
+    const u64 il = K.inv(m.back());
+    r0.assign(t.ld, 0);
+    for (std::size_t j = 0; j < t.n; ++j) r0[j] = static_cast<u32>(K.neg(K.mul(m[j], il)));
+    return t;
+}
+
+// Tabla de m (p <= 2^16, deg m >= 1; aplicable(K, deg m) decide si compensa).
+inline Tabla crea_escalar(const Fp64& K, const std::vector<u64>& m) {
+    std::vector<u32> r0;
+    Tabla t = prepara(K, m, r0);
+    construir_escalar(t, r0, K);
+    return t;
+}
+inline Tabla crea(const Fp64& K, const std::vector<u64>& m) {
+    std::vector<u32> r0;
+    Tabla t = prepara(K, m, r0);
+#if ALCP_NTT_AVX2
+    if (fft::word::avx2_disponible()) {
+        construir(t, r0, K.modulus64());
+        return t;
+    }
+#endif
+    construir_escalar(t, r0, K);
+    return t;
+}
+
+// Σ_{i<filas} c[i]·T_i[j] + a0[j] (a0 puede ser nulo), reducido módulo p, para
+// j < t.n.  Las sumas de t.v32 caben en 32 bits; si no, en 64 (n <= kMax
+// filas, o k <= n <= kMax potencias en el Composer, con p <= 2^16: < 2^64).
+inline std::vector<u64> combina(const Fp64& K, const Tabla& t, const u64* a0, const u64* c, std::size_t filas) {
+#if ALCP_NTT_AVX2
+    if (fft::word::avx2_disponible()) {
+        const std::size_t n = t.n;
+        std::vector<u64> r(n);
+        if (t.v32) {
+            std::vector<u32> acc(t.ld, 0);
+            if (a0) for (std::size_t j = 0; j < n; ++j) acc[j] = static_cast<u32>(a0[j]);
+            acumula32(t, c, filas, acc.data());
+            for (std::size_t j = 0; j < n; ++j) r[j] = K.reduce64(acc[j]);
+        } else {
+            std::vector<u64> acc(t.ld, 0);
+            if (a0) std::copy(a0, a0 + n, acc.begin());
+            acumula64(t, c, filas, acc.data());
+            for (std::size_t j = 0; j < n; ++j) r[j] = K.reduce64(acc[j]);
+        }
+        return r;
+    }
+#endif
+    return combina_escalar(K, t, a0, c, filas);
+}
+
+// a mod m para a de grado n..2n-1 (a.size() - n <= n filas).  Devuelve los n
+// coeficientes del resto (sin recortar).
+inline std::vector<u64> reduce(const Fp64& K, const Tabla& t, const std::vector<u64>& a) {
+    return combina(K, t, a.data(), a.data() + t.n, a.size() - t.n);
+}
+
+// Tabla con filas dadas (las potencias h^i mod f del Composer): k filas de
+// ancho n (cada fila con <= n coeficientes < p <= 2^16, k <= n <= kMax).  No
+// tiene código vectorial: la suma la hace combina, correcta con o sin AVX2.
+inline Tabla de_filas(const Fp64& K, std::size_t n, const std::vector<const std::vector<u64>*>& filas) {
+    Tabla t;
+    const u64 p = K.modulus64();
+    t.n = n;
+    t.ld = (n + 8) & ~std::size_t(7);
+    t.v32 = static_cast<u64>(filas.size()) * (p - 1) * (p - 1) < (u64(1) << 32);
+    t.buf.assign(8 + filas.size() * t.ld, 0);
+    for (std::size_t i = 0; i < filas.size(); ++i)
+        for (std::size_t j = 0; j < filas[i]->size(); ++j) t.buf[8 + i * t.ld + j] = static_cast<u32>((*filas[i])[j]);
+    return t;
+}
+
+}  // namespace tabla
+
+// ---------------------------------------------------------------------------
+// Matrices 2x2 del half-GCD con la NTT en palabras (fase 7, solo Fp64)
+// ---------------------------------------------------------------------------
+// Piezas del half-GCD «V3e» (docs/optimizacion/investigacion-fase6.md, tema
+// «hgcd»; prototipo bench/experimentos/fase6/hgcd/hgcd_proto.cpp).  Un producto
+// de matrices 2x2 (o una matriz por un vector) con la NTT transforma cada
+// entrada UNA vez y suma en el dominio transformado: mul_mat pasa de 24
+// transformadas a 12 (8 directas + 4 inversas) y aplicar de 12 a 8.  Además,
+// si la longitud L del producto se pasa poco de una potencia de 2 (L <= 2^(k-1)
+// + 2^(k-1)/16), se usa una convolución CÍCLICA de tamaño 2^(k-1) en lugar de
+// 2^k: los pocos coeficientes j >= 2^(k-1) se calculan directamente y se restan
+// de los que se envolvieron sobre j - 2^(k-1) («envoltura»).  La aritmética es
+// exacta módulo p: el resultado es idéntico al de los productos de siempre.
+// Las tablas se piden con fft::tablas_sin_rng (no consume el generador).
+namespace hgcdw {
+
+using W = std::uint64_t;
+using W128 = unsigned __int128;
+using Tab = FFTTables<W>;
+
+// Exponente k de la transformada para productos de longitud <= L (L >= 2),
+// con la envoltura: si L - 2^(k-1) <= 2^(k-1)/16, se usa 2^(k-1).  El umbral
+// 1/16 es el del prototipo: con él los coeficientes calculados directamente
+// cuestan como mucho (2^(k-1)/16)^2/2 productos, poco frente a la NTT ahorrada.
+inline unsigned long elige_k(std::size_t L) {
+    unsigned long k = fft::ceil_log2(L);
+    if (k >= 6) {
+        const std::size_t mitad = std::size_t(1) << (k - 1);
+        if (L - mitad <= mitad / 16) --k;
+    }
+    return k;
+}
+
+// Transformada directa de c plegado módulo x^n - 1 (t de tamaño n).
+inline std::vector<W> directa(const Tab& t, const std::vector<W>& c, std::size_t n, W p) {
+    std::vector<W> v = medio::pliega(c.data(), c.size(), n, p);
+    if (!c.empty()) medio::directa(t, v);
+    return v;
+}
+
+// out[i] = x1[i]·y1[i] + x2[i]·y2[i] mod p (valores en [0, p)).
+inline void fma2(std::vector<W>& out, const std::vector<W>& x1, const std::vector<W>& y1, const std::vector<W>& x2,
+                 const std::vector<W>& y2, W p) {
+    const std::size_t n = x1.size();
+    out.resize(n);
+    if (p < (W(1) << 31)) {
+        // La suma cabe en 64 bits (< 2^63): una reducción de Barrett con
+        // mu = floor((2^64 - 1)/p) deja el resto en [0, 3p).
+        const W mu = ~W(0) / p;
+        for (std::size_t i = 0; i < n; ++i) {
+            const W s = x1[i] * y1[i] + x2[i] * y2[i];
+            const W q = static_cast<W>((static_cast<W128>(s) * mu) >> 64);
+            W r = s - q * p;
+            r -= p & (0 - static_cast<W>(r >= p));
+            r -= p & (0 - static_cast<W>(r >= p));
+            out[i] = r;
+        }
+    } else {
+        // Con p < 2^62 la suma de los dos productos es < 2^125: una sola división.
+        for (std::size_t i = 0; i < n; ++i)
+            out[i] = static_cast<W>((static_cast<W128>(x1[i]) * y1[i] + static_cast<W128>(x2[i]) * y2[i]) % p);
+    }
+}
+
+// Coeficiente j de x·y módulo p, calculado directamente.  Reserva del revisor
+// de la fase 6: con p cerca de 2^62 cada producto llega a 2^124 y basta sumar
+// 16 para desbordar un acumulador de 128 bits (el prototipo no lo tenía en
+// cuenta).  Aquí se cuentan los acarreos: el valor exacto de la suma es
+// acarreos·2^128 + s, y r128 = 2^128 mod p.  Con p < 2^32 nunca hay acarreos.
+inline W coef(const std::vector<W>& x, const std::vector<W>& y, std::size_t j, W p, W r128) {
+    if (x.empty() || y.empty() || j > x.size() + y.size() - 2) return 0;
+    const std::size_t i0 = j >= y.size() ? j - (y.size() - 1) : 0;
+    const std::size_t i1 = std::min(j, x.size() - 1);
+    W128 s = 0;
+    W acarreos = 0;
+    for (std::size_t i = i0; i <= i1; ++i) {
+        const W128 t = static_cast<W128>(x[i]) * y[j - i];
+        s += t;
+        acarreos += static_cast<W>(s < t);
+    }
+    return static_cast<W>((static_cast<W128>(acarreos % p) * r128 + s % p) % p);
+}
+
+// Longitud de x·y (0 si alguno es nulo).
+inline std::size_t lprod(const std::vector<W>& x, const std::vector<W>& y) {
+    return (x.empty() || y.empty()) ? 0 : x.size() + y.size() - 1;
+}
+
+// v es la transformada (tamaño n) de x1·y1 + x2·y2.  Devuelve sus coeficientes:
+// la transformada inversa y, si el producto tiene más de n coeficientes
+// (envoltura; nunca más de 2n), los j >= n se calculan directamente y se
+// restan de v[j - n], donde se habían sumado al envolver.
+inline std::vector<W> final_(const Tab& t, std::vector<W>& v, const std::vector<W>& x1, const std::vector<W>& y1,
+                             const std::vector<W>& x2, const std::vector<W>& y2, W p) {
+    const std::size_t n = v.size();
+    medio::inversa(t, v);
+    const std::size_t L = std::max(lprod(x1, y1), lprod(x2, y2));
+    if (L <= n) {
+        v.resize(L);
+        return std::move(v);
+    }
+    const W r64 = static_cast<W>((static_cast<W128>(1) << 64) % p);
+    const W r128 = static_cast<W>(static_cast<W128>(r64) * r64 % p);
+    v.resize(L, 0);
+    for (std::size_t j = n; j < L; ++j) {
+        W c = coef(x1, y1, j, p, r128) + coef(x2, y2, j, p, r128);
+        c -= p & (0 - static_cast<W>(c >= p));
+        v[j] = c;
+        W d = v[j - n] + p - c;
+        d -= p & (0 - static_cast<W>(d >= p));
+        v[j - n] = d;
+    }
+    return std::move(v);
+}
+
+}  // namespace hgcdw
 
 template <class Field>
 class Poly {
@@ -38,10 +779,54 @@ public:
 
     // Below this many coefficients in the smaller operand, schoolbook wins.
     static constexpr std::size_t kKaratsubaCutoff = 32;
+    // Karatsuba reparte sus tres subproductos entre hilos solo si ambos
+    // operandos tienen al menos tantos coeficientes (coste de crear hilos):
+    // 256 si el elemento es un entero GMP (F_p), 1024 si es una palabra de
+    // máquina (Fp64: el producto cuesta unos nanosegundos y con 64-512
+    // coeficientes crear los hilos cuesta más que el propio producto) y 64 si
+    // es un vector (F_q: cada producto de elementos ya cuesta O(n^2)).  Fase 7:
+    // FpN2 (dos palabras, producto de ~10 ns) se trata como una palabra.
+    static constexpr std::size_t kParKaratsubaMin =
+        std::is_same_v<Elem, BigInt> ? 256
+                                     : ((std::is_arithmetic_v<Elem> || std::is_same_v<Field, FpN2>) ? 1024 : 64);
+    // Fase 8 (revisión de la fase 7): FqTab (elemento de una palabra con tablas
+    // de logaritmos) heredaba el 1024 de Fp64.  Con p impar la suma es un
+    // logaritmo de Zech (varias lecturas de tabla) y cada producto de Karatsuba
+    // cuesta ~6 veces más que con p = 2 (suma XOR), así que los hilos compensan
+    // antes: 512.  Con p = 2 se queda en 1024.  Medido con carga (Zen 3, 4
+    // tandas intercaladas, mejor tanda, ms; umbral actual / 512):
+    //   F_(3^7): d = 512 0,78 / 0,45 (1,74x); 1024 0,97 / 0,90 (1,08x);
+    //            1500 1,63 / 1,21 (1,35x); 2048 y 4096 iguales (±5 %).
+    //   F_(7^4): 512 0,81 / 0,50 (1,61x); 1024 1,10x; 1500 1,38x; 2048 y 4096
+    //            iguales.
+    //   F_256 y F_(2^12), en cambio: 512 0,135 / 0,24 (0,56x); 1024 0,55x.
+    // (128 y 256 son peores que 512 en todos; 2048 empeora F_(3^7) y F_(7^4)
+    // a 0,45x en 1024-1500 y solo mejora F_256 en 2048, 1,23x, pero lo
+    // empeora en 1024, 0,86x.)  Ver bench/calibra_fqtab.cpp.
+    static std::size_t par_karatsuba_min(const Field& K) {
+        if constexpr (kRepresentaFq64) return K.characteristic() == 2 ? kParKaratsubaMin : 512;
+        else {
+            (void)K;
+            return kParKaratsubaMin;
+        }
+    }
+
+    // Número máximo de intentos aleatorios de equal_degree_split antes de
+    // concluir que la entrada no cumple la precondición (ver equal_degree).
+    // Con una entrada válida cada intento separa factores con probabilidad del
+    // orden de 1/2 (análisis estándar de Cantor-Zassenhaus), de modo que fallar
+    // 256 veces seguidas es prácticamente imposible; con una entrada inválida
+    // (p. ej. un irreducible de grado mayor que r) evita un bucle infinito.
+    // Mientras no se agota, la secuencia de intentos es idéntica a la original.
+    static constexpr int kMaxSplitAttempts = 256;
 
     // ---- construction ------------------------------------------------------
     explicit Poly(const Field& field) : K_(&field) {}  // zero polynomial
     Poly(const Field& field, std::vector<Elem> coeffs) : K_(&field), c_(std::move(coeffs)) { trim(); }
+
+    // Un cuerpo temporal dejaría el puntero K_ colgando: prohibido.
+    explicit Poly(const Field&&) = delete;
+    Poly(const Field&&, std::vector<Elem>) = delete;
 
     static Poly zero(const Field& F) { return Poly(F); }
     static Poly one(const Field& F) { return Poly(F, {F.one()}); }
@@ -70,15 +855,36 @@ public:
         return Poly(F, std::move(v));
     }
 
+    // Las mismas factorías con un cuerpo temporal: prohibidas (puntero colgante).
+    static Poly zero(const Field&&) = delete;
+    static Poly one(const Field&&) = delete;
+    static Poly constant(const Field&&, const Elem&) = delete;
+    static Poly variable(const Field&&) = delete;
+    static Poly monomial(const Field&&, std::size_t, const Elem&) = delete;
+    static Poly from_ints(const Field&&, const std::vector<BigInt>&) = delete;
+    static Poly random(const Field&&, int) = delete;
+
     // ---- basics ------------------------------------------------------------
     const Field& field() const { return *K_; }
     const std::vector<Elem>& coeffs() const { return c_; }
     int degree() const { return static_cast<int>(c_.size()) - 1; }
     bool is_zero() const { return c_.empty(); }
     bool is_one() const { return c_.size() == 1 && K_->is_one(c_[0]); }
-    const Elem& lead() const { return c_.back(); }  // precondition: !is_zero()
+    // Coeficiente principal.  El polinomio cero no tiene: lanza
+    // std::domain_error (antes era comportamiento indefinido).
+    const Elem& lead() const {
+        if (c_.empty()) throw std::domain_error("lead: el polinomio cero no tiene coeficiente principal");
+        return c_.back();
+    }
 
+    // Coeficiente de x^i (el cero del cuerpo si i > grado).
+    Elem coeff(std::size_t i) const { return i < c_.size() ? c_[i] : K_->zero(); }
+
+    // Igualdad de polinomios.  Si los cuerpos son distintos (ni el mismo objeto
+    // ni same_field) devuelve false en lugar de lanzar: son elementos de anillos
+    // distintos y, por tanto, distintos.
     bool operator==(const Poly& o) const {
+        if (K_ != o.K_ && !detail::fields_match(*K_, *o.K_)) return false;
         if (c_.size() != o.c_.size()) return false;
         for (std::size_t i = 0; i < c_.size(); ++i)
             if (!K_->eq(c_[i], o.c_[i])) return false;
@@ -87,11 +893,18 @@ public:
     bool operator!=(const Poly& o) const { return !(*this == o); }
 
     // ---- additive structure ------------------------------------------------
+    // Suma y resta: el resultado se construye una sola vez, coeficiente a
+    // coeficiente (sin rellenar primero con ceros y copiar), con las mismas
+    // operaciones del cuerpo: add/sub en la parte común; en la parte que solo
+    // tiene un operando, su copia (o -o_i = 0 - o_i en la resta).
     Poly operator+(const Poly& o) const {
-        std::size_t n = std::max(c_.size(), o.c_.size());
-        std::vector<Elem> r(n, K_->zero());
-        for (std::size_t i = 0; i < c_.size(); ++i) r[i] = c_[i];
-        for (std::size_t i = 0; i < o.c_.size(); ++i) r[i] = K_->add(r[i], o.c_[i]);
+        require_same_field(o);
+        const std::size_t m = std::min(c_.size(), o.c_.size());
+        const std::vector<Elem>& larga = c_.size() >= o.c_.size() ? c_ : o.c_;
+        std::vector<Elem> r;
+        r.reserve(larga.size());
+        for (std::size_t i = 0; i < m; ++i) r.push_back(K_->add(c_[i], o.c_[i]));
+        r.insert(r.end(), larga.begin() + static_cast<std::ptrdiff_t>(m), larga.end());
         return Poly(*K_, std::move(r));
     }
     Poly operator-() const {
@@ -100,10 +913,13 @@ public:
         return Poly(*K_, std::move(r));
     }
     Poly operator-(const Poly& o) const {
-        std::size_t n = std::max(c_.size(), o.c_.size());
-        std::vector<Elem> r(n, K_->zero());
-        for (std::size_t i = 0; i < c_.size(); ++i) r[i] = c_[i];
-        for (std::size_t i = 0; i < o.c_.size(); ++i) r[i] = K_->sub(r[i], o.c_[i]);
+        require_same_field(o);
+        const std::size_t m = std::min(c_.size(), o.c_.size());
+        std::vector<Elem> r;
+        r.reserve(std::max(c_.size(), o.c_.size()));
+        for (std::size_t i = 0; i < m; ++i) r.push_back(K_->sub(c_[i], o.c_[i]));
+        for (std::size_t i = m; i < c_.size(); ++i) r.push_back(c_[i]);
+        for (std::size_t i = m; i < o.c_.size(); ++i) r.push_back(K_->neg(o.c_[i]));
         return Poly(*K_, std::move(r));
     }
 
@@ -111,12 +927,41 @@ public:
     Poly operator*(const Poly& o) const { return mul(o, MulAlgo::Auto); }
 
     Poly mul(const Poly& o, MulAlgo algo) const {
+        require_same_field(o);
         if (is_zero() || o.is_zero()) return zero(*K_);
         const std::size_t na = c_.size(), nb = o.c_.size();
         if (algo == MulAlgo::Auto) {
             const std::size_t L = na + nb - 1;
             const std::size_t small = std::min(na, nb);
-            if (fft::fft_exponent(*K_, L) >= 0 && L >= 64)
+            const bool can_fft = fft::fft_exponent(*K_, L) >= 0;
+            // Regla original: FFT si cabe y L >= 64.  Se conserva solo para
+            // reproducir el consumo del generador aleatorio (ver abajo).
+            const bool old_fft = can_fft && L >= 64;
+            bool use_fft = can_fft && prefer_fft(*K_, small, std::max(na, nb), L);
+            // La primera transformada de un cuerpo calcula su raíz base con el
+            // RNG.  Para que la secuencia aleatoria (y por tanto factor(),
+            // Fq(p, n), etc.) sea idéntica a la original, la raíz se calcula
+            // exactamente cuando la regla original habría usado la FFT: no se
+            // adelanta (FFT nueva solo si la caché ya tiene tablas, es decir,
+            // si la raíz ya existe) ni se omite (se pide aunque no se use).
+            if (use_fft && !old_fft && K_->fft_cache_.empty()) use_fft = false;
+            // (Se construyen las tablas, que piden la raíz: así la caché deja
+            // de estar vacía y los productos siguientes pueden usar la FFT.)
+            if constexpr (std::is_same_v<Field, FpN2>) {
+                // Fase 7: FpN2 nunca prefiere la FFT, pero debe pedir la raíz
+                // EXACTAMENTE cuando la pediría Poly<Fp> con el mismo p (mismo
+                // generador que Fp): ver pide_raiz_como_fp.
+                use_fft = false;
+                if (K_->fft_cache_.empty() && pide_raiz_como_fp(*K_, small, std::max(na, nb), L, can_fft, old_fft))
+                    (void)fft::tables(*K_, fft::ceil_log2(L));
+            } else if (old_fft && !use_fft) {
+                (void)fft::tables(*K_, fft::ceil_log2(L));
+            }
+            // Fase 4 (nivel B): Kronecker sobre Z cuando es más rápido.  Va después
+            // de la línea anterior, así que el consumo del generador no cambia.
+            if (prefer_kronecker(*K_, small, can_fft))
+                return mul_kronecker_auto(o);
+            else if (use_fft)
                 algo = MulAlgo::FFT;
             else if (small >= kKaratsubaCutoff)
                 algo = MulAlgo::Karatsuba;
@@ -127,16 +972,103 @@ public:
             case MulAlgo::FFT: {
                 if (fft::fft_exponent(*K_, na + nb - 1) < 0)
                     return mul_karatsuba(o);  // field cannot host this size
+                // Fase 7 (revisión de FpN2): convolve de Fp y Fp64 pide siempre
+                // las tablas (y la raíz, con el generador), también con
+                // longitud 1; el camino genérico de FpN2 no lo hacía con n <= 1.
+                if constexpr (std::is_same_v<Field, FpN2>) (void)fft::tables(*K_, fft::ceil_log2(na + nb - 1));
                 return Poly(*K_, fft::convolve(*K_, c_, o.c_));
             }
             case MulAlgo::Karatsuba: return mul_karatsuba(o);
+            case MulAlgo::Kronecker: return mul_kronecker(o);
             case MulAlgo::Schoolbook:
             default: return mul_school(o);
         }
     }
 
-    Poly mul_school(const Poly& o) const {
+    // Fase 7: ¿es Field un cuerpo con representación propia de un Fq64 de
+    // referencia (FqTab, fq_tab.hpp)?
+    static constexpr bool kRepresentaFq64 = requires(const Field& K, const Elem& x) {
+        K.reference();
+        K.encode(K.decode(x));
+    };
+    // El producto que la regla Auto llama «Kronecker»: con FqTab, Karatsuba
+    // sobre elementos de una palabra (más rápido que pasar por Fq64); en el
+    // resto, Kronecker.  Ninguno usa el generador ni la FFT.
+    Poly mul_kronecker_auto(const Poly& o) const {
+        if constexpr (kRepresentaFq64) return mul_karatsuba(o);
+        else return mul_kronecker(o);
+    }
+
+    // Producto por sustitución de Kronecker sobre Z con GMP (kronecker.hpp,
+    // fase 4, nivel B): los coeficientes se empaquetan en un entero, se
+    // multiplica con mpn_mul y se desempaqueta reduciendo módulo p (y módulo g
+    // en F_q).  No usa raíces de la unidad ni el generador aleatorio.
+    Poly mul_kronecker(const Poly& o) const {
+        require_same_field(o);
         if (is_zero() || o.is_zero()) return zero(*K_);
+        if constexpr (ks::Extension<Field>)
+            return Poly(*K_, ks::mul_extension(*K_, c_.data(), c_.size(), o.c_.data(), o.c_.size()));
+        else if constexpr (kRepresentaFq64) {
+            // Fase 7: cuerpo con representación propia de un Fq64 de referencia
+            // (FqTab, fq_tab.hpp).  Solo con MulAlgo::Kronecker explícito (Auto
+            // usa mul_kronecker_auto): se pasa por el Kronecker de Fq64.
+            auto aref = [&](const std::vector<Elem>& v) {
+                std::vector<typename std::decay_t<decltype(K_->reference())>::Elem> r;
+                r.reserve(v.size());
+                for (const auto& x : v) r.push_back(K_->decode(x));
+                return r;
+            };
+            const auto A = aref(c_), B = aref(o.c_);
+            const auto C = ks::mul_extension(K_->reference(), A.data(), A.size(), B.data(), B.size());
+            std::vector<Elem> r;
+            r.reserve(C.size());
+            for (const auto& x : C) r.push_back(K_->encode(x));
+            return Poly(*K_, std::move(r));
+        } else
+            return Poly(*K_, ks::mul_primo(*K_, c_.data(), c_.size(), o.c_.data(), o.c_.size()));
+    }
+
+    Poly mul_school(const Poly& o) const {
+        require_same_field(o);
+        if (is_zero() || o.is_zero()) return zero(*K_);
+        if constexpr (std::is_same_v<Field, Fp64>) {
+            // Fase 6 (p pequeño, p. ej. F_101): el mismo doble bucle con un
+            // acumulador de 64 bits.  Cada coeficiente del producto recibe a lo
+            // sumo min(na, nb) productos <= (p-1)^2; Fp64::acc64_cabe comprueba
+            // que esa suma cabe en una palabra.  Mismo valor exacto que con el
+            // acumulador de 128 bits, luego el mismo resultado.
+            const std::size_t na = c_.size(), nb = o.c_.size();
+            if (K_->acc64_cabe(std::min(na, nb))) {
+                std::vector<std::uint64_t> acc(na + nb - 1, 0);
+                for (std::size_t i = 0; i < na; ++i) {
+                    const std::uint64_t ci = c_[i];
+                    if (ci == 0) continue;
+                    std::uint64_t* fila = acc.data() + i;
+                    for (std::size_t j = 0; j < nb; ++j) fila[j] += ci * o.c_[j];
+                }
+                std::vector<Elem> r(acc.size());
+                for (std::size_t k = 0; k < acc.size(); ++k) r[k] = K_->reduce64(acc[k]);
+                return Poly(*K_, std::move(r));
+            }
+        }
+        if constexpr (LazyAccumulation<Field>) {
+            // Mismo doble bucle, con reducción perezosa: cada coeficiente del
+            // producto acumula sus productos c_i·o_j sin reducir y se reduce
+            // una sola vez al final (ganchos opcionales del cuerpo, field.hpp).
+            const std::size_t L = c_.size() + o.c_.size() - 1;
+            std::vector<typename Field::Acc> acc(L);
+            for (auto& s : acc) K_->acc_clear(s);
+            detail::con_acc_fma(*K_, [&](auto fma) {
+                for (std::size_t i = 0; i < c_.size(); ++i) {
+                    if (K_->is_zero(c_[i])) continue;
+                    for (std::size_t j = 0; j < o.c_.size(); ++j) fma(acc[i + j], c_[i], o.c_[j]);
+                }
+            });
+            std::vector<Elem> r;
+            r.reserve(L);
+            for (auto& s : acc) r.push_back(K_->acc_reduce(s));
+            return Poly(*K_, std::move(r));
+        }
         std::vector<Elem> r(c_.size() + o.c_.size() - 1, K_->zero());
         for (std::size_t i = 0; i < c_.size(); ++i) {
             if (K_->is_zero(c_[i])) continue;
@@ -147,30 +1079,102 @@ public:
     }
 
     // Recursive Karatsuba (port of fp_x_mult_karatsuba / fq_x_mult_karatsuba).
+    // Implementación sobre vistas (puntero + longitud) en karatsuba_rec: la
+    // recursión y los subproductos son exactamente los del original
+    // (aL·bL, aH·bH, (aL+aH)·(bL+bH), con las mismas mitades recortadas), pero
+    // sin copiar las mitades a polinomios nuevos (slice) ni desplazar copiando
+    // (shift): z1 se corrige en sitio y la recombinación acumula en el vector
+    // resultado.
     Poly mul_karatsuba(const Poly& o) const {
+        require_same_field(o);
         if (is_zero() || o.is_zero()) return zero(*K_);
         if (c_.size() <= kKaratsubaCutoff || o.c_.size() <= kKaratsubaCutoff)
             return mul_school(o);
-
-        std::size_t m = std::max(c_.size(), o.c_.size()) / 2;
-        Poly aL = slice(0, m), aH = slice(m, c_.size());
-        Poly bL = o.slice(0, m), bH = o.slice(m, o.c_.size());
-
-        Poly z0 = aL.mul_karatsuba(bL);
-        Poly z2 = aH.mul_karatsuba(bH);
-        Poly z1 = (aL + aH).mul_karatsuba(bL + bH) - z0 - z2;
-
-        return z0 + z1.shift(m) + z2.shift(2 * m);
+        // Profundidad paralela: 2 niveles (hasta 9 ramas) si hay >= 9 hilos,
+        // 1 nivel (3 ramas) si hay >= 3, ninguno en otro caso.
+        const unsigned T = par::max_threads();
+        const int depth = (T >= 9) ? 2 : (T >= 3 ? 1 : 0);
+        return Poly(*K_, karatsuba_rec(*K_, c_.data(), c_.size(), o.c_.data(), o.c_.size(), depth));
     }
 
     // ---- Euclidean division ------------------------------------------------
     // Returns (q, r) with *this = q*o + r and (r == 0 or deg r < deg o).
+    // Dividir por el polinomio cero lanza alcp::division_by_zero.
+    // Despacho (fase 4): con divisor y cociente grandes (prefer_newton) se usa
+    // la división por inversión de Newton (divmod_newton); si no, la división
+    // escolar de siempre (divmod_school).  El cociente y el resto son únicos,
+    // así que el resultado es idéntico por los dos caminos.
     std::pair<Poly, Poly> divmod(const Poly& o) const {
-        if (o.is_zero()) throw std::domain_error("division by zero polynomial");
+        require_same_field(o);
+        if (o.is_zero()) throw division_by_zero("division by zero polynomial");
+        if (degree() < o.degree()) return {zero(*K_), *this};
+        if (prefer_newton(*K_, static_cast<std::size_t>(o.degree()),
+                          static_cast<std::size_t>(degree() - o.degree()) + 1))
+            return divmod_newton(o);
+        return divmod_school(o);
+    }
+
+    // División escolar (el algoritmo original, port de divmod de cuerpos_finitos.py).
+    std::pair<Poly, Poly> divmod_school(const Poly& o) const {
+        require_same_field(o);
+        if (o.is_zero()) throw division_by_zero("division by zero polynomial");
         if (degree() < o.degree()) return {zero(*K_), *this};
 
         const int db = o.degree();
         Elem inv_lead = K_->inv(o.lead());
+        if constexpr (std::is_same_v<Field, Fp64>) {
+            // Fase 6 (p pequeño): la misma división con acumuladores de 64 bits.
+            // Cada acumulador parte de un coeficiente < p y recibe a lo sumo
+            // un producto <= (p-1)^2 por paso, y hay nr - db pasos: en total
+            // <= (nr - db + 1)·(p-1)^2 (Fp64::acc64_cabe).  Mismos valores
+            // exactos, luego el mismo cociente y el mismo resto.
+            const std::size_t nr = c_.size();
+            if (K_->acc64_cabe(nr - static_cast<std::size_t>(db) + 1)) {
+                std::vector<std::uint64_t> acc(c_.begin(), c_.end());
+                std::vector<Elem> q(degree() - db + 1, 0);
+                for (int dr = static_cast<int>(nr) - 1; dr >= db; --dr) {
+                    const Elem lr = K_->reduce64(acc[dr]);
+                    if (lr == 0) continue;  // cero que ha aparecido: se salta
+                    const int pos = dr - db;
+                    const Elem factor = K_->mul(lr, inv_lead);
+                    const std::uint64_t nfactor = K_->neg(factor);
+                    q[pos] = factor;
+                    std::uint64_t* fila = acc.data() + pos;
+                    for (int j = 0; j < db; ++j) fila[j] += nfactor * o.c_[j];
+                }
+                std::vector<Elem> rem(static_cast<std::size_t>(db));
+                for (int k = 0; k < db; ++k) rem[k] = K_->reduce64(acc[k]);
+                return {Poly(*K_, std::move(q)), Poly(*K_, std::move(rem))};
+            }
+        }
+        if constexpr (LazyAccumulation<Field>) {
+            // Misma división escolar con reducción perezosa: el resto de trabajo
+            // se guarda en acumuladores sin reducir; cada paso resta
+            // factor·o (sumando (-factor)·o_j, que es lo mismo módulo p) y solo
+            // se reduce el coeficiente principal cuando hace falta leerlo.  El
+            // término j = db no se acumula: el algoritmo lo anula exactamente
+            // y ese coeficiente ya no se vuelve a leer.
+            const std::size_t nr = c_.size();
+            std::vector<typename Field::Acc> acc(nr);
+            for (std::size_t k = 0; k < nr; ++k) K_->acc_set(acc[k], c_[k]);
+            std::vector<Elem> q(degree() - db + 1, K_->zero());
+            // (Fase 6: aquí no se usa detail::con_acc_fma.  Con p pequeño ya
+            // actúa el acumulador de 64 bits de arriba, y la versión con lambda
+            // hacía este bucle un 15 % más lento con p = 2^61 - 1.)
+            for (int dr = static_cast<int>(nr) - 1; dr >= db; --dr) {
+                Elem lr = K_->acc_reduce(acc[dr]);
+                if (K_->is_zero(lr)) continue;  // cero que ha aparecido: se salta
+                const int pos = dr - db;
+                Elem factor = K_->mul(lr, inv_lead);
+                const Elem nfactor = K_->neg(factor);
+                q[pos] = std::move(factor);
+                for (int j = 0; j < db; ++j) K_->acc_fma(acc[pos + j], nfactor, o.c_[j]);
+            }
+            std::vector<Elem> rem;
+            rem.reserve(static_cast<std::size_t>(db));
+            for (int k = 0; k < db; ++k) rem.push_back(K_->acc_reduce(acc[k]));
+            return {Poly(*K_, std::move(q)), Poly(*K_, std::move(rem))};
+        }
         std::vector<Elem> r = c_;  // working remainder
         std::vector<Elem> q(degree() - db + 1, K_->zero());
 
@@ -186,6 +1190,158 @@ public:
             --dr;
         }
         return {Poly(*K_, std::move(q)), Poly(*K_, std::move(r))};
+    }
+
+    // División por inversión de Newton (fase 4), con las piezas de la
+    // Práctica 3 (algoritmos_rapidos.py): con m = deg f, n = deg g y
+    // d = m - n, los coeficientes invertidos cumplen
+    //     rev(q) = rev(f) · rev(g)^{-1}   (mod x^{d+1}),
+    // donde rev(g)^{-1} es el inverso de una serie de potencias, que se calcula
+    // con la iteración de Newton de fp_toep_inf_inv (inverse_series).  Después,
+    // r = f - g·q.  Coste O(M(d) + M(n, d)) en lugar de O(n·d).
+    std::pair<Poly, Poly> divmod_newton(const Poly& o) const {
+        require_same_field(o);
+        if (o.is_zero()) throw division_by_zero("division by zero polynomial");
+        if (degree() < o.degree()) return {zero(*K_), *this};
+        const std::size_t d1 = static_cast<std::size_t>(degree() - o.degree()) + 1;
+        return divmod_with_inverse(o, inverse_series(*K_, reversed_head(o, d1), d1));
+    }
+
+    // Inverso de la serie de potencias a módulo x^n (a[0] != 0): la iteración
+    // de Newton de fp_toep_inf_inv / fq_toep_inf_inv (Práctica 3) con la misma
+    // recursión, k = ceil(n/2) y x_n = x_k·(2 - a·x_k) mod x^n.  Solo se usan
+    // los n primeros coeficientes de a (los demás no influyen módulo x^n).
+    // Los productos internos no adelantan el cálculo de la raíz de la FFT
+    // (mul_no_rng), para conservar la secuencia del generador aleatorio.
+    static std::vector<Elem> inverse_series(const Field& K, const std::vector<Elem>& a, std::size_t n) {
+        if (n == 0) return {};
+        if (a.empty() || K.is_zero(a[0]))
+            throw division_by_zero("inverse_series: a[0] es cero (serie no invertible)");
+        if (n == 1) return {K.inv(a[0])};
+        if constexpr (fft::NativeWordField<Field>) {
+            // Fase 6: producto medio si la NTT ya está disponible (ver inverse_series_medio).
+            if (n >= medio::kMin && ntt_sin_rng(K, n)) return inverse_series_medio(K, a, n);
+        }
+        const std::size_t k = (n + 1) / 2;
+        std::vector<Elem> xk = inverse_series(K, a, k);
+        Poly X(K, xk);
+        Poly A(K, std::vector<Elem>(a.begin(), a.begin() + static_cast<std::ptrdiff_t>(std::min(n, a.size()))));
+        Poly T(K, head(K, A.mul_no_rng(X), n));
+        Poly R = constant(K, K.add(K.one(), K.one())) - T;   // 2 - T
+        return head(K, R.mul_no_rng(X), n);
+    }
+
+    // ¿Puede usarse la NTT en palabras para una convolución de longitud len sin
+    // tocar el generador aleatorio?  Fase 7 (Fp64): siempre que el cuerpo
+    // admita ese tamaño, con fft::tablas_sin_rng (raíz determinista si la caché
+    // está vacía).  En los demás cuerpos, solo si la caché ya tiene tablas (la
+    // raíz base ya se sacó del generador).  Es la misma condición que mul_no_rng.
+    static bool ntt_sin_rng(const Field& K, std::size_t len) {
+        if constexpr (fft::NativeWordField<Field>) return fft::fft_exponent(K, len) >= 0;
+        else return !K.fft_cache_.empty() && fft::fft_exponent(K, len) >= 0;
+    }
+
+    // Fase 6 (Fp64 con tablas FFT): el mismo paso de Newton, k = ceil(n/2) y
+    // x_n = x_k - x^k·(x_k·e) mod x^n, con e = coeficientes k..n-1 de a·x_k
+    // (a·x_k ≡ 1 mod x^k).  (a mod x^n)·x_k tiene n + k - 1 coeficientes; con una
+    // convolución CÍCLICA de tamaño N = 2^ceil(log2 n) >= n lo que se solapa cae
+    // en los índices < k - 1 y los k..n-1 salen limpios (producto medio).  El
+    // segundo producto, x_k·e, tiene n - 1 <= N coeficientes y reutiliza la
+    // transformada de x_k.  En total 5 transformadas de tamaño N frente a 6 de
+    // 2^ceil(log2(n + k - 1)) (hasta el doble).  El inverso módulo x^n es único:
+    // el resultado es idéntico.  Medido en 4000/2000: la inversión, 2,6x.
+    static std::vector<Elem> inverse_series_medio(const Field& K, const std::vector<Elem>& a, std::size_t n) {
+        using medio::W;
+        const std::size_t k = (n + 1) / 2;
+        std::vector<Elem> x = inverse_series(K, a, k);  // k coeficientes exactos
+        const unsigned long l = fft::ceil_log2(n);
+        const std::size_t N = std::size_t(1) << l;
+        const auto tp = fft::tablas_sin_rng(K, l);  // no consume el generador
+        const auto& t = *tp;
+        const W p = K.modulus64();
+        std::vector<W> fa(N, 0), fx(N, 0);
+        std::copy(a.begin(), a.begin() + static_cast<std::ptrdiff_t>(std::min(n, a.size())), fa.begin());
+        std::copy(x.begin(), x.end(), fx.begin());
+        medio::directa(t, fa);
+        medio::directa(t, fx);
+        medio::producto(fa, fx, p);
+        medio::inversa(t, fa);
+        std::vector<W> e(N, 0);
+        for (std::size_t i = k; i < n; ++i) e[i - k] = fa[i];
+        medio::directa(t, e);
+        medio::producto(e, fx, p);
+        medio::inversa(t, e);
+        x.resize(n);
+        for (std::size_t i = 0; i < n - k; ++i) x[k + i] = K.neg(e[i]);
+        return x;
+    }
+
+    // Fase 6 (Fp64 con tablas FFT): divmod_with_inverse en palabras.
+    //   * Cociente: rev(q) = rev(f)[0..d1)·ginv mod x^d1, producto corto con una
+    //     transformada de tamaño 2^ceil(log2(2·d1 - 1)) (igual que antes).
+    //   * Resto: r = f - g·q tiene grado < n = deg g, así que basta calcularlo
+    //     módulo x^N2 - 1 con N2 = 2^ceil(log2 n) >= n: f, g y q se pliegan a N2
+    //     y el producto es una convolución cíclica de la mitad de tamaño que
+    //     g·q completo.
+    // Cociente y resto son únicos: el resultado es idéntico.
+    std::pair<Poly, Poly> divmod_with_inverse_medio(const Poly& o, const std::vector<Elem>& ginv) const {
+        using medio::W;
+        const Field& K = *K_;
+        const W p = K.modulus64();
+        const std::size_t m1 = c_.size(), d1 = ginv.size(), n = o.c_.size() - 1;
+        const unsigned long l1 = fft::ceil_log2(2 * d1 - 1);
+        const std::size_t N1 = std::size_t(1) << l1;
+        const auto tp1 = fft::tablas_sin_rng(K, l1);  // no consume el generador
+        const auto& t1 = *tp1;
+        std::vector<W> b(N1, 0), gb(N1, 0);
+        for (std::size_t i = 0; i < d1; ++i) b[i] = c_[m1 - 1 - i];
+        std::copy(ginv.begin(), ginv.end(), gb.begin());
+        medio::directa(t1, b);
+        medio::directa(t1, gb);
+        medio::producto(b, gb, p);
+        medio::inversa(t1, b);
+        std::vector<Elem> q(d1);
+        for (std::size_t i = 0; i < d1; ++i) q[i] = b[d1 - 1 - i];
+
+        const unsigned long l2 = fft::ceil_log2(n);
+        const std::size_t N2 = std::size_t(1) << l2;
+        const auto tp2 = fft::tablas_sin_rng(K, l2);
+        const auto& t2 = *tp2;
+        std::vector<W> x = medio::pliega(o.c_.data(), o.c_.size(), N2, p);
+        std::vector<W> y = medio::pliega(q.data(), q.size(), N2, p);
+        medio::directa(t2, x);
+        medio::directa(t2, y);
+        medio::producto(x, y, p);
+        medio::inversa(t2, x);
+        std::vector<W> r = medio::pliega(c_.data(), m1, N2, p);
+        r.resize(n);
+        for (std::size_t i = 0; i < n; ++i) r[i] = K.sub(r[i], x[i]);
+        return {Poly(K, std::move(q)), Poly(K, std::move(r))};
+    }
+
+    // División de *this entre o dado ginv = rev(o)^{-1} mod x^{d1}, con
+    // d1 = deg(*this) - deg(o) + 1 (deg(*this) >= deg(o)): sirve para dividir
+    // muchas veces entre el mismo o calculando el inverso una sola vez (lo
+    // que hace Reducer).  Precondición: ginv.size() == d1 exactamente.
+    std::pair<Poly, Poly> divmod_with_inverse(const Poly& o, const std::vector<Elem>& ginv) const {
+        const Field& K = *K_;
+        const std::size_t m1 = c_.size(), d1 = ginv.size();
+        if constexpr (fft::NativeWordField<Field>) {
+            // Fase 6: resto módulo x^N - 1 si la NTT ya está disponible (sin generador).
+            const std::size_t n = o.c_.size() - 1;
+            if (d1 >= medio::kMin && n >= medio::kMin && ntt_sin_rng(K, 2 * d1 - 1) && ntt_sin_rng(K, n))
+                return divmod_with_inverse_medio(o, ginv);
+        }
+        std::vector<Elem> frev;
+        frev.reserve(d1);
+        for (std::size_t i = 0; i < d1; ++i) frev.push_back(c_[m1 - 1 - i]);
+        const Poly F(K, std::move(frev)), G(K, ginv);
+        const Poly FG = F.mul_no_rng(G);
+        std::vector<Elem> qrev = head(K, FG, d1);
+        std::reverse(qrev.begin(), qrev.end());
+        Poly q(K, std::move(qrev));
+        Poly r = *this - o.mul_no_rng(q);
+        return {std::move(q), std::move(r)};
     }
     Poly operator/(const Poly& o) const { return divmod(o).first; }
     Poly operator%(const Poly& o) const { return divmod(o).second; }
@@ -221,8 +1377,91 @@ public:
         return result;
     }
 
+    // ---- evaluación y composición ------------------------------------------
+    // f(x0) por la regla de Horner.  El polinomio cero vale 0 en todo punto.
+    // Precondición (como en el resto de la librería): x0 es un elemento
+    // normalizado de este mismo cuerpo.
+    Elem evaluate(const Elem& x0) const {
+        Elem acc = K_->zero();
+        for (std::size_t i = c_.size(); i-- > 0; )
+            acc = K_->add(K_->mul(acc, x0), c_[i]);
+        return acc;
+    }
+
+    // Composición f(g(x)) por Horner con polinomios:
+    //   f(g) = (...((c_n·g + c_{n-1})·g + c_{n-2})...)·g + c_0.
+    // g debe estar sobre el mismo cuerpo (si no, std::invalid_argument).
+    Poly compose(const Poly& g) const {
+        require_same_field(g);
+        Poly acc = zero(*K_);
+        for (std::size_t i = c_.size(); i-- > 0; )
+            acc = acc * g + constant(*K_, c_[i]);
+        return acc;
+    }
+
+    // ¿Es f libre de cuadrados (sin factores irreducibles repetidos)?
+    //   * el polinomio cero NO lo es (lo divide el cuadrado de cualquier cosa);
+    //   * una constante no nula SÍ (es una unidad);
+    //   * si deg f >= 1, f es libre de cuadrados  <=>  gcd(f, f') = 1.  En
+    //     particular, si f' = 0 (f = g(x^p) = h^p en un cuerpo finito), f no es
+    //     libre de cuadrados: gcd(f, 0) = f mónico tiene grado >= 1.
+    bool is_squarefree() const {
+        if (is_zero()) return false;
+        if (degree() == 0) return true;
+        Poly df = derivative();
+        if (df.is_zero()) return false;
+        return gcd(*this, df).degree() == 0;
+    }
+
     // ---- gcd family --------------------------------------------------------
+    // Fase 4 (nivel B): con grados grandes, gcd y gcd_ext usan el algoritmo
+    // half-GCD (Thull-Yap), que obtiene la misma sucesión de cocientes que el
+    // algoritmo de Euclides clásico en O(M(n) log n) en lugar de O(n^2).  Como
+    // los cocientes son los mismos, el mcd y los coeficientes de Bézout son
+    // idénticos a los de gcd_classic / gcd_ext_classic (los originales).
     static Poly gcd(Poly a, Poly b) {
+        a.require_same_field(b);
+        const int umbral = static_cast<int>(umbral_hgcd(a.field(), false));
+        if constexpr (fft::NativeWordField<Field>) {
+            // Fase 7 (Fp64): half-GCD «V3e» (hgcd_rem_w devuelve los restos, sin
+            // el `aplicar` completo de después) si el grado de entrada es >=
+            // umbral, mientras sea >= `sigue`, y el Euclides clásico en sitio
+            // por debajo.  Mismos cocientes.
+            if (std::max(a.degree(), b.degree()) < umbral) return gcd_classic(std::move(a), std::move(b));
+            const int sigue = static_cast<int>(umbral_sigue_gcd(a.field()));
+            while (!b.is_zero()) {
+                if (a.degree() < sigue) return gcd_classic(std::move(a), std::move(b));
+                if (a.degree() > b.degree()) {
+                    HgcdRes r = hgcd_rem_w(a, b, false);
+                    a = std::move(r.A);
+                    b = std::move(r.B);
+                    if (b.is_zero()) break;
+                    if (a.degree() < sigue) return gcd_classic(std::move(a), std::move(b));
+                }
+                Poly r = a % b;
+                a = std::move(b);
+                b = std::move(r);
+            }
+            return a.is_zero() ? a : a.monic();
+        }
+        while (!b.is_zero()) {
+            if (a.degree() > b.degree() && a.degree() >= umbral) {
+                const Mat2 R = hgcd(a, b);
+                aplicar(R, a, b);
+                if (b.is_zero()) break;
+            }
+            Poly r = a % b;
+            a = std::move(b);
+            b = std::move(r);
+        }
+        return a.is_zero() ? a : a.monic();
+    }
+
+    // Algoritmo de Euclides clásico (el original).  En Fp64, desde la fase 5,
+    // en sitio sobre palabras (mismos cocientes; ver namespace euclides).
+    static Poly gcd_classic(Poly a, Poly b) {
+        a.require_same_field(b);
+        if constexpr (fft::NativeWordField<Field>) return gcd_classic_w(std::move(a), std::move(b));
         while (!b.is_zero()) {
             Poly r = a % b;
             a = std::move(b);
@@ -233,6 +1472,63 @@ public:
 
     struct ExtGcd { Poly g, x, y; };  // g = x*a + y*b, g monic
     static ExtGcd gcd_ext(const Poly& a, const Poly& b) {
+        a.require_same_field(b);
+        const Field& K = a.field();
+        const int umbral = static_cast<int>(umbral_hgcd(K, true));
+        if (std::max(a.degree(), b.degree()) < umbral) return gcd_ext_classic(a, b);
+        // El gcd_ext original multiplica q·x1 y q·y1 con la regla Auto, que puede
+        // calcular la raíz de la FFT (consumiendo el generador) a mitad del
+        // algoritmo.  Para que la secuencia aleatoria no cambie, el camino rápido
+        // solo se usa si esa raíz ya existe o si el cuerpo no admite una FFT de
+        // tamaño 64 (entonces el original nunca la pediría).
+        if (K.fft_cache_.empty() && fft::fft_exponent(K, 64) >= 0) return gcd_ext_classic(a, b);
+        // M acumula la matriz de cocientes: (r0, r1) = M·(a, b) en todo momento.
+        Poly r0 = a, r1 = b;
+        Mat2 M = identidad(K);
+        if constexpr (fft::NativeWordField<Field>) {
+            // Fase 6: en Fp64, el umbral solo decide la entrada.  Después se
+            // sigue con hgcd mientras r0 tenga grado >= `cola` y el resto de la
+            // sucesión se hace con el Euclides extendido en sitio (antes seguía
+            // con `paso` sobre Poly, 2,6x más lento que el clásico en grado 2048).
+            // Fase 7: hgcd_rem_w devuelve ya los restos (sin el `aplicar`
+            // completo) y M se multiplica con las transformadas reutilizadas;
+            // la primera matriz no se multiplica por la identidad.
+            const int cola = static_cast<int>(umbral_cola_ext(K));
+            bool es_identidad = true;
+            while (!r1.is_zero()) {
+                if (r0.degree() > r1.degree() && r0.degree() >= cola) {
+                    HgcdRes R = hgcd_rem_w(r0, r1, true);
+                    r0 = std::move(R.A);
+                    r1 = std::move(R.B);
+                    M = es_identidad ? std::move(R.M) : mul_mat_w(R.M, M);
+                    es_identidad = false;
+                    if (r1.is_zero()) break;
+                }
+                if (r0.degree() < cola) return cola_ext_w(r0, r1, M);
+                paso(r0, r1, M);
+                es_identidad = false;
+            }
+        } else {
+            while (!r1.is_zero()) {
+                if (r0.degree() > r1.degree() && r0.degree() >= umbral) {
+                    const Mat2 R = hgcd(r0, r1);
+                    aplicar(R, r0, r1);
+                    M = mul_mat(R, M);
+                    if (r1.is_zero()) break;
+                }
+                paso(r0, r1, M);
+            }
+        }
+        if (r0.is_zero()) return {zero(K), zero(K), zero(K)};
+        Elem inv = K.inv(r0.lead());
+        return {r0.scalar_mul(inv), M.m00.scalar_mul(inv), M.m01.scalar_mul(inv)};
+    }
+
+    // Algoritmo de Euclides extendido clásico (el original).  En Fp64, desde
+    // la fase 5, en sitio sobre palabras (mismos cocientes y cofactores).
+    static ExtGcd gcd_ext_classic(const Poly& a, const Poly& b) {
+        a.require_same_field(b);
+        if constexpr (fft::NativeWordField<Field>) return gcd_ext_classic_w(a, b);
         const Field& K = a.field();
         Poly x0 = one(K), x1 = zero(K), y0 = zero(K), y1 = one(K), r0 = a, r1 = b;
         while (!r1.is_zero()) {
@@ -246,44 +1542,596 @@ public:
         return {r0.scalar_mul(inv), x0.scalar_mul(inv), y0.scalar_mul(inv)};
     }
 
+    // ---- Euclides en sitio en Fp64 (fase 5) ---------------------------------
+    // Un paso a <- a mod b.  Con cociente y divisor grandes (prefer_newton, el
+    // mismo criterio que divmod) se usa la división de Newton de siempre; si
+    // no, la escolar en sitio.  Cociente y resto son únicos: mismo resultado.
+    static int paso_w(const Field& K, std::vector<euclides::W>& A, int da, const std::vector<euclides::W>& B,
+                      int db, std::vector<euclides::W>* q) {
+        const euclides::W p = K.modulus64();
+        if (da >= db && prefer_newton(K, static_cast<std::size_t>(db), static_cast<std::size_t>(da - db) + 1)) {
+            const Poly PA(K, std::vector<Elem>(A.begin(), A.begin() + da + 1));
+            const Poly PB(K, std::vector<Elem>(B.begin(), B.begin() + db + 1));
+            auto [pq, pr] = PA.divmod_newton(PB);
+            std::fill(A.begin(), A.begin() + da + 1, 0);
+            std::copy(pr.c_.begin(), pr.c_.end(), A.begin());
+            if (q) {
+                q->assign(static_cast<std::size_t>(da - db + 1), 0);
+                std::copy(pq.c_.begin(), pq.c_.end(), q->begin());
+            }
+            return pr.degree();
+        }
+        return euclides::resto(A, da, B, db, K.inv(B[static_cast<std::size_t>(db)]), p, q);
+    }
+
+    static Poly gcd_classic_w(Poly a, Poly b) {
+        const Field& K = a.field();
+        if (b.is_zero()) return a.is_zero() ? a : a.monic();
+        std::vector<euclides::W> A(a.c_.begin(), a.c_.end()), B(b.c_.begin(), b.c_.end());
+        int da = a.degree(), db = b.degree();
+        while (db >= 0) {
+            const int dr = paso_w(K, A, da, B, db, nullptr);
+            std::swap(A, B);
+            da = db;
+            db = dr;
+        }
+        A.resize(static_cast<std::size_t>(da) + 1);
+        return Poly(K, std::move(A)).monic();
+    }
+
+    static ExtGcd gcd_ext_classic_w(const Poly& a, const Poly& b) {
+        using euclides::W;
+        const Field& K = a.field();
+        const W p = K.modulus64();
+        std::vector<W> R0(a.c_.begin(), a.c_.end()), R1(b.c_.begin(), b.c_.end());
+        int d0 = a.degree(), d1 = b.degree();
+        std::vector<W> X0{1}, X1, Y0, Y1{1}, Q;
+        while (d1 >= 0) {
+            const int dr = paso_w(K, R0, d0, R1, d1, &Q);
+            std::swap(R0, R1);
+            d0 = d1;
+            d1 = dr;
+            while (!Q.empty() && Q.back() == 0) Q.pop_back();  // (el principal nunca es 0)
+            // El original calcula q·x1 y q·y1 con la regla Auto, que pide las
+            // tablas FFT (y, la primera vez, la raíz con el generador
+            // aleatorio) si el producto cabe en la FFT y tiene >= 64
+            // coeficientes.  Se reproduce esa llamada para que el consumo del
+            // generador sea idéntico.
+            for (const std::vector<W>* x1 : {&X1, &Y1}) {
+                if (Q.empty() || x1->empty() || !K.fft_cache_.empty()) continue;
+                const std::size_t L = Q.size() + x1->size() - 1;
+                if (L >= 64 && fft::fft_exponent(K, L) >= 0) (void)fft::tables(K, fft::ceil_log2(L));
+            }
+            auto actualiza = [&](std::vector<W>& x0, std::vector<W>& x1) {
+                std::vector<W> t;
+                if (Q.size() <= 64 || x1.empty()) {
+                    t = euclides::menos_producto(x0, Q, x1, p);
+                } else {  // cociente grande (raro): producto rápido sin generador
+                    const Poly PQ(K, std::vector<Elem>(Q.begin(), Q.end()));
+                    const Poly PX(K, std::vector<Elem>(x1.begin(), x1.end()));
+                    const Poly PT = Poly(K, std::vector<Elem>(x0.begin(), x0.end())) - PQ.mul_no_rng(PX);
+                    t.assign(PT.c_.begin(), PT.c_.end());
+                }
+                x0 = std::move(x1);
+                x1 = std::move(t);
+            };
+            actualiza(X0, X1);
+            actualiza(Y0, Y1);
+        }
+        if (d0 < 0) return {zero(K), zero(K), zero(K)};
+        R0.resize(static_cast<std::size_t>(d0) + 1);
+        const Elem inv = K.inv(R0.back());
+        return {Poly(K, std::move(R0)).scalar_mul(inv), Poly(K, std::move(X0)).scalar_mul(inv),
+                Poly(K, std::move(Y0)).scalar_mul(inv)};
+    }
+
     // a^{-1} mod m  (requires gcd(a, m) = 1).
     static Poly inv_mod(const Poly& a, const Poly& m) {
-        auto e = gcd_ext(a, m);
+        auto e = gcd_ext(a, m);  // comprueba el cuerpo común
         if (e.g.degree() != 0 || !a.field().is_one(e.g.c_[0]))
             throw std::domain_error("polynomial not invertible modulo m");
         return e.x % m;
     }
 
     // a^k mod m.
+    // Fase 4: las reducciones módulo m de los productos (grado <= 2·deg m - 2)
+    // usan un Reducer, que precalcula UNA vez el inverso de rev(m) si conviene
+    // la división de Newton; si no, es el % de siempre.  Los productos y la
+    // cadena de cuadrados no cambian.
     static Poly pow_mod(Poly a, BigInt k, const Poly& m) {
+        a.require_same_field(m);
+        if (m.is_zero()) throw division_by_zero("division by zero polynomial");
+        return pow_mod(std::move(a), std::move(k), Reducer(m));
+    }
+
+    // Reducción repetida módulo un m fijo (ver pow_mod).  La primera vez que
+    // prefer_newton lo aconseja (con el inverso amortizado), calcula y guarda
+    // rev(m)^{-1} mod x^{deg m}; desde entonces reduce(a) divide con ese
+    // inverso (a de grado <= 2·deg m - 1, el caso de los productos de
+    // pow_mod).  El cálculo es perezoso: solo se hace si alguna reducción lo
+    // necesita.  (Hasta la fase 6 la decisión dependía de que el cuerpo ya tuviera
+    // tablas FFT; desde la fase 7, Fp64 usa la NTT también en frío con
+    // fft::tablas_sin_rng.)
+    class Reducer {
+    public:
+        explicit Reducer(const Poly& m) : m_(m) {
+            if constexpr (std::is_same_v<Field, Fp64>) {
+                // Fase 8: el estado de la tabla se crea ya (vacío) para que las
+                // copias del Reducer (Composer, Frobenius) compartan la cuenta
+                // de llamadas y la tabla.
+                if (m_.degree() > 0 && tabla::aplicable(m_.field(), static_cast<std::size_t>(m_.degree())))
+                    tab_ = std::make_shared<EstadoTabla>();
+            }
+        }
+        const Poly& modulus() const { return m_; }
+        Poly reduce(const Poly& a) const {
+            const int n = m_.degree();
+            if (a.degree() < n) return a;
+            const std::size_t nn = static_cast<std::size_t>(n);
+            const std::size_t d1 = static_cast<std::size_t>(a.degree() - n) + 1;
+            const bool newton = d1 <= nn && prefer_newton(m_.field(), nn, d1, true);
+            if constexpr (fft::NativeWordField<Field>) {
+                // Fase 6: con la NTT ya disponible, transformadas precalculadas.
+                if (newton && d1 >= medio::kMin && ntt_sin_rng(m_.field(), 2 * d1 - 1) && ntt_sin_rng(m_.field(), nn)) {
+                    if (inv_.empty()) inv_ = inverse_series(m_.field(), reversed_head(m_, nn), nn);
+                    return reduce_ntt(a, d1);
+                }
+            }
+            if constexpr (std::is_same_v<Field, Fp64>) {
+                // Fase 8: sin NTT para este tamaño, la tabla de x^(n+i) mod m
+                // (namespace tabla) si ya está construida o si ya compensa.
+                if (tab_ && d1 <= nn && usa_tabla()) return Poly(m_.field(), tabla::reduce(m_.field(), tab_->t, a.c_));
+            }
+            if (newton) {
+                if (inv_.empty()) inv_ = inverse_series(m_.field(), reversed_head(m_, nn), nn);
+                return a.divmod_with_inverse(
+                            m_, std::vector<Elem>(inv_.begin(), inv_.begin() + static_cast<std::ptrdiff_t>(d1)))
+                    .second;
+            }
+            return a.divmod_school(m_).second;
+        }
+
+    private:
+        // Fase 8: tabla de reducción (solo Fp64 con p <= 2^16 y AVX2) y número
+        // de reducciones hechas sin ella.  Construirla cuesta como 1-3
+        // reducciones antiguas (n²/2 frente a ~n^1,6), así que se construye
+        // cuando ya se han hecho 1 + n/128 reducciones con el mismo módulo
+        // (el criterio del «alquiler de esquíes»: no gasta más del doble de lo
+        // óptimo aunque no lleguen más llamadas).  Un pow_mod hace unas
+        // 2·log2(k) reducciones; ddf_ks, cientos.
+        //
+        // Hilos (revisión de la fase 8): el estado se comparte entre las copias
+        // desde la construcción, así que dos copias usadas en hilos distintos
+        // lo tocan a la vez.  El contador es atómico (relaxed: solo decide
+        // cuándo construir, y contar de más o de menos no cambia el resultado)
+        // y la tabla se construye UNA vez con std::call_once; `lista` se
+        // publica con release después de escribir `t`, y quien la lee con
+        // acquire ve la tabla completa.  `t` no se reasigna nunca después: no
+        // hay forma de liberar una tabla en uso (vive lo que viva el estado).
+        // Coste fuera de la construcción: una carga acquire (un mov en x86).
+        struct EstadoTabla {
+            tabla::Tabla t;
+            std::atomic<std::size_t> llamadas{0};
+            std::atomic<bool> lista{false};
+            std::once_flag una;
+        };
+        bool usa_tabla() const {
+            if constexpr (std::is_same_v<Field, Fp64>) {
+                EstadoTabla& E = *tab_;
+                if (E.lista.load(std::memory_order_acquire)) return true;
+                const std::size_t nn = static_cast<std::size_t>(m_.degree());
+                if (E.llamadas.fetch_add(1, std::memory_order_relaxed) < 1 + nn / 128) return false;
+                std::call_once(E.una, [&] {
+                    E.t = tabla::crea(m_.field(), m_.c_);
+                    E.lista.store(true, std::memory_order_release);
+                });
+                return true;  // call_once sincroniza: t ya está escrita
+            } else {
+                return false;
+            }
+        }
+
+        // Transformadas precalculadas del módulo (fase 6, solo Fp64; el
+        // «FFTRep» de NTL): se calculan la primera vez que hacen falta y se
+        // comparten entre las copias del Reducer (Composer y Frobenius lo
+        // copian), porque dependen solo de m.
+        struct RepNTT {
+            medio::Fija m;               // m plegado módulo x^N2 - 1, N2 = 2^ceil(log2 deg m)
+            unsigned long l2 = 0;
+            std::vector<medio::Fija> g;  // por l1: rev(m)^{-1} truncado, tamaño 2^l1
+        };
+
+        // a mod m (d1 = deg a - deg m + 1, 64 <= d1 <= deg m) con 2 transformadas
+        // de tamaño N1 = 2^ceil(log2(2·d1 - 1)) y 2 de tamaño N2 = 2^ceil(log2 deg m)
+        // frente a las 6 de divmod_with_inverse (unas 2n cada una):
+        //   rev(q) = rev(a)[0..d1)·ginv mod x^d1   (ginv ya transformado)
+        //   r = a - m·q mod (x^N2 - 1)             (m ya transformado; deg r < N2)
+        // ginv se trunca a t = min(deg m, N1/2) coeficientes: t >= d1 (los d1
+        // primeros coeficientes del producto no dependen del resto de ginv) y
+        // d1 + t - 1 < N1, así que la convolución cíclica no se solapa.  Truncar
+        // evita doblar N1 cuando deg m = 2^j + 1 (reserva del revisor de la
+        // fase 6): con ginv completo, d1 + deg m - 1 superaría 2^ceil(log2(2·d1 - 1)).
+        // Mismo cociente y mismo resto: resultado idéntico.
+        Poly reduce_ntt(const Poly& a, std::size_t d1) const {
+            using medio::W;
+            const Field& K = m_.field();
+            const W p = K.modulus64();
+            const std::size_t n = m_.c_.size() - 1;
+            if (!rep_) rep_ = std::make_shared<RepNTT>();
+            RepNTT& R = *rep_;
+            const unsigned long l1 = fft::ceil_log2(2 * d1 - 1);
+            const std::size_t N1 = std::size_t(1) << l1;
+            // Fase 7: cada transformada guardada se combina con las tablas con
+            // las que se hizo (Fija::tab), no con las que haya ahora en la caché:
+            // entre dos llamadas la caché puede haberse llenado con otra raíz.
+            if (R.g.size() <= l1) R.g.resize(l1 + 1);
+            if (R.g[l1].vacia()) {
+                const std::size_t t = std::min(n, N1 / 2);
+                std::vector<W> g(N1, 0);
+                std::copy(inv_.begin(), inv_.begin() + static_cast<std::ptrdiff_t>(t), g.begin());
+                R.g[l1] = medio::fija(fft::tablas_sin_rng(K, l1), std::move(g), t, p);
+            }
+            if (R.m.vacia()) {
+                R.l2 = fft::ceil_log2(n);
+                R.m = medio::fija(fft::tablas_sin_rng(K, R.l2),
+                                  medio::pliega(m_.c_.data(), m_.c_.size(), std::size_t(1) << R.l2, p),
+                                  m_.c_.size(), p);
+            }
+            const auto& t1 = *R.g[l1].tab;
+            const auto& t2 = *R.m.tab;
+            const std::size_t N2 = std::size_t(1) << R.l2;
+            const std::size_t da = a.c_.size() - 1;
+            std::vector<W> b(N1, 0);
+            for (std::size_t i = 0; i < d1; ++i) b[i] = a.c_[da - i];
+            medio::directa(t1, b);
+            medio::aplica(R.g[l1], b, p);
+            medio::inversa(t1, b);
+            std::vector<W> y(N2, 0);  // q, d1 <= n <= N2 coeficientes
+            for (std::size_t i = 0; i < d1; ++i) y[i] = b[d1 - 1 - i];
+            medio::directa(t2, y);
+            medio::aplica(R.m, y, p);
+            medio::inversa(t2, y);
+            std::vector<W> r = medio::pliega(a.c_.data(), a.c_.size(), N2, p);
+            r.resize(n);
+            for (std::size_t i = 0; i < n; ++i) r[i] = K.sub(r[i], y[i]);
+            return Poly(K, std::move(r));
+        }
+
+        Poly m_;
+        mutable std::vector<Elem> inv_;  // rev(m)^{-1} mod x^{deg m}, o vacío si aún no hace falta
+        mutable std::shared_ptr<RepNTT> rep_;  // fase 6: transformadas (solo Fp64), o nulo
+        std::shared_ptr<EstadoTabla> tab_;     // fase 8: tabla de reducción (solo Fp64), o nulo
+    };
+
+    // Composición modular de Brent-Kung con h fijo: precalcula h^0..h^{k-1}
+    // mod f (pasos pequeños) y G = h^k mod f (paso gigante).  Para g de grado
+    // < deg f, g(h) mod f = Σ_j B_j·G^j con B_j = Σ_{i<k} g_{jk+i}·h^i, que se
+    // evalúa por Horner en G.  Cada B_j es una combinación lineal de las
+    // potencias precalculadas (acumulación perezosa, ~k·n operaciones de
+    // cuerpo); los pasos gigantes cuestan ceil(deg g / k) productos modulares.
+    class Composer {
+    public:
+        Composer(const Poly& h, const Reducer& red, std::size_t k) : red_(red) {
+            const Field& K = h.field();
+            const std::size_t n = static_cast<std::size_t>(red_.modulus().degree());
+            k_ = std::max<std::size_t>(1, std::min(k, n));
+            Poly hr = red_.reduce(h.degree() >= 2 * static_cast<int>(n) - 1 ? h % red_.modulus() : h);
+            pot_.reserve(k_);
+            pot_.push_back(red_.reduce(one(K)));
+            if constexpr (fft::NativeWordField<Field>) {
+                if (usa_ntt()) {
+                    // Fase 6: h se transforma una vez y cada potencia cuesta 2
+                    // transformadas (más la reducción con transformadas fijas).
+                    const medio::Fija H = transformada(hr);
+                    for (std::size_t i = 1; i < k_; ++i) pot_.push_back(mulmod_fija(pot_.back(), H));
+                    gigante_ = mulmod_fija(pot_.back(), H);
+                    return;
+                }
+            }
+            for (std::size_t i = 1; i < k_; ++i) pot_.push_back(red_.reduce(pot_.back().mul_no_rng(hr)));
+            gigante_ = red_.reduce(pot_.back().mul_no_rng(hr));
+            if constexpr (std::is_same_v<Field, Fp64>) {
+                // Fase 8: sin NTT, las potencias también como tabla de 32 bits
+                // para combina (la misma suma de productos que el Reducer por
+                // tabla; namespace tabla).  Sumas exactas: mismo resultado.
+                // Mismo rango que el Reducer (tabla::aplicable: kMin <= n <= kMax,
+                // p <= 2^16 y AVX2): la tabla de potencias es pequeña (k <= n
+                // filas), pero la cota de 64 bits de combina supone k <= kMax.
+                if (tabla::aplicable(K, n)) {
+                    std::vector<const std::vector<Elem>*> filas;
+                    for (const auto& q : pot_) filas.push_back(&q.c_);
+                    pot_tab_ = tabla::de_filas(K, n, filas);
+                }
+            }
+        }
+        std::size_t k() const { return k_; }
+        // g(h) mod f
+        Poly compose(const Poly& g) const {
+            const Field& K = red_.modulus().field();
+            if (g.is_zero()) return zero(K);
+            const std::size_t L = g.c_.size();
+            const std::size_t bloques = (L + k_ - 1) / k_;
+            Poly acc = zero(K);
+            for (std::size_t j = bloques; j-- > 0;) {
+                Poly B = combina(g, j * k_, std::min(k_, L - j * k_));
+                acc = (j + 1 == bloques) ? std::move(B) : por_gigante(acc) + B;
+            }
+            return acc;
+        }
+
+    private:
+        Reducer red_;
+        std::size_t k_ = 1;
+        std::vector<Poly> pot_;  // h^0..h^{k-1} mod f
+        Poly gigante_{red_.modulus().field()};  // h^k mod f
+        mutable medio::Fija gig_ntt_;  // fase 6: transformada del paso gigante (Fp64), o vacía
+        tabla::Tabla pot_tab_;         // fase 8: pot_ en 32 bits (Fp64 sin NTT, p <= 2^16, AVX2), o vacía
+
+        // Fase 6 (Fp64): ¿productos con transformada fija?  Solo con la NTT ya
+        // disponible para productos de 2n - 1 coeficientes (sin generador) y
+        // n >= 64.  Los factores tienen grado < n = deg f.
+        bool usa_ntt() const {
+            if constexpr (fft::NativeWordField<Field>) {
+                const std::size_t n = static_cast<std::size_t>(std::max(0, red_.modulus().degree()));
+                return n >= medio::kMin && ntt_sin_rng(red_.modulus().field(), 2 * n - 1);
+            } else {
+                return false;
+            }
+        }
+        unsigned long l_ntt() const {
+            return fft::ceil_log2(2 * static_cast<std::size_t>(red_.modulus().degree()) - 1);
+        }
+        // Transformada de x (grado < n) de tamaño 2^ceil(log2(2n - 1)).
+        medio::Fija transformada(const Poly& x) const {
+            const Field& K = red_.modulus().field();
+            const unsigned long l = l_ntt();
+            std::vector<medio::W> v(std::size_t(1) << l, 0);
+            std::copy(x.c_.begin(), x.c_.end(), v.begin());
+            return medio::fija(fft::tablas_sin_rng(K, l), std::move(v), x.c_.size(), K.modulus64());
+        }
+        // x·F mod f con F ya transformado: 1 directa + 1 inversa en lugar de las
+        // 3 transformadas de mul_no_rng.  x·F tiene <= 2n - 1 coeficientes: la
+        // convolución cíclica no se solapa.  Mismo producto: resultado idéntico.
+        Poly mulmod_fija(const Poly& x, const medio::Fija& F) const {
+            const Field& K = red_.modulus().field();
+            if (x.is_zero() || F.len == 0) return zero(K);
+            const auto& t = *F.tab;  // las tablas con las que se transformó F (fase 7)
+            std::vector<medio::W> v(F.w.size(), 0);
+            std::copy(x.c_.begin(), x.c_.end(), v.begin());
+            medio::directa(t, v);
+            medio::aplica(F, v, K.modulus64());
+            medio::inversa(t, v);
+            v.resize(x.c_.size() + F.len - 1);
+            return red_.reduce(Poly(K, std::move(v)));
+        }
+        // acc·G mod f (G = gigante_).
+        Poly por_gigante(const Poly& acc) const {
+            if constexpr (fft::NativeWordField<Field>) {
+                if (usa_ntt()) {
+                    if (gig_ntt_.vacia()) gig_ntt_ = transformada(gigante_);
+                    return mulmod_fija(acc, gig_ntt_);
+                }
+            }
+            return red_.reduce(acc.mul_no_rng(gigante_));
+        }
+
+        // Σ_{i<cnt} g_{ini+i}·h^i
+        Poly combina(const Poly& g, std::size_t ini, std::size_t cnt) const {
+            const Field& K = red_.modulus().field();
+            std::size_t n = 0;
+            for (std::size_t i = 0; i < cnt; ++i) n = std::max(n, pot_[i].c_.size());
+            if constexpr (std::is_same_v<Field, Fp64>) {
+                // Fase 8: con la tabla de potencias, vectorizado (ver el constructor).
+                if (!pot_tab_.vacia())
+                    return Poly(K, tabla::combina(K, pot_tab_, nullptr, g.c_.data() + ini, cnt));
+                // Fase 6 (p pequeño): acumulador de 64 bits; cada s[t] recibe a
+                // lo sumo cnt productos <= (p-1)^2 (Fp64::acc64_cabe).
+                if (K.acc64_cabe(cnt)) {
+                    std::vector<std::uint64_t> s(n, 0);
+                    for (std::size_t i = 0; i < cnt; ++i) {
+                        const std::uint64_t c = g.c_[ini + i];
+                        if (c == 0) continue;
+                        const auto& P = pot_[i].c_;
+                        for (std::size_t t = 0; t < P.size(); ++t) s[t] += c * P[t];
+                    }
+                    std::vector<Elem> r(n);
+                    for (std::size_t t = 0; t < n; ++t) r[t] = K.reduce64(s[t]);
+                    return Poly(K, std::move(r));
+                }
+            }
+            if constexpr (LazyAccumulation<Field>) {
+                std::vector<typename Field::Acc> s(n);
+                for (auto& a : s) K.acc_clear(a);
+                detail::con_acc_fma(K, [&](auto fma) {
+                    for (std::size_t i = 0; i < cnt; ++i) {
+                        const Elem& c = g.c_[ini + i];
+                        if (K.is_zero(c)) continue;
+                        const auto& P = pot_[i].c_;
+                        for (std::size_t t = 0; t < P.size(); ++t) fma(s[t], c, P[t]);
+                    }
+                });
+                std::vector<Elem> r;
+                r.reserve(n);
+                for (auto& a : s) r.push_back(K.acc_reduce(a));
+                return Poly(K, std::move(r));
+            } else {
+                std::vector<Elem> r(n, K.zero());
+                for (std::size_t i = 0; i < cnt; ++i) {
+                    const Elem& c = g.c_[ini + i];
+                    if (K.is_zero(c)) continue;
+                    const auto& P = pot_[i].c_;
+                    for (std::size_t t = 0; t < P.size(); ++t) r[t] = K.add(r[t], K.mul(c, P[t]));
+                }
+                return Poly(K, std::move(r));
+            }
+        }
+    };
+
+    // Sucesión de Frobenius H_i = x^{q^i} mod f, paso a paso (is_irreducible,
+    // distinct_degree).  Empieza con H_i = H_{i-1}^q (pow_mod, el original) y
+    // pasa a la composición modular (Composer con h = H_1) cuando lo gastado en
+    // potencias iguala el coste estimado de precalcular las potencias de H_1
+    // (regla de alquilar o comprar: nunca más del doble de lo óptimo, y nada si
+    // el bucle termina pronto, como con casi todos los reducibles).  Las
+    // potencias guardadas se limitan a kFrobPresupuesto coeficientes; con menos
+    // potencias hacen falta pasos gigantes, y no se compone si serían más que
+    // los productos de un pow_mod.
+    // Fase 6: al cambiar de módulo (distinct_degree) lo gastado en potencias
+    // ya no se olvida.  Antes cambiar_modulo ponía la cuenta a cero y cada
+    // factor encontrado costaba al menos un pow_mod más antes de volver a
+    // componer (con q grande, cerca de la mitad de la DDF por debajo de
+    // Kaltofen-Shoup).  Ahora la regla de alquilar o comprar se aplica con el
+    // gasto acumulado (gastado_): si ya compensaba comprar y q no es diminuto
+    // (compone_ya), se compone desde el primer paso con el nuevo módulo
+    // (DDF 1,7-2,3x más rápida en F_(2^127-1), 1,4-1,5x en F_998244353,
+    // 1,2-1,3x en F_101, hasta 1,1x en F_9; F_2 y F_3 no cambian).  Esos
+    // pasos, que antes eran pow_mod (productos con operator*, que la primera
+    // vez pueden pedir la raíz de la FFT al generador), pasan a ser
+    // composiciones (mul_no_rng); por eso solo se adelanta la composición
+    // cuando ese pow_mod no habría tocado el generador (rng_intacto, que es
+    // imprescindible: hay DDF reales en que sin ella cambia el consumo del
+    // generador).  Los H_i son los mismos.
+    class Frobenius {
+    public:
+        Frobenius(const Poly& f, FrobeniusAlgo algo = FrobeniusAlgo::Auto)
+            : red_(f), q_(f.field().cardinality()), algo_(algo) {
+            productos_q_ = mpz_sizeinbase(q_.get_mpz_t(), 2) + mpz_popcount(q_.get_mpz_t()) - 1;
+            const std::size_t n = static_cast<std::size_t>(std::max(1, f.degree()));
+            k_ = std::max<std::size_t>(1, std::min(n, kFrobPresupuesto / n));
+        }
+        const Reducer& reducer() const { return red_; }
+        // Siguiente término: de H = H_{i-1} a H_i.
+        Poly siguiente(const Poly& H) {
+            // Fase 6: tras un cambio de módulo (pasos_ < gastado_), componer ya
+            // si lo gastado en potencias con todos los módulos paga el
+            // precálculo con el nuevo (compone_ya) y el pow_mod sustituido no
+            // tocaría el generador.
+            if (!comp_ && h1_ && pasos_ < gastado_ && compone_ya() && rng_intacto())
+                comp_.emplace(*h1_, red_, k_);
+            if (comp_) return comp_->compose(H);
+            Poly r = pow_mod(H, q_, red_);
+            ++pasos_;
+            ++gastado_;
+            if (!h1_) h1_ = r;  // el primer término es H_1 = x^q mod f (se empieza en H_0 = x)
+            if (h1_ && quiere_componer(pasos_)) comp_.emplace(*h1_, red_, k_);
+            return r;
+        }
+        // f cambia por un divisor g (distinct_degree): H_1 mod g sigue siendo x^q mod g.
+        void cambiar_modulo(const Poly& g) {
+            red_ = Reducer(g);
+            const std::size_t n = static_cast<std::size_t>(std::max(1, g.degree()));
+            k_ = std::max<std::size_t>(1, std::min(n, kFrobPresupuesto / n));
+            if (h1_) h1_ = *h1_ % g;
+            comp_.reset();
+            pasos_ = 0;  // pow_mod con este módulo (la regla original); gastado_ se conserva
+        }
+
+    private:
+        Reducer red_;
+        BigInt q_;
+        FrobeniusAlgo algo_;
+        // pasos_: pow_mod desde el último cambio de módulo (regla original);
+        // gastado_: pow_mod desde el principio (fase 6).
+        std::size_t productos_q_ = 1, k_ = 1, pasos_ = 0, gastado_ = 0;
+        std::optional<Poly> h1_;
+        std::optional<Composer> comp_;
+
+        bool quiere_componer(std::size_t pasos) const {
+            if (algo_ == FrobeniusAlgo::Potencia) return false;
+            if (algo_ == FrobeniusAlgo::Composicion) return true;
+            if (productos_q_ < kFrobMinProductos) return false;
+            // Coste de precalcular: k productos modulares (+ el paso gigante).
+            const std::size_t n = static_cast<std::size_t>(std::max(1, red_.modulus().degree()));
+            const std::size_t gigantes = (n + k_ - 1) / k_;
+            if (gigantes > productos_q_) return false;  // cada paso no ahorraría productos
+            return pasos * productos_q_ >= k_ + 1;
+        }
+
+        // Regla de alquilar o comprar con el gasto acumulado (fase 6): se
+        // compra (precálculo de k productos más el paso gigante) cuando lo ya
+        // gastado en potencias con todos los módulos lo paga.  Un paso
+        // compuesto no es gratis (pasos gigantes más la combinación lineal,
+        // del orden de un producto), y con q diminuto un pow_mod cuesta casi
+        // lo mismo: medido con la regla sola, F_3 (3 productos por pow_mod)
+        // era un 8 % más lento con grado 20 y F_2 no cambiaba.  Por eso solo
+        // se adelanta cuando un pow_mod cuesta más del doble que un paso
+        // compuesto (F_9, F_101 y q mayores; no F_2, F_3, F_4 ni F_5).
+        bool compone_ya() const {
+            if (algo_ != FrobeniusAlgo::Auto) return algo_ == FrobeniusAlgo::Composicion;
+            const std::size_t n = static_cast<std::size_t>(std::max(1, red_.modulus().degree()));
+            const std::size_t paso = (n + k_ - 1) / k_ + 1;
+            return productos_q_ > 2 * paso && quiere_componer(gastado_);
+        }
+
+        // ¿El pow_mod que la composición adelantada sustituye habría dejado el
+        // generador aleatorio como estaba?  Sus productos (operator*) tienen
+        // L <= 2·deg - 1 coeficientes y solo piden la raíz de la FFT si la
+        // caché del cuerpo está vacía, el cuerpo admite una FFT de 64 y
+        // L >= 64 (regla original de mul).  Basta con que falle una de las
+        // tres para que la secuencia aleatoria sea la de antes.  La condición
+        // es conservadora (puede bloquear casos en que el pow_mod no habría
+        // tocado el generador), pero es IMPRESCINDIBLE: en la DDF real la
+        // caché sigue vacía con módulos de grado >= 33 al menos en dos casos,
+        // y sin esta comprobación cambiaba el consumo del generador:
+        //   - cuerpos con FFT de 64 pero no de 128 (v2(q-1) = 6: q = 193,
+        //     449, 577, F_961): los productos de L = 65..127 no usan la NTT ni
+        //     construyen tablas, solo los de L = 64 exactos lo harían;
+        //   - Fp GMP: mul elige Kronecker cuando prefer_fft es cierto y
+        //     entonces no llama a fft::tables (comportamiento previo), así que
+        //     la caché puede seguir vacía tras pow_mod de grado 42 en
+        //     F_(2^64-2^32+1) y un pow_mod posterior con entradas dispersas sí
+        //     la pediría.
+        // tests/test_fase6_ddf.cpp (sección 4) tiene casos en frío que fallan
+        // si se retira (F_577 de grado 80, F_961 y F_(2^64-2^32+1) dispersos).
+        bool rng_intacto() const {
+            const Field& K = red_.modulus().field();
+            if (!K.fft_cache_.empty() || fft::fft_exponent(K, 64) < 0) return true;
+            return 2 * red_.modulus().degree() - 1 < 64;
+        }
+    };
+
+    // pow_mod con un Reducer ya construido (is_irreducible y distinct_degree
+    // reducen muchas veces módulo el mismo polinomio).
+    static Poly pow_mod(Poly a, BigInt k, const Reducer& red) {
+        const Poly& m = red.modulus();
+        a.require_same_field(m);
         const Field& K = a.field();
         if (k < 0) { a = inv_mod(a, m); k = -k; }
-        Poly result = one(K) % m;
+        Poly result = red.reduce(one(K));
         a = a % m;
         while (k > 0) {
-            if (mpz_odd_p(k.get_mpz_t())) result = (result * a) % m;
+            if (mpz_odd_p(k.get_mpz_t())) result = red.reduce(result * a);
             k >>= 1;
-            if (k > 0) a = (a * a) % m;
+            if (k > 0) a = red.reduce(a * a);
         }
         return result;
     }
 
-    // ---- Rabin irreducibility test -----------------------------------------
-    // f is irreducible over F_q iff x^{q^n} == x (mod f) and, for every prime
-    // divisor's worth of degrees up to n/2, gcd(f, x^{q^i} - x) = 1.
-    bool is_irreducible() const {
+    // ---- Test de irreducibilidad de Ben-Or -----------------------------------
+    // f de grado n es irreducible sobre F_q  <=>  no tiene ningún factor
+    // irreducible de grado i <= n/2  <=>  gcd(f, x^{q^i} - x) = 1 para todo
+    // i = 1..floor(n/2) (x^{q^i} - x es el producto de todos los irreducibles
+    // mónicos de grado divisor de i).  (No es el test de Rabin, que usa los
+    // divisores primos de n.)
+    // Fase 4: el original (y la práctica de Python) comprobaba además, tras el
+    // bucle, que x^{q^n} == x (mod f) calculando esa potencia desde cero.  Con
+    // el bucle completo esa condición es redundante (lo anterior ya prueba la
+    // irreducibilidad) y costaba unos dos tercios del tiempo con entradas
+    // irreducibles: se suprime.  Las reducciones usan un Reducer (pow_mod).
+    // Fase 4 (nivel B): la sucesión H_i se calcula con Frobenius (pow_mod o
+    // composición modular, según convenga); los H_i son los mismos.
+    bool is_irreducible(FrobeniusAlgo algo = FrobeniusAlgo::Auto) const {
         const int n = degree();
         if (n <= 0) return false;
-        const BigInt q = K_->cardinality();
         Poly f = *this;
         Poly x = variable(*K_);
+        Frobenius frob(f, algo);
         Poly H = x % f;                       // H = x^{q^0}
         for (int i = 1; i <= n / 2; ++i) {
-            H = pow_mod(H, q, f);             // H = x^{q^i} (mod f)
+            H = frob.siguiente(H);            // H = x^{q^i} (mod f)
             if (gcd(f, H - x).degree() != 0) return false;
         }
-        Poly Hn = pow_mod(x, ipow(q, static_cast<unsigned long>(n)), f);
-        return (Hn - x) % f == zero(*K_);
+        return true;
     }
 
     // ---- factorization (Cantor-Zassenhaus) ---------------------------------
@@ -294,16 +2142,20 @@ public:
 
     // Square-free part: the product of the distinct monic irreducible factors
     // of *this (a.k.a. radical).  Port of sqfree_fact_*.
+    // Casos triviales: rad(0) = 0 y, para una constante no nula, rad(c) = 1
+    // (antes, con una constante, la rama f' = 0 se llamaba a sí misma sin fin).
     Poly radical() const {
         const Field& K = *K_;
+        if (is_zero()) return zero(K);
+        if (degree() == 0) return one(K);
+
         const BigInt p = K.characteristic();
         const unsigned long pu = fits_ulong(p) ? to_ulong(p) : 0;  // step for x^p case
-
-        if (is_zero()) return zero(K);
 
         Poly df = derivative();
         if (df.is_zero()) {
             // f(x) = g(x^p); recover g via the p-th root of every p-th coeff.
+            require_pth_step(pu);
             std::vector<Elem> g;
             for (std::size_t i = 0; i < c_.size(); i += pu) g.push_back(K.pth_root(c_[i]));
             return Poly(K, std::move(g)).radical();
@@ -320,6 +2172,7 @@ public:
             residue = residue / y;
         }
         if (residue.degree() > 0) {
+            require_pth_step(pu);
             std::vector<Elem> h;
             for (std::size_t i = 0; i < residue.c_.size(); i += pu) h.push_back(K.pth_root(residue.c_[i]));
             Poly g2 = Poly(K, std::move(h)).radical();
@@ -330,21 +2183,64 @@ public:
 
     // Distinct-degree factorization of a square-free monic g.  Returns pairs
     // (d, product-of-all-degree-d-irreducible-factors), only for d that occur.
+    // Precondiciones: *this no nulo, de grado >= 1 (se comprueban: si no,
+    // std::invalid_argument) y libre de cuadrados (NO se comprueba por coste;
+    // con factores repetidos el resultado no es una factorización válida, pero
+    // el bucle termina igualmente porque d está acotado por el grado).
+    //
+    // Fase 5: con grado suficiente (usar_ddf_ks) se usa la variante de paso pequeño y paso
+    // gigante de Kaltofen-Shoup (ddf_ks), que hace unas 2·sqrt(n/2)
+    // composiciones y sqrt(n/2) MCD en lugar de n/2 de cada.  La salida
+    // (grado, producto mónico de los irreducibles de ese grado), por grados
+    // crecientes, es única, así que es idéntica.  La DDF no usa el generador
+    // aleatorio salvo, a través de la regla Auto de los productos, la primera
+    // vez que se piden las tablas FFT del cuerpo: el primer paso de Frobenius
+    // es común a los dos caminos y, si después de él la raíz de la FFT aún no
+    // existe y el cuerpo admite una FFT de 64 o más, se sigue por el camino
+    // original (que podría pedirla en otro momento).
     std::vector<std::pair<int, Poly>> distinct_degree() const {
+        return distinct_degree_impl(true);
+    }
+
+    // La DDF de la fase 4 (paso a paso, un MCD por grado), para comparar.
+    std::vector<std::pair<int, Poly>> distinct_degree_classic() const {
+        return distinct_degree_impl(false);
+    }
+
+private:
+    std::vector<std::pair<int, Poly>> distinct_degree_impl(bool permitir_ks) const {
+        if (is_zero())
+            throw std::invalid_argument("distinct_degree: el polinomio cero no se puede factorizar");
+        if (degree() < 1)
+            throw std::invalid_argument("distinct_degree: se requiere un polinomio de grado >= 1");
         const Field& K = *K_;
-        const BigInt q = K.cardinality();
         std::vector<std::pair<int, Poly>> out;
         Poly g = monic();
         Poly x = variable(K);
         Poly H = x % g;  // x^{q^0}
+        Frobenius frob(g);  // fase 4: pow_mod o composición modular (ver Frobenius)
         int d = 1;
-        while (g.degree() >= 2 * d) {
-            H = pow_mod(H, q, g);            // H = x^{q^d} (mod g)
+        if (permitir_ks && usar_ddf_ks(K, g.degree())) {
+            H = frob.siguiente(H);  // H_1: el mismo primer paso en los dos caminos
+            if (!K.fft_cache_.empty() || fft::fft_exponent(K, 64) < 0) return ddf_ks(g, H, frob);
+            // Camino original, con H_1 ya calculado.
             Poly hd = gcd(H - x, g);
             if (hd.degree() > 0) {
                 out.emplace_back(d, hd.monic());
                 g = g / hd;
                 H = H % g;
+                frob.cambiar_modulo(g);
+            }
+            ++d;
+        }
+        while (g.degree() >= 2 * d) {
+            H = frob.siguiente(H);           // H = x^{q^d} (mod g)
+            Poly hd = gcd(H - x, g);
+            if (hd.degree() > 0) {
+                out.emplace_back(d, hd.monic());
+                g = g / hd;
+                H = H % g;
+                frob.cambiar_modulo(g);
             }
             ++d;
         }
@@ -352,10 +2248,146 @@ public:
         return out;
     }
 
+    // DDF de Kaltofen-Shoup (fase 5).  g mónico libre de cuadrados de grado n,
+    // H1 = x^q mod g y frob la sucesión de Frobenius de g ya en H_1.  Con
+    // l = ceil(sqrt(n/2)):
+    //   * pasos pequeños h_i = x^{q^i} mod g, i = 0..l (frob);
+    //   * pasos gigantes G_j = x^{q^{lj}} = G_{j-1}(h_l) mod g (composición
+    //     modular de Brent-Kung con h_l fijo; a(x)^{q^l} = a(x^{q^l}));
+    //   * un irreducible u de grado d divide x^{q^a} - x^{q^b} (a > b) si y solo
+    //     si d | a - b, así que gcd(prod_{i<l} (G_j - h_i), g) es el producto
+    //     de los factores de g con grado en (l(j-1), lj] (los menores ya se han
+    //     quitado de g);
+    //   * ese producto se separa por grados crecientes d con
+    //     gcd(G_j - h_{lj-d}, r).
+    // Cuando el resto sin separar g baja a la mitad del módulo de trabajo, se
+    // reduce todo módulo g.  Se para cuando deg g < 2·(l(j-1)+1): entonces g
+    // es 1 o irreducible.
+    //
+    // Cada paso (a -> a^{q^s} mod M, con s = 1 en los pequeños y s = l en los
+    // gigantes) se hace elevando s veces a q con pow_mod o componiendo con
+    // h_s, según cuál cueste menos productos modulares (modelo de coste: una
+    // potencia, bitlen(q) + popcount(q) - 1 productos; una composición de
+    // Brent-Kung con k potencias guardadas, ceil(m/k) + 1 productos más k de
+    // precálculo).  Con q pequeño (F_2) elevar gana; con q grande, componer.
+    static std::vector<std::pair<int, Poly>> ddf_ks(Poly g, const Poly& H1, Frobenius& frob) {
+        (void)frob;  // H1 ya viene calculado por el primer paso común
+        const Field& K = g.field();
+        const BigInt q = K.cardinality();
+        const std::size_t prod_q = mpz_sizeinbase(q.get_mpz_t(), 2) + mpz_popcount(q.get_mpz_t()) - 1;
+        std::vector<std::pair<int, Poly>> out;
+        const int n = g.degree();
+        int l = 1;
+        while (l * l < (n + 1) / 2) ++l;  // l = ceil(sqrt(n/2))
+        const std::size_t L = static_cast<std::size_t>(l);
+        const std::size_t gigantes = static_cast<std::size_t>((n / 2 + l - 1) / l);  // como mucho
+
+        Poly M = g;  // módulo de trabajo (g divide a M)
+        std::optional<Reducer> red;
+        red.emplace(M);
+        // Potencias guardadas de Brent-Kung para módulo de grado m.
+        auto potencias = [](std::size_t m) {
+            std::size_t k = 1;
+            while (k * k < m) ++k;  // k = ceil(sqrt(m))
+            return std::max<std::size_t>(1, std::min(k, kFrobPresupuesto / std::max<std::size_t>(1, m)));
+        };
+        // ¿Componer (true) o elevar (false) para `usos` pasos de s potencias q?
+        auto componer = [&](std::size_t m, std::size_t usos, std::size_t s) {
+            const std::size_t k = potencias(m);
+            const std::size_t c_comp = k + usos * ((m + k - 1) / k + 1);
+            const std::size_t c_pot = usos * s * prod_q;
+            return c_comp < c_pot;
+        };
+        auto elevar = [&](Poly a, std::size_t s) {
+            for (std::size_t t = 0; t < s; ++t) a = pow_mod(std::move(a), q, *red);
+            return a;
+        };
+
+        // Pasos pequeños h_0..h_l.
+        std::vector<Poly> h;
+        h.reserve(L + 1);
+        h.push_back(variable(K) % g);
+        h.push_back(H1);
+        {
+            const std::size_t m = static_cast<std::size_t>(n);
+            if (L >= 2 && componer(m, L - 1, 1)) {
+                const Composer cb(H1, *red, potencias(m));
+                for (std::size_t i = 2; i <= L; ++i) h.push_back(cb.compose(h.back()));
+            } else {
+                for (std::size_t i = 2; i <= L; ++i) h.push_back(elevar(h.back(), 1));
+            }
+        }
+
+        std::optional<Composer> comp;  // composición con h_l (pasos gigantes), si conviene
+        auto preparar = [&](std::size_t usos) {
+            const std::size_t m = static_cast<std::size_t>(M.degree());
+            comp.reset();
+            if (componer(m, usos, L)) comp.emplace(h[L], *red, potencias(m));
+        };
+        preparar(gigantes);
+        Poly G = h[L];
+        for (int j = 1;; ++j) {
+            const int lo = l * (j - 1) + 1, hi = l * j;
+            if (g.degree() < 2 * lo) break;
+            if (j > 1) G = comp ? comp->compose(G) : elevar(std::move(G), L);
+            // I = prod_{i<l} (G - h_i) mod M
+            Poly I = G - h[0];
+            for (int i = 1; i < l; ++i) I = red->reduce(I * (G - h[static_cast<std::size_t>(i)]));
+            Poly r = gcd(I, g);
+            if (r.degree() <= 0) continue;
+            g = g / r;
+            for (int d = lo; d <= hi && r.degree() > 0; ++d) {
+                if (r.degree() < 2 * d) {  // un solo factor, de grado deg r
+                    out.emplace_back(r.degree(), r.monic());
+                    r = one(K);
+                    break;
+                }
+                Poly u = gcd((G - h[static_cast<std::size_t>(hi - d)]) % r, r);
+                if (u.degree() > 0) {
+                    out.emplace_back(d, u.monic());
+                    r = r / u;
+                }
+            }
+            // Con una entrada válida r ya es 1; si no (factores repetidos, fuera
+            // de la precondición), se devuelve tal cual.
+            if (r.degree() > 0) out.emplace_back(r.degree(), r.monic());
+            if (g.degree() > 0 && 2 * g.degree() <= M.degree()) {
+                M = g;
+                for (auto& hh : h) hh = hh % M;
+                G = G % M;
+                red.emplace(M);
+                // Pasos gigantes que quedan, como mucho: hasta grado deg g / 2.
+                const int quedan = (g.degree() / 2 - hi + l - 1) / l;
+                preparar(static_cast<std::size_t>(std::max(0, quedan)));
+            }
+        }
+        if (g.degree() > 0) out.emplace_back(g.degree(), g.monic());
+        return out;
+    }
+
+public:
+
     // Equal-degree factorization: h is a product of distinct monic irreducible
     // factors all of degree r; returns that list of irreducibles.  Works for
     // odd q (the (q^r-1)/2 split) and for q even (the trace split).
+    // Precondiciones:
+    //   * se comprueban (std::invalid_argument): r >= 1, *this no nulo, de grado
+    //     >= 1 y múltiplo de r; también que cada trozo intermedio tenga grado
+    //     múltiplo de r (en una ejecución válida siempre lo tiene);
+    //   * no se comprueban por coste: que *this sea libre de cuadrados y que
+    //     todos sus factores irreducibles tengan grado exactamente r.  Si eso
+    //     falla, la división aleatoria puede no encontrar nunca un factor
+    //     propio; para que no haya un bucle infinito, tras kMaxSplitAttempts
+    //     intentos fallidos se lanza std::invalid_argument.
     std::vector<Poly> equal_degree(int r) const {
+        if (r < 1)
+            throw std::invalid_argument("equal_degree: r debe ser >= 1");
+        if (is_zero())
+            throw std::invalid_argument("equal_degree: el polinomio cero no se puede factorizar");
+        if (degree() < 1)
+            throw std::invalid_argument("equal_degree: se requiere un polinomio de grado >= 1");
+        if (degree() % r != 0)
+            throw std::invalid_argument("equal_degree: el grado debe ser múltiplo de r");
         std::vector<Poly> factors;
         std::vector<Poly> stack;
         stack.push_back(monic());
@@ -364,6 +2396,9 @@ public:
             stack.pop_back();
             if (g.degree() <= 0) continue;
             if (g.degree() == r) { factors.push_back(g.monic()); continue; }
+            if (g.degree() % r != 0)
+                throw std::invalid_argument(
+                    "equal_degree: la entrada no es producto de irreducibles distintos de grado r");
             Poly d = equal_degree_split(g, r);
             stack.push_back(d);
             stack.push_back(g / d);
@@ -372,7 +2407,16 @@ public:
     }
 
     // Largest e with u^e | *this.  Port of multiplicidad_*.
+    // Precondiciones (std::invalid_argument si no se cumplen): u de grado >= 1
+    // (con u constante no nula u^e divide siempre: el bucle no terminaba; u = 0
+    // no divide) y *this no nulo (u^e divide a 0 para todo e: multiplicidad
+    // infinita).
     int multiplicity(const Poly& u) const {
+        require_same_field(u);
+        if (u.degree() < 1)
+            throw std::invalid_argument("multiplicity: el divisor debe tener grado >= 1");
+        if (is_zero())
+            throw std::invalid_argument("multiplicity: la multiplicidad en el polinomio cero es infinita");
         int e = 0;
         Poly f = *this;
         while (!f.is_zero()) {
@@ -386,6 +2430,9 @@ public:
 
     // Full Cantor-Zassenhaus factorization into monic irreducibles with
     // multiplicities, plus the leading coefficient (the field unit).
+    // Los factores se devuelven en ORDEN CANÓNICO (ver canonical_less): por
+    // grado ascendente y, a igual grado, por coeficientes de mayor a menor
+    // grado.  El algoritmo no cambia; solo se ordena el resultado al final.
     Factorization factor() const {
         if (is_zero()) throw std::domain_error("cannot factor the zero polynomial");
         Factorization F;
@@ -400,7 +2447,25 @@ public:
         }
         for (auto& u : irreducibles)
             F.factors.emplace_back(u, multiplicity(u));
+        std::sort(F.factors.begin(), F.factors.end(),
+                  [](const std::pair<Poly, int>& a, const std::pair<Poly, int>& b) {
+                      return canonical_less(a.first, b.first);
+                  });
         return F;
+    }
+
+    // Orden canónico entre polinomios: primero el grado (ascendente); a igual
+    // grado, se comparan los coeficientes desde el de mayor grado hasta el
+    // término independiente con operator< de Elem (BigInt en F_p; en F_q,
+    // std::vector<BigInt>, comparación lexicográfica de sus coordenadas).
+    // Es un orden estricto débil; no comprueba el cuerpo.
+    static bool canonical_less(const Poly& a, const Poly& b) {
+        if (a.degree() != b.degree()) return a.degree() < b.degree();
+        for (std::size_t i = a.c_.size(); i-- > 0; ) {
+            if (a.c_[i] < b.c_[i]) return true;
+            if (b.c_[i] < a.c_[i]) return false;
+        }
+        return false;
     }
 
     // ---- formatting --------------------------------------------------------
@@ -427,22 +2492,774 @@ private:
     void trim() {
         while (!c_.empty() && K_->is_zero(c_.back())) c_.pop_back();
     }
-    // coefficients [lo, hi) as a polynomial (drops the x^lo..x^{hi-1} window down to x^0).
-    Poly slice(std::size_t lo, std::size_t hi) const {
-        if (lo >= c_.size()) return zero(*K_);
-        hi = std::min(hi, c_.size());
-        return Poly(*K_, std::vector<Elem>(c_.begin() + lo, c_.begin() + hi));
+
+    // Comprobación de cuerpo común.  Camino rápido: el mismo objeto (una
+    // comparación de punteros); si no, mismos parámetros (same_field).
+    void require_same_field(const Poly& o) const {
+        if (K_ != o.K_ && !detail::fields_match(*K_, *o.K_)) [[unlikely]]
+            throw std::invalid_argument("polinomios sobre cuerpos distintos");
     }
-    // multiply by x^s
-    Poly shift(std::size_t s) const {
-        if (is_zero()) return *this;
-        std::vector<Elem> r(c_.size() + s, K_->zero());
-        for (std::size_t i = 0; i < c_.size(); ++i) r[i + s] = c_[i];
-        return Poly(*K_, std::move(r));
+
+    // En radical(), el paso de x^p a x exige recorrer los coeficientes de p en
+    // p.  Si p no cabe en unsigned long (32 bits en Windows) esa rama solo se
+    // alcanzaría con grado >= p, imposible en memoria; se protege igualmente
+    // para no entrar nunca en un bucle con paso 0.
+    static void require_pth_step(unsigned long pu) {
+        if (pu == 0)
+            throw std::length_error("radical: característica demasiado grande para la rama f(x) = g(x^p)");
+    }
+
+    // coefficients [lo, hi) as a polynomial (drops the x^lo..x^{hi-1} window down to x^0).
+    // ---- Umbrales de despacho Auto ------------------------------------------
+    // ¿Conviene la FFT (supuesto que cabe) para un producto de operandos con
+    // `small` y `large` coeficientes (L = small + large - 1)?  Depende de la
+    // implementación de la NTT del cuerpo y, sobre todo, del operando MENOR:
+    // con uno diminuto (p. ej. q·x1 en gcd_ext, con q de grado 1) el escolar
+    // cuesta O(large) y la FFT O(L log L).  Calibrado con medidas en Zen 3
+    // (g++ 15.2 -O3, GMP 6.3) de escolar/Karatsuba/FFT en una rejilla de
+    // tamaños sobre F_998244353, el r de 255 bits de BLS12-381 y
+    // F_((2^61-1)^2):
+    //   * Word (F_p, p < 2^62): la FFT gana desde L = 2-4 en todos los casos.
+    //   * Limb (F_p, p >= 2^62): FFT si small >= 16, o small >= 8 y L <= 128.
+    //   * Generic (F_q y resto): FFT si small >= 64, o small >= 32 y
+    //     large <= 2·small; con small <= 16 la FFT era hasta 10-20x más lenta.
+    //   * Fp64 (elementos en palabras de máquina, NTT en palabras): el escolar
+    //     con acumulación perezosa de 128 bits es tan barato que la FFT solo
+    //     gana con small >= 128, o con small >= 64 y large <= 4·small.
+    //     Fase 5: recalibrado tras las mariposas perezosas
+    //     (bench/calibra_ntt_kronecker.cpp, entradas variadas): con 48
+    //     coeficientes el escolar aún gana (5,4 frente a 6,8 µs); con 64 gana
+    //     la NTT (7,1 frente a 9,6 µs).
+    //   * FpN2 (fase 7, p de 2 palabras): no tiene NTT especializada y la
+    //     genérica (mariposas con K.mul) pierde con el escolar o Karatsuba por
+    //     debajo de 128 coeficientes (64: 40 frente a 19 µs) y con Kronecker
+    //     desde 128 (que prefer_kronecker elige antes): nunca se prefiere.  La
+    //     regla «original» de mul sigue construyendo las tablas cuando toca,
+    //     así que el generador se consume igual.
+    static bool prefer_fft(const Field& K, std::size_t small, std::size_t large, std::size_t L) {
+        if constexpr (std::is_same_v<Field, FpN2>) {
+            (void)K; (void)small; (void)large; (void)L;
+            return false;
+        } else if constexpr (fft::NativeWordField<Field>) {
+            (void)K; (void)L;
+            return small >= 128 || (small >= 64 && large <= 4 * small);
+        }
+        switch (fft::backend(K)) {
+            case fft::Backend::Word: return L >= 4;
+            case fft::Backend::Limb: return small >= 16 || (small >= 8 && L <= 128);
+            case fft::Backend::Generic:
+            default: return small >= 64 || (small >= 32 && large <= 2 * small);
+        }
+    }
+
+    // Fase 7: ¿construiría Poly<Fp>::mul (regla Auto) las tablas FFT de un
+    // cuerpo F_p con la caché vacía para este producto?  Poly<FpN2> reproduce
+    // esa decisión para consumir el generador igual que Fp.  En Fp:
+    //   * use_fft = can_fft && prefer_fft con el backend de Fp (Word si
+    //     p < 2^62, Limb si no), anulado con la caché vacía si !old_fft;
+    //   * si old_fft && !use_fft, se piden las tablas sin usarlas;
+    //   * si use_fft, la FFT se usa (y pide las tablas) salvo que gane
+    //     Kronecker, que en Fp (elementos BigInt) es siempre con small >= 32.
+    // (Medido: sin esto, un producto 40x40 en frío en F_998244353 pedía la
+    // raíz con FpN2 y no con Fp.)
+    static bool pide_raiz_como_fp(const Field& K, std::size_t small, std::size_t large, std::size_t L, bool can_fft,
+                                  bool old_fft) {
+        (void)large;
+        bool use = false;
+        if (can_fft) {
+            if (mpz_sizeinbase(K.characteristic().get_mpz_t(), 2) <= fft::word::kMaxBits)
+                use = L >= 4;                                   // Backend::Word
+            else
+                use = small >= 16 || (small >= 8 && L <= 128);  // Backend::Limb (p impar)
+        }
+        if (use && !old_fft) use = false;  // la caché está vacía
+        if (old_fft && !use) return true;
+        return use && small < 32;
+    }
+
+    // ---- Frobenius (fase 4, nivel B) ----------------------------------------
+    // Productos modulares por paso de pow_mod a partir de los cuales Auto
+    // considera la composición modular, y número máximo de coeficientes
+    // guardados en las potencias de H_1 (k·n); calibrado con
+    // bench/calibra_frobenius.cpp.
+    // La composición ganó en todos los cuerpos medidos con entradas irreducibles
+    // (de 1,2x con q = 2 a 19x con q = 2^61 - 1), así que el mínimo es 2.
+    static constexpr std::size_t kFrobMinProductos = 2;
+    // Fase 8: FqTab (Elem = uint32_t) usa el de Fp64, 2^22, comprobado con
+    // bench/calibra_fqtab.cpp (is_irreducible de un irreducible, 2 tandas
+    // intercaladas, con carga): 2^18 da lo mismo (F_256 grado 800: 0,92x;
+    // F_(2^12): 1,04x; F_(3^7) y F_(7^4) grado 600: 1,00x) y 2^16 es peor
+    // (0,62-0,80x).  Sin diferencia clara: no se cambia.
+    static constexpr std::size_t kFrobPresupuesto = std::is_arithmetic_v<Elem> ? (std::size_t{1} << 22)
+                                                                             : (std::size_t{1} << 18);
+
+    // ---- DDF de Kaltofen-Shoup (fase 5) ---------------------------------------
+    // ¿ddf_ks para grado n?  Calibrado con bench/calibra_ddf.cpp (Zen 3, un
+    // hilo, partes libres de cuadrados de polinomios aleatorios): gana desde
+    // grado 40 (1,6x a 5,9x) en F_101, F_998244353, F_(2^61-1), F_9 y
+    // F_(2^127-1).  Con q diminuto (F_2, F_3, F_4) cada paso de Frobenius del
+    // original es casi un solo cuadrado y KS solo gana desde grado ~300
+    // (F_2: 0,6x en 48-96, 1,13x en 300, 2,65x en 600).  El mínimo debe ser
+    // >= 33 (ver distinct_degree sobre el generador aleatorio).
+#ifdef ALCP_DDF_KS_MIN
+    static constexpr int kDdfKsMin = ALCP_DDF_KS_MIN < 33 ? 33 : ALCP_DDF_KS_MIN;  // solo para calibrar
+    static constexpr int kDdfKsMinQPequeno = kDdfKsMin;
+#else
+    static constexpr int kDdfKsMin = 40;
+    static constexpr int kDdfKsMinQPequeno = 256;
+#endif
+    static bool usar_ddf_ks(const Field& K, int n) {
+        if (n < kDdfKsMin) return false;
+        const BigInt q = K.cardinality();
+        const std::size_t prod_q = mpz_sizeinbase(q.get_mpz_t(), 2) + mpz_popcount(q.get_mpz_t()) - 1;
+        return prod_q >= 4 || n >= kDdfKsMinQPequeno;
+    }
+
+    // ---- Half-GCD (fase 4, nivel B) ------------------------------------------
+    // Por debajo de este grado, la recursión de hgcd usa los pasos clásicos.
+    // Fp64 (fase 5): 256, con el caso base en sitio (calibra_hgcd.cpp con
+    // -DALCP_HGCD_MIN=128/256/512: 256 da el mejor compromiso).
+#ifdef ALCP_HGCD_MIN
+    static constexpr std::size_t kHgcdMin = ALCP_HGCD_MIN;  // solo para calibrar
+#else
+    static constexpr std::size_t kHgcdMin = fft::NativeWordField<Field> ? 256 : 128;
+#endif
+    // Fase 7 (Fp64): ¿hay NTT para el half-GCD sin tocar el generador?  Si el
+    // cuerpo admite transformadas de 2048 (las de F_7681 o F_193 se quedan
+    // cortas y casi todo iría por Karatsuba).  Con la propuesta 3d ya no hace
+    // falta que la caché FFT tenga tablas (fft::tablas_sin_rng).
+    static bool hgcd_con_ntt(const Field& K) { return ntt_sin_rng(K, 2048); }
+    // Fase 6: en Fp64, una vez que gcd_ext ha entrado en half-GCD, sigue con
+    // hgcd mientras el grado sea >= este valor y termina con el Euclides
+    // extendido en sitio (cola_ext_w).
+    // Fase 7: recalibrado con V3e (bench/calibra_hgcd.cpp -DSOLO_FP64
+    // -DALCP_HGCD_UMBRAL=U -DALCP_HGCD_COLA=U, U = 128/256/512/1024; ver
+    // umbral_hgcd): 256 con NTT o p < 2^16 y 512 en el resto.
+    static std::size_t umbral_cola_ext(const Field& K) {
+#ifdef ALCP_HGCD_COLA
+        (void)K;
+        return ALCP_HGCD_COLA;  // solo para calibrar (bench/calibra_hgcd.cpp)
+#else
+        if constexpr (fft::NativeWordField<Field>) {
+            if (hgcd_con_ntt(K) || mpz_sizeinbase(K.characteristic().get_mpz_t(), 2) <= 16) return 256;
+            return 512;
+        } else {
+            return std::max(kHgcdMin, umbral_hgcd(K, true) / 4);
+        }
+#endif
+    }
+    // Fase 7 (Fp64): gcd sigue con hgcd mientras el grado sea >= este valor y
+    // termina con el Euclides clásico en sitio: la mitad del umbral de entrada
+    // (con NTT, 480; el barrido daba 1,07-1,12x a grado 1000 con 256 y 512).
+    // Con ALCP_HGCD_UMBRAL, el mismo valor (así se calibró).
+    static std::size_t umbral_sigue_gcd(const Field& K) {
+#ifdef ALCP_HGCD_UMBRAL
+        (void)K;
+        return ALCP_HGCD_UMBRAL;
+#else
+        return std::max(kHgcdMin, umbral_hgcd(K, false) / 2);
+#endif
+    }
+    // Grado a partir del cual gcd (ext = false) o gcd_ext (ext = true) usan
+    // half-GCD.  Medido con bench/calibra_hgcd.cpp (Zen 3, entradas variadas):
+    // gcd_ext gana antes porque el clásico también arrastra los cofactores.
+    //   * Fp64, fase 7 (half-GCD V3e: restos, NTT reutilizada y envoltura).
+    //     Barrido con -DSOLO_FP64 -DALCP_HGCD_UMBRAL=U -DALCP_HGCD_COLA=U,
+    //     U = 128/256/512/1024, grados 128-8192, CON CARGA (otros procesos
+    //     midiendo a la vez; cifras orientativas):
+    //     - con NTT (caché llena; F_998244353, F_(29·2^57+1), F_65537):
+    //       gcd 960 / ext 256.  gcd: con U = 512, 0,91-0,95x a 768 y
+    //       1,05-1,12x a 1000, 1,5-1,66x a 2048, 2,35-2,6x a 4096 y 4,2-4,6x
+    //       a 8192.  ext: con U = 256, 1,3-1,4x ya a 256, 2,4-3,1x a 1000 y
+    //       ~10x a 8192 (el clásico arrastra los dos cofactores).
+    //     - sin NTT y p < 2^16 (F_101; productos de Karatsuba): 768 / 256
+    //       (gcd 1,15-1,19x a 768; ext 1,6x a 256).
+    //     - sin NTT y p >= 2^16 (F_(2^61-1)): gcd sigue sin ganar hasta 8192
+    //       (1,3x; 0,85-0,89x a 4096) y ext gana desde 1024 (1,2x; 2,8x a
+    //       8192): 8192 / 1024.  Para 2^16 <= p < 2^32 sin NTT no se midió:
+    //       se dejan 4096 / 1024, entre ambos.
+    //     Desde la propuesta 3d, los valores «con NTT» se usan aunque la caché
+    //     esté vacía (gcd_ext en frío sigue yendo al clásico; ver gcd_ext).
+    //     Fase 5: 2048 / 1024, 4096 / 2048 y 8192 / 4096 según p.
+    //     Fase 7, tras el resto fusionado de euclides::resto (el clásico es
+    //     1,4-1,6x más rápido con p < 2^31): con NTT, gcd pierde a 1280 y 1536
+    //     (0,81-0,90x) y gana desde 2048 (1,13-1,17x): 1792
+    //     (bench/results/fase7/calibra_hgcd.txt).  Con p < 2^16 sin NTT (F_101)
+    //     sigue ganando desde 768 (1,06x; 1,10x a 1000): no cambia.
+    //   * Fp con GMP: 384 / 128.   * F_q: 384 / 192.   * FpN2 (fase 7): 4096 / 768.
+    static std::size_t umbral_hgcd(const Field& K, bool ext) {
+#ifdef ALCP_HGCD_UMBRAL
+        (void)K; (void)ext;
+        return ALCP_HGCD_UMBRAL;  // solo para calibrar (bench/calibra_hgcd.cpp)
+#endif
+        if constexpr (fft::NativeWordField<Field>) {
+            if (hgcd_con_ntt(K)) return ext ? 256 : 1792;  // fase 7: gcd 960 -> 1792 (resto fusionado)
+            const std::size_t bits = mpz_sizeinbase(K.characteristic().get_mpz_t(), 2);
+            if (bits <= 16) return ext ? 256 : 768;
+            if (bits <= 32) return ext ? 1024 : 4096;
+            return ext ? 1024 : 8192;
+        } else if constexpr (std::is_same_v<Elem, BigInt>) {
+            (void)K;
+            return ext ? 128 : 384;
+        } else if constexpr (std::is_same_v<Field, FpN2>) {
+            // Fase 7 (F_(2^127-1), con carga, half-GCD forzado frente al
+            // clásico): gcd no gana hasta 2048 (44,9 frente a 48,8 ms);
+            // gcd_ext gana desde 768 (19,8 frente a 15,9 ms; 2048: 2,0x).
+            (void)K;
+            return ext ? 768 : 4096;
+        } else {
+            (void)K;
+            return ext ? 192 : 384;
+        }
+    }
+
+    // Matriz 2x2 de polinomios [[m00, m01], [m10, m11]].
+    struct Mat2 { Poly m00, m01, m10, m11; };
+    static Mat2 identidad(const Field& K) { return {one(K), zero(K), zero(K), one(K)}; }
+    // A·B.  Los productos no calculan la raíz de la FFT (mul_no_rng): el gcd
+    // original no multiplicaba y no debe consumir el generador aleatorio.
+    static Mat2 mul_mat(const Mat2& A, const Mat2& B) {
+        return {A.m00.mul_no_rng(B.m00) + A.m01.mul_no_rng(B.m10), A.m00.mul_no_rng(B.m01) + A.m01.mul_no_rng(B.m11),
+                A.m10.mul_no_rng(B.m00) + A.m11.mul_no_rng(B.m10), A.m10.mul_no_rng(B.m01) + A.m11.mul_no_rng(B.m11)};
+    }
+    // (a, b) <- M·(a, b)
+    static void aplicar(const Mat2& M, Poly& a, Poly& b) {
+        Poly na = M.m00.mul_no_rng(a) + M.m01.mul_no_rng(b);
+        Poly nb = M.m10.mul_no_rng(a) + M.m11.mul_no_rng(b);
+        a = std::move(na);
+        b = std::move(nb);
+    }
+    // Paso de Euclides (a, b) <- (b, a mod b) acumulado en M: M <- [[0, 1], [1, -q]]·M,
+    // es decir, M' = [[M10, M11], [M00 - q·M10, M01 - q·M11]] (2 productos por q,
+    // que suele ser de grado 1, en lugar de un producto de matrices completo).
+    static void paso(Poly& a, Poly& b, Mat2& M) {
+        auto [q, r] = a.divmod(b);
+        a = std::move(b);
+        b = std::move(r);
+        Poly n10 = M.m00 - q.mul_no_rng(M.m10);
+        Poly n11 = M.m01 - q.mul_no_rng(M.m11);
+        M.m00 = std::move(M.m10);
+        M.m01 = std::move(M.m11);
+        M.m10 = std::move(n10);
+        M.m11 = std::move(n11);
+    }
+    // Cola de gcd_ext en Fp64 (fase 6).  Con (r0, r1) = M·(a, b), el Euclides
+    // extendido en sitio da g = x'·r0 + y'·r1 (ya normalizados por el inverso
+    // del coeficiente principal), luego g = (x'·m00 + y'·m10)·a +
+    // (x'·m01 + y'·m11)·b.  La sucesión de cocientes es la misma que la del
+    // clásico, así que g, x e y son idénticos a los de gcd_ext_classic.
+    // Solo se llega aquí con la caché FFT llena o sin FFT posible (gcd_ext va
+    // al clásico en frío), y ni la cola ni mul_no_rng consumen el generador.
+    static ExtGcd cola_ext_w(const Poly& r0, const Poly& r1, const Mat2& M) {
+        ExtGcd t = gcd_ext_classic_w(r0, r1);
+        if (t.g.is_zero()) return t;
+        return {std::move(t.g), t.x.mul_no_rng(M.m00) + t.y.mul_no_rng(M.m10),
+                t.x.mul_no_rng(M.m01) + t.y.mul_no_rng(M.m11)};
+    }
+    // Resultado de hgcd_rem_w: la matriz M y los restos (A, B) = M·(a, b).
+    struct HgcdRes { Mat2 M; Poly A, B; };
+    // Caso base de hgcd en Fp64 (fase 5): los pasos clásicos de `paso`, con el
+    // resto y la matriz acumulada en vectores de palabras (ver euclides::).
+    // Fase 7: devuelve también los restos, que ya están calculados.
+    static HgcdRes hgcd_base_w(const Poly& a, const Poly& b, int m) {
+        using euclides::W;
+        const Field& K = a.field();
+        const W p = K.modulus64();
+        std::vector<W> A(a.c_.begin(), a.c_.end()), B(b.c_.begin(), b.c_.end()), Q;
+        int da = a.degree(), db = b.degree();
+        std::vector<W> m00{1}, m01, m10, m11{1};
+        while (db >= m) {
+            const int dr = paso_w(K, A, da, B, db, &Q);
+            std::swap(A, B);
+            da = db;
+            db = dr;
+            while (!Q.empty() && Q.back() == 0) Q.pop_back();
+            std::vector<W> n10 = euclides::menos_producto(m00, Q, m10, p);
+            std::vector<W> n11 = euclides::menos_producto(m01, Q, m11, p);
+            m00 = std::move(m10);
+            m01 = std::move(m11);
+            m10 = std::move(n10);
+            m11 = std::move(n11);
+        }
+        A.resize(static_cast<std::size_t>(da + 1));  // (da, db = -1 dejan vacío = 0)
+        B.resize(static_cast<std::size_t>(db + 1));
+        auto P = [&](std::vector<W>& v) { return Poly(K, std::vector<Elem>(std::move(v))); };
+        return {{P(m00), P(m01), P(m10), P(m11)}, P(A), P(B)};
+    }
+
+    // ---- Half-GCD «V3e» en Fp64 (fase 7) ------------------------------------
+    // Productos de matrices con la NTT en palabras (ver namespace hgcdw), con
+    // las tablas de fft::tablas_sin_rng (no consume el generador).  Si no hay
+    // NTT del tamaño necesario, los productos de siempre (mul_no_rng).
+    static std::size_t max_ent(const Mat2& M) {
+        return std::max({M.m00.c_.size(), M.m01.c_.size(), M.m10.c_.size(), M.m11.c_.size()});
+    }
+    // (a, b) <- M·(a, b): 6 transformadas directas y 2 inversas (antes 12).
+    static void aplicar_w(const Mat2& M, Poly& a, Poly& b) {
+        using hgcdw::lprod;
+        const Field& K = a.field();
+        const std::size_t L =
+            std::max({lprod(M.m00.c_, a.c_), lprod(M.m01.c_, b.c_), lprod(M.m10.c_, a.c_), lprod(M.m11.c_, b.c_)});
+        if (L == 0 || max_ent(M) < medio::kMin || !ntt_sin_rng(K, L)) {
+            aplicar(M, a, b);
+            return;
+        }
+        const unsigned long k = hgcdw::elige_k(L);
+        const std::size_t n = std::size_t(1) << k;
+        const auto tp = fft::tablas_sin_rng(K, k);  // no consume el generador
+        const auto& t = *tp;
+        const euclides::W p = K.modulus64();
+        const auto fa = hgcdw::directa(t, a.c_, n, p), fb = hgcdw::directa(t, b.c_, n, p);
+        const auto f00 = hgcdw::directa(t, M.m00.c_, n, p), f01 = hgcdw::directa(t, M.m01.c_, n, p);
+        const auto f10 = hgcdw::directa(t, M.m10.c_, n, p), f11 = hgcdw::directa(t, M.m11.c_, n, p);
+        std::vector<euclides::W> na, nb;
+        hgcdw::fma2(na, f00, fa, f01, fb, p);
+        hgcdw::fma2(nb, f10, fa, f11, fb, p);
+        Poly ra(K, hgcdw::final_(t, na, M.m00.c_, a.c_, M.m01.c_, b.c_, p));
+        Poly rb(K, hgcdw::final_(t, nb, M.m10.c_, a.c_, M.m11.c_, b.c_, p));
+        a = std::move(ra);
+        b = std::move(rb);
+    }
+    // A·B con las transformadas reutilizadas: 8 directas y 4 inversas (antes 24).
+    // Strassen-Winograd (7 productos) se midió 1,2x MÁS lento y se descartó.
+    static Mat2 mul_mat_w(const Mat2& A, const Mat2& B) {
+        using hgcdw::lprod;
+        const Field& K = A.m00.field();
+        if (std::max(max_ent(A), max_ent(B)) < medio::kMin || !ntt_sin_rng(K, max_ent(A) + max_ent(B)))
+            return mul_mat(A, B);
+        const std::size_t L = std::max({lprod(A.m00.c_, B.m00.c_), lprod(A.m01.c_, B.m10.c_), lprod(A.m00.c_, B.m01.c_),
+                                        lprod(A.m01.c_, B.m11.c_), lprod(A.m10.c_, B.m00.c_), lprod(A.m11.c_, B.m10.c_),
+                                        lprod(A.m10.c_, B.m01.c_), lprod(A.m11.c_, B.m11.c_)});
+        if (L < 2) return mul_mat(A, B);
+        const unsigned long k = hgcdw::elige_k(L);
+        const std::size_t n = std::size_t(1) << k;
+        const auto tp = fft::tablas_sin_rng(K, k);  // no consume el generador
+        const auto& t = *tp;
+        const euclides::W p = K.modulus64();
+        const auto a00 = hgcdw::directa(t, A.m00.c_, n, p), a01 = hgcdw::directa(t, A.m01.c_, n, p);
+        const auto a10 = hgcdw::directa(t, A.m10.c_, n, p), a11 = hgcdw::directa(t, A.m11.c_, n, p);
+        const auto b00 = hgcdw::directa(t, B.m00.c_, n, p), b01 = hgcdw::directa(t, B.m01.c_, n, p);
+        const auto b10 = hgcdw::directa(t, B.m10.c_, n, p), b11 = hgcdw::directa(t, B.m11.c_, n, p);
+        std::vector<euclides::W> c00, c01, c10, c11;
+        hgcdw::fma2(c00, a00, b00, a01, b10, p);
+        hgcdw::fma2(c01, a00, b01, a01, b11, p);
+        hgcdw::fma2(c10, a10, b00, a11, b10, p);
+        hgcdw::fma2(c11, a10, b01, a11, b11, p);
+        return {Poly(K, hgcdw::final_(t, c00, A.m00.c_, B.m00.c_, A.m01.c_, B.m10.c_, p)),
+                Poly(K, hgcdw::final_(t, c01, A.m00.c_, B.m01.c_, A.m01.c_, B.m11.c_, p)),
+                Poly(K, hgcdw::final_(t, c10, A.m10.c_, B.m00.c_, A.m11.c_, B.m10.c_, p)),
+                Poly(K, hgcdw::final_(t, c11, A.m10.c_, B.m01.c_, A.m11.c_, B.m11.c_, p))};
+    }
+    // Segunda mitad de hgcd: (a, b) <- S·(a, b) y devuelve S·Q, compartiendo las
+    // transformadas de S entre los dos productos (14 transformadas en vez de 20)
+    // cuando ambos usan el mismo tamaño; si no, aplicar_w y mul_mat_w.
+    static Mat2 segunda_w(const Mat2& S, Poly& a, Poly& b, const Mat2& Q) {
+        using hgcdw::lprod;
+        const Field& K = a.field();
+        const std::size_t L1 =
+            std::max({lprod(S.m00.c_, a.c_), lprod(S.m01.c_, b.c_), lprod(S.m10.c_, a.c_), lprod(S.m11.c_, b.c_)});
+        const std::size_t L2 = max_ent(S) + max_ent(Q);  // cota de la longitud de S·Q
+        const std::size_t L = std::max(L1, L2);
+        if (L1 < 2 || max_ent(S) < medio::kMin || !ntt_sin_rng(K, L) ||
+            hgcdw::elige_k(L1) != hgcdw::elige_k(L2)) {
+            aplicar_w(S, a, b);
+            return mul_mat_w(S, Q);
+        }
+        const unsigned long k = hgcdw::elige_k(L);
+        const std::size_t n = std::size_t(1) << k;
+        const auto tp = fft::tablas_sin_rng(K, k);  // no consume el generador
+        const auto& t = *tp;
+        const euclides::W p = K.modulus64();
+        const auto s00 = hgcdw::directa(t, S.m00.c_, n, p), s01 = hgcdw::directa(t, S.m01.c_, n, p);
+        const auto s10 = hgcdw::directa(t, S.m10.c_, n, p), s11 = hgcdw::directa(t, S.m11.c_, n, p);
+        const auto fa = hgcdw::directa(t, a.c_, n, p), fb = hgcdw::directa(t, b.c_, n, p);
+        const auto q00 = hgcdw::directa(t, Q.m00.c_, n, p), q01 = hgcdw::directa(t, Q.m01.c_, n, p);
+        const auto q10 = hgcdw::directa(t, Q.m10.c_, n, p), q11 = hgcdw::directa(t, Q.m11.c_, n, p);
+        std::vector<euclides::W> na, nb, c00, c01, c10, c11;
+        hgcdw::fma2(na, s00, fa, s01, fb, p);
+        hgcdw::fma2(nb, s10, fa, s11, fb, p);
+        hgcdw::fma2(c00, s00, q00, s01, q10, p);
+        hgcdw::fma2(c01, s00, q01, s01, q11, p);
+        hgcdw::fma2(c10, s10, q00, s11, q10, p);
+        hgcdw::fma2(c11, s10, q01, s11, q11, p);
+        Poly ra(K, hgcdw::final_(t, na, S.m00.c_, a.c_, S.m01.c_, b.c_, p));
+        Poly rb(K, hgcdw::final_(t, nb, S.m10.c_, a.c_, S.m11.c_, b.c_, p));
+        a = std::move(ra);
+        b = std::move(rb);
+        return {Poly(K, hgcdw::final_(t, c00, S.m00.c_, Q.m00.c_, S.m01.c_, Q.m10.c_, p)),
+                Poly(K, hgcdw::final_(t, c01, S.m00.c_, Q.m01.c_, S.m01.c_, Q.m11.c_, p)),
+                Poly(K, hgcdw::final_(t, c10, S.m10.c_, Q.m00.c_, S.m11.c_, Q.m10.c_, p)),
+                Poly(K, hgcdw::final_(t, c11, S.m10.c_, Q.m01.c_, S.m11.c_, Q.m11.c_, p))};
+    }
+    // p mod x^k.
+    static Poly mod_xk(const Poly& p, std::size_t k) {
+        const auto fin = p.c_.begin() + static_cast<std::ptrdiff_t>(std::min(k, p.c_.size()));
+        return Poly(p.field(), std::vector<Elem>(p.c_.begin(), fin));
+    }
+    // hi·x^k + lo.
+    static Poly sube_suma(const Poly& hi, std::size_t k, const Poly& lo) {
+        if (hi.is_zero()) return lo;
+        const Field& K = hi.field();
+        std::vector<Elem> r(std::max(hi.c_.size() + k, lo.c_.size()), K.zero());
+        std::copy(lo.c_.begin(), lo.c_.end(), r.begin());
+        for (std::size_t i = 0; i < hi.c_.size(); ++i) r[i + k] = K.add(r[i + k], hi.c_[i]);
+        return Poly(K, std::move(r));
+    }
+    // hgcd con restos (fase 7, Fp64): la misma matriz M que hgcd(a, b) y además
+    // (A, B) = M·(a, b), sin el `aplicar` completo que hacían gcd y gcd_ext
+    // fuera.  Como los cocientes de la primera mitad solo dependen de a div x^m
+    // y b div x^m, (A, B) = (A1, B1)·x^m + R·(a mod x^m, b mod x^m): la matriz
+    // se aplica solo a la parte baja (lo mismo en la segunda mitad con x^k).
+    // Con con_matriz = false (nivel superior de gcd) no se calcula S·QR ni el
+    // paso intermedio sobre la matriz: M sale indefinida y solo valen A y B.
+    // Mismos cocientes que hgcd, luego mismos restos y misma matriz.
+    static HgcdRes hgcd_rem_w(const Poly& a, const Poly& b, bool con_matriz) {
+        const Field& K = a.field();
+        const int n = a.degree();
+        const int m = (n + 1) / 2;
+        if (b.is_zero() || b.degree() < m) return {identidad(K), a, b};
+        if (n < static_cast<int>(kHgcdMin)) return hgcd_base_w(a, b, m);
+        const std::size_t um = static_cast<std::size_t>(m);
+        HgcdRes r1 = hgcd_rem_w(div_xk(a, um), div_xk(b, um), true);
+        Poly al = mod_xk(a, um), bl = mod_xk(b, um);
+        aplicar_w(r1.M, al, bl);
+        Poly A = sube_suma(r1.A, um, al), B = sube_suma(r1.B, um, bl);
+        if (B.is_zero() || B.degree() < m) return {std::move(r1.M), std::move(A), std::move(B)};
+        Mat2 QR = std::move(r1.M);
+        if (con_matriz) {
+            paso(A, B, QR);
+        } else {
+            Poly r = A % B;
+            A = std::move(B);
+            B = std::move(r);
+        }
+        if (B.is_zero() || B.degree() < m) return {std::move(QR), std::move(A), std::move(B)};
+        const int k = 2 * m - A.degree();
+        if (k < 0) {
+            // No debería ocurrir (Thull-Yap); por seguridad, pasos clásicos.
+            while (!B.is_zero() && B.degree() >= m) paso(A, B, QR);
+            return {std::move(QR), std::move(A), std::move(B)};
+        }
+        const std::size_t uk = static_cast<std::size_t>(k);
+        HgcdRes r2 = hgcd_rem_w(div_xk(A, uk), div_xk(B, uk), true);
+        Poly cl = mod_xk(A, uk), dl = mod_xk(B, uk);
+        Mat2 SQ = identidad(K);
+        if (con_matriz) {
+            SQ = segunda_w(r2.M, cl, dl, QR);
+        } else {
+            aplicar_w(r2.M, cl, dl);
+        }
+        return {std::move(SQ), sube_suma(r2.A, uk, cl), sube_suma(r2.B, uk, dl)};
+    }
+    // p div x^k (los coeficientes de grado >= k, desplazados).
+    static Poly div_xk(const Poly& p, std::size_t k) {
+        if (p.c_.size() <= k) return zero(p.field());
+        return Poly(p.field(), std::vector<Elem>(p.c_.begin() + static_cast<std::ptrdiff_t>(k), p.c_.end()));
+    }
+
+    // HGCD (Thull-Yap): con deg a = n > deg b, devuelve la matriz M de los
+    // cocientes de Euclides tales que (r_j, r_{j+1}) = M·(a, b) cumple
+    // deg r_j >= m > deg r_{j+1}, con m = ceil(n/2).  Los cocientes de esa
+    // parte de la sucesión dependen solo de los coeficientes altos, por eso se
+    // obtienen recursivamente de a div x^m y b div x^m.
+    static Mat2 hgcd(const Poly& a, const Poly& b) {
+        const Field& K = a.field();
+        const int n = a.degree();
+        const int m = (n + 1) / 2;
+        if (b.is_zero() || b.degree() < m) return identidad(K);
+        if (n < static_cast<int>(kHgcdMin)) {
+            // Caso base: pasos clásicos hasta bajar de grado m (en Fp64, en
+            // sitio sobre palabras desde la fase 5; mismos cocientes).
+            if constexpr (fft::NativeWordField<Field>) return hgcd_base_w(a, b, m).M;
+            Mat2 M = identidad(K);
+            Poly A = a, B = b;
+            while (!B.is_zero() && B.degree() >= m) paso(A, B, M);
+            return M;
+        }
+        const Mat2 R = hgcd(div_xk(a, static_cast<std::size_t>(m)), div_xk(b, static_cast<std::size_t>(m)));
+        Poly A = a, B = b;
+        aplicar(R, A, B);
+        if (B.is_zero() || B.degree() < m) return R;
+        Mat2 QR = R;
+        paso(A, B, QR);
+        if (B.is_zero() || B.degree() < m) return QR;
+        const int k = 2 * m - A.degree();
+        if (k < 0) {
+            // No debería ocurrir (Thull-Yap); por seguridad, pasos clásicos.
+            while (!B.is_zero() && B.degree() >= m) paso(A, B, QR);
+            return QR;
+        }
+        const Mat2 S = hgcd(div_xk(A, static_cast<std::size_t>(k)), div_xk(B, static_cast<std::size_t>(k)));
+        return mul_mat(S, QR);
+    }
+
+    // ---- Kronecker (fase 4, nivel B) ----------------------------------------
+    // ¿Conviene el producto de Kronecker sobre Z (kronecker.hpp) para un
+    // operando menor de `small` coeficientes?  Calibrado con
+    // bench/calibra_kronecker.cpp (entradas variadas, con y sin hilos, Zen 3):
+    //   * F_q (FqT) y F_p con GMP: gana desde 16-32 coeficientes (1,5x a 25x;
+    //     a Karatsuba sobre elementos caros y a la NTT multi-limb).
+    //   * Fp64 sin NTT: desde 32 si p < 2^32 (hasta 20x con p = 101); con p
+    //     mayor los huecos son de ~2·62 bits y gana desde 256.
+    //   * Fp64 con NTT: nunca desde la fase 5.  Con las mariposas perezosas la
+    //     NTT en palabras gana a Kronecker en todos los tamaños desde 64
+    //     coeficientes (1024: 154 frente a 292 µs; 2048: 336 frente a 976 µs;
+    //     bench/calibra_ntt_kronecker.cpp).  Antes ganaba entre 128 y 1024
+    //     porque cada mariposa costaba 14 ns por fallos de predicción.
+    //   * FpN2 (fase 7): desde 128 coeficientes, con o sin NTT (huecos de
+    //     ~2·128 bits; F_(2^127-1), con carga: 128: 63 frente a 79 µs de
+    //     Karatsuba; 512: 387 frente a 719; 1024: 880 frente a 2230).
+    //   * FqSwar (fase 8): desde 8 coeficientes.  Con los huecos de 16 bits
+    //     alineados (kronecker.hpp, mul_extension16) Kronecker ya gana a la
+    //     escolar con acumulador SWAR desde 3-8 coeficientes (con carga,
+    //     escolar / Kronecker: F_(3^30) 8x8 1,6x, 8x200 1,2x, 16x16 2,4x,
+    //     4x200 0,84x; F_(5^10) 8x8 1,8x, 4x200 1,2x; F_(2^17) 8x8 1,2x, 4x200
+    //     0,90x).  Por debajo de 32 la regla Auto de estos cuerpos no elige la
+    //     FFT (prefer_fft, backend genérico), así que el consumo del generador
+    //     no cambia.
+    static bool prefer_kronecker(const Field& K, std::size_t small, bool can_fft) {
+        if constexpr (requires(std::size_t m) { K.kronecker16(m); }) {
+            (void)K; (void)can_fft;
+            return small >= 8;
+        }
+        if (small < 32) return false;
+        if constexpr (std::is_same_v<Field, FpN2>) {
+            (void)K; (void)can_fft;
+            return small >= 128;
+        } else if constexpr (ks::Extension<Field> || kRepresentaFq64) {
+            // Fase 7: FqTab elige «Kronecker» en los mismos casos que Fq64, y
+            // por tanto tampoco la FFT: si no, en un cuerpo con FFT (p. ej.
+            // F_(193^2)) haría transformadas donde Fq64 no las hace y
+            // construiría las tablas (y la raíz, con el generador) antes.
+            // mul_kronecker_auto lo resuelve con Karatsuba sobre sus palabras.
+            (void)K; (void)can_fft;
+            return true;
+        } else if constexpr (std::is_same_v<Elem, BigInt>) {
+            (void)K; (void)can_fft;
+            return true;
+        } else if constexpr (fft::NativeWordField<Field>) {
+            if (can_fft) return false;
+            return mpz_sizeinbase(K.characteristic().get_mpz_t(), 2) <= 32 || small >= 256;
+        } else {
+            (void)K; (void)can_fft;
+            return false;
+        }
+    }
+
+    // ---- División de Newton (fase 4) ----------------------------------------
+    // ¿Conviene la división de Newton para un divisor de grado n y un cociente
+    // de d1 coeficientes?  La escolar (con acumulación perezosa) cuesta ~n·d1
+    // productos de elementos; Newton, unos pocos productos de polinomios de
+    // tamaño max(n, d1): 2 con el inverso ya calculado (`amortizado`, Reducer)
+    // y unos 6 si cada división lo calcula (divmod).  Solo compensa con
+    // productos subcuadráticos rápidos, y el punto de corte depende de si hay
+    // FFT y de lo que cueste cada producto de elementos.  Umbrales medidos con
+    // bench/calibra_newton.cpp en Zen 3 CON ENTRADAS VARIADAS (con una entrada
+    // repetida el predictor de saltos acelera la NTT hasta 3 veces y Newton
+    // parece mejor de lo que es; ver docs/optimizacion/fase4.md).
+    // Nivel B: los productos usan Kronecker (prefer_kronecker), mucho más rápido
+    // con p pequeño, y los umbrales bajan (bench/results/fase4/calibra_newton.txt;
+    // la medida del nivel A, sin Kronecker, está en calibra_newton_nivel_a.txt):
+    //   * Fp64: p < 2^16: 64 amortizado / 192 aislada; p < 2^32: 192 / 768;
+    //     p mayor (huecos de Kronecker de ~2·62 bits): 768 / 1536.
+    //     Fase 5: con p < 2^32 y NTT para el tamaño (mariposas perezosas),
+    //     128 / 512 (F_998244353: 1,22x amortizado a 128, 1,34x aislada a 512;
+    //     bench/results/fase5/calibra_newton.txt).
+    //     Fase 7 (escolar con acumulador de 64 bits de la fase 6, NTT radix 4 y
+    //     tablas sin generador; bench/results/fase7/calibra_newton_fino.txt,
+    //     primer tamaño en que Newton gana): p < 2^16: 80 / 384 (aislada 0,95x
+    //     a 320, 1,07x a 384); p < 2^32 con NTT: 112 / 224 (1,32x amortizado a
+    //     112, 1,07x aislada a 224); p mayor: 512 / 1792 (1,10x a 512; aislada
+    //     0,94x a 1536, 1,05x a 1792).  p < 2^32 sin NTT no se volvió a medir.
+    //   * Fp (GMP): 96 / 256.   * FpN2 (fase 7): 384 / 1024.
+    //   * F_q de grado e: con p < 2^32, max(32, 192/e) / max(64, 1024/e)
+    //     (F_9: 96 / 512; F_256: 32 / 128; F_(3^30): 32 / 64); con p mayor
+    //     (F_((2^61-1)^2)): 384 / 1024.
+    static constexpr std::size_t kNunca = static_cast<std::size_t>(-1);
+    static bool prefer_newton(const Field& K, std::size_t n, std::size_t d1, bool amortizado = false) {
+        const std::size_t small = std::min(n, d1);
+        if (small < 32) return false;  // por debajo, la escolar gana en todos los cuerpos medidos
+        const std::size_t bits = mpz_sizeinbase(K.characteristic().get_mpz_t(), 2);
+        std::size_t umbral = kNunca;
+        if constexpr (fft::NativeWordField<Field>) {
+            // Fase 7: recalibrado (ver el comentario de arriba).
+            if (bits <= 16) umbral = amortizado ? 80 : 384;
+            else if (bits <= 32 && fft::fft_exponent(K, 2 * small) >= 0) umbral = amortizado ? 112 : 224;
+            else if (bits <= 32) umbral = amortizado ? 192 : 768;
+            else umbral = amortizado ? 512 : 1792;
+        } else if constexpr (std::is_same_v<Elem, BigInt>) {
+            umbral = amortizado ? 96 : 256;
+        } else if constexpr (std::is_same_v<Field, FpN2>) {
+            // Fase 7 (F_(2^127-1), con carga, productos de Kronecker):
+            // amortizada gana desde ~384 (512: 0,57 frente a 0,81 ms de la
+            // escolar); aislada desde 1024 (2,7 frente a 3,2 ms).
+            umbral = amortizado ? 384 : 1024;
+        } else if constexpr (requires { K.extension_degree(); }) {
+            const std::size_t e = std::max<std::size_t>(1, K.extension_degree());
+            if (bits <= 32) umbral = amortizado ? std::max<std::size_t>(32, 192 / e) : std::max<std::size_t>(64, 1024 / e);
+            else umbral = amortizado ? 384 : 1024;
+        }
+        return small >= umbral;
+    }
+
+    // Los d1 primeros coeficientes de rev(g) (de mayor a menor grado de g),
+    // rellenando con ceros si d1 > deg g + 1.
+    static std::vector<Elem> reversed_head(const Poly& g, std::size_t d1) {
+        const Field& K = g.field();
+        std::vector<Elem> r;
+        r.reserve(d1);
+        const std::size_t n1 = g.c_.size();
+        for (std::size_t j = 0; j < d1; ++j) r.push_back(j < n1 ? g.c_[n1 - 1 - j] : K.zero());
+        return r;
+    }
+
+    // Los n primeros coeficientes de P (rellenando con ceros).
+    static std::vector<Elem> head(const Field& K, const Poly& P, std::size_t n) {
+        std::vector<Elem> r(P.c_.begin(), P.c_.begin() + static_cast<std::ptrdiff_t>(std::min(n, P.c_.size())));
+        r.resize(n, K.zero());
+        return r;
+    }
+
+    // Producto con la regla Auto pero SIN adelantar el cálculo de la raíz de la
+    // FFT: solo usa la FFT si las tablas del cuerpo ya existen.  Los productos
+    // de la división de Newton no estaban en el original y no deben consumir el
+    // generador aleatorio en otro momento (ver mul).
+    Poly mul_no_rng(const Poly& o) const {
+        if (is_zero() || o.is_zero()) return zero(*K_);
+        const std::size_t na = c_.size(), nb = o.c_.size();
+        const std::size_t L = na + nb - 1, small = std::min(na, nb);
+        if constexpr (fft::NativeWordField<Field>) {
+            // Fase 7 (Fp64, propuesta 3d): la NTT está disponible aunque la caché
+            // esté vacía, con las tablas de fft::tablas_sin_rng (raíz
+            // determinista; el producto no depende de la raíz).
+            const bool can = fft::fft_exponent(*K_, L) >= 0;
+            if (prefer_kronecker(*K_, small, can)) return mul_kronecker_auto(o);
+            if (can && prefer_fft(*K_, small, std::max(na, nb), L)) {
+                const unsigned long k = fft::ceil_log2(L);
+                const auto tp = fft::tablas_sin_rng(*K_, k);
+                return Poly(*K_, fft::detail::convolve_word(*tp, c_, o.c_, std::size_t(1) << k, L));
+            }
+            if (small >= kKaratsubaCutoff) return mul_karatsuba(o);
+            return mul_school(o);
+        }
+        // Sin tablas en la caché la FFT no se puede usar aquí: para elegir entre
+        // Kronecker y Karatsuba se razona como si el cuerpo no tuviera FFT
+        // (fase 5: con la NTT disponible prefer_kronecker ya no elige Kronecker).
+        const bool can_fft = !K_->fft_cache_.empty() && fft::fft_exponent(*K_, L) >= 0;
+        if (prefer_kronecker(*K_, small, can_fft)) return mul_kronecker_auto(o);
+        const bool use_fft = can_fft && prefer_fft(*K_, small, std::max(na, nb), L);
+        if (use_fft) return Poly(*K_, fft::convolve(*K_, c_, o.c_));
+        if (small >= kKaratsubaCutoff) return mul_karatsuba(o);
+        return mul_school(o);
+    }
+
+    // ---- Karatsuba sobre vistas -------------------------------------------
+    // Longitud de la vista a[0..n) sin ceros finales (lo que haría trim()).
+    static std::size_t trimmed_len(const Field& K, const Elem* a, std::size_t n) {
+        while (n > 0 && K.is_zero(a[n - 1])) --n;
+        return n;
+    }
+
+    // x[0..nx) + y[0..ny), recortado (como operator+ sobre las mitades).
+    static std::vector<Elem> add_views(const Field& K, const Elem* x, std::size_t nx,
+                                       const Elem* y, std::size_t ny) {
+        std::vector<Elem> r;
+        r.reserve(std::max(nx, ny));
+        const std::size_t nmin = std::min(nx, ny);
+        for (std::size_t i = 0; i < nmin; ++i) r.push_back(K.add(x[i], y[i]));
+        for (std::size_t i = nmin; i < nx; ++i) r.push_back(x[i]);
+        for (std::size_t i = nmin; i < ny; ++i) r.push_back(y[i]);
+        r.resize(trimmed_len(K, r.data(), r.size()));
+        return r;
+    }
+
+    // Producto Karatsuba de las vistas a[0..na) y b[0..nb), ambas no vacías y
+    // recortadas (último coeficiente no nulo).  Reproduce la recursión de la
+    // versión con Poly: m = max(na, nb)/2; aL = a[0..m) y aH = a[m..na)
+    // recortadas (vacías si m >= na), ídem para b; z0 = aL·bL, z2 = aH·bH,
+    // z1 = (aL+aH)·(bL+bH) - z0 - z2; resultado z0 + z1·x^m + z2·x^{2m}.  El
+    // resultado tiene longitud exacta na + nb - 1 (coeficiente principal
+    // lead(a)·lead(b) != 0).
+    // Si a y b son la misma vista (cuadrado), aL+aH y bL+bH coinciden: la suma
+    // se calcula una vez (trabajo redundante idéntico).
+    // Paralelismo: con par_depth > 0 y ambos operandos de al menos
+    // kParKaratsubaMin coeficientes, z0 y z2 se calculan en otros dos hilos
+    // mientras este calcula z1 (los tres subproductos son independientes y las
+    // operaciones de cuerpo son puras); los hijos reciben par_depth - 1.
+    static std::vector<Elem> karatsuba_rec(const Field& K, const Elem* a, std::size_t na,
+                                           const Elem* b, std::size_t nb, int par_depth = 0) {
+        const bool same = (a == b && na == nb);
+        if (na <= kKaratsubaCutoff || nb <= kKaratsubaCutoff) {
+            // Caso base: exactamente mul_school (se reutiliza para heredar
+            // cualquier mejora de su bucle).  La copia de las vistas cuesta
+            // O(na + nb), despreciable frente a los na·nb productos.
+            Poly pa(K, std::vector<Elem>(a, a + na));
+            if (same) return std::move(pa.mul_school(pa).c_);
+            Poly pb(K, std::vector<Elem>(b, b + nb));
+            return std::move(pa.mul_school(pb).c_);
+        }
+
+        const std::size_t m = std::max(na, nb) / 2;
+        const std::size_t naL = trimmed_len(K, a, std::min(m, na));
+        const std::size_t naH = (m < na) ? na - m : 0;  // ya recortada (a lo está)
+        const std::size_t nbL = same ? naL : trimmed_len(K, b, std::min(m, nb));
+        const std::size_t nbH = (m < nb) ? nb - m : 0;
+
+        const bool par = par_depth > 0 && std::min(na, nb) >= par_karatsuba_min(K);
+        const int child = par ? par_depth - 1 : 0;
+        auto calc_z0 = [&]() -> std::vector<Elem> {
+            if (naL > 0 && nbL > 0) return karatsuba_rec(K, a, naL, b, nbL, child);
+            return {};
+        };
+        auto calc_z2 = [&]() -> std::vector<Elem> {
+            if (naH > 0 && nbH > 0) return karatsuba_rec(K, a + m, naH, b + m, nbH, child);
+            return {};
+        };
+        auto calc_z1 = [&]() -> std::vector<Elem> {
+            std::vector<Elem> sa = (naH > 0) ? add_views(K, a, naL, a + m, naH)
+                                             : std::vector<Elem>(a, a + naL);
+            if (same) {
+                if (!sa.empty()) return karatsuba_rec(K, sa.data(), sa.size(), sa.data(), sa.size(), child);
+                return {};
+            }
+            std::vector<Elem> sb = (nbH > 0) ? add_views(K, b, nbL, b + m, nbH)
+                                             : std::vector<Elem>(b, b + nbL);
+            if (!sa.empty() && !sb.empty())
+                return karatsuba_rec(K, sa.data(), sa.size(), sb.data(), sb.size(), child);
+            return {};
+        };
+
+        std::vector<Elem> z0, z2, z1;
+        if (par) {
+            auto f0 = std::async(std::launch::async, calc_z0);
+            auto f2 = std::async(std::launch::async, calc_z2);
+            z1 = calc_z1();
+            z0 = f0.get();
+            z2 = f2.get();
+        } else {
+            z0 = calc_z0();
+            z2 = calc_z2();
+            z1 = calc_z1();
+        }
+        // z1 -= z0; z1 -= z2 (en sitio) y recorte.
+        const std::size_t n1 = std::max({z1.size(), z0.size(), z2.size()});
+        z1.resize(n1, K.zero());
+        for (std::size_t i = 0; i < z0.size(); ++i) z1[i] = K.sub(z1[i], z0[i]);
+        for (std::size_t i = 0; i < z2.size(); ++i) z1[i] = K.sub(z1[i], z2[i]);
+        z1.resize(trimmed_len(K, z1.data(), z1.size()));
+
+        // Recombinación en el vector resultado (se reutiliza el de z0).
+        std::vector<Elem> r = std::move(z0);
+        r.resize(na + nb - 1, K.zero());
+        for (std::size_t i = 0; i < z1.size(); ++i) r[m + i] = K.add(r[m + i], z1[i]);
+        for (std::size_t i = 0; i < z2.size(); ++i) r[2 * m + i] = K.add(r[2 * m + i], z2[i]);
+        return r;
     }
 
     // One Cantor-Zassenhaus splitting step: given g (product of distinct
     // degree-r irreducibles, deg g > r), return a nontrivial factor.
+    // Si tras kMaxSplitAttempts intentos no hay división, la entrada no cumple
+    // la precondición (ver equal_degree) y se lanza std::invalid_argument.
     static Poly equal_degree_split(const Poly& g, int r) {
         const Field& K = g.field();
         const BigInt q = K.cardinality();
@@ -451,7 +3268,7 @@ private:
         // s = log2(q), trace over F_{q^r}/F_2 uses s*r squarings.
         const unsigned long s = even_char ? (bit_length(q) - 1) : 0;
 
-        while (true) {
+        for (int attempt = 0; attempt < kMaxSplitAttempts; ++attempt) {
             Poly a = Poly::random(K, g.degree() - 1) % g;
             if (a.degree() <= 0) continue;
             Poly b(K);
@@ -469,6 +3286,9 @@ private:
             Poly d = gcd(b, g);
             if (d.degree() > 0 && d.degree() < g.degree()) return d;
         }
+        throw std::invalid_argument(
+            "equal_degree: no se encuentra un factor propio; la entrada no es producto de "
+            "irreducibles distintos de grado r");
     }
 };
 

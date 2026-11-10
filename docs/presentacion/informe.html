@@ -1,0 +1,374 @@
+<title>alcp: velocidad en cuerpos finitos</title>
+<meta name="claude:viewport-fit-sides" content="cover">
+<link rel="preconnect" href="https://fonts.googleapis.com">
+<link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+<link rel="stylesheet" href="https://fonts.googleapis.com/css2?family=Spectral:ital,wght@0,500;0,700;1,500&family=IBM+Plex+Sans:wght@400;500;600&family=IBM+Plex+Mono:wght@400;500&display=swap">
+<style>
+/* Composición: columna de lectura de ~72ch con bandas de datos más anchas; los gráficos son SVG dibujados a escala desde los JSON medidos. */
+:root{
+  --bg:#f2f5f4; --surface:#ffffff; --fg:#13211f; --muted:#56635f; --rule:#d5dedb;
+  --accent:#0d6e66;      /* alcp final */
+  --accent-soft:#cfe7e3;
+  --flint:#a5520a;       /* python-flint (referencia) */
+  --orig:#8b9894;        /* alcp original */
+  --galois:#6b4fa3;
+  --sympy:#b8336a;
+  --ok:#1f7a3f; --ok-bg:#dcf0e2; --neu:#5d6866; --neu-bg:#e6ebe9; --no:#a4321f; --no-bg:#f6e0db;
+  --f-display:"Spectral",Georgia,"Times New Roman",serif;
+  --f-body:"IBM Plex Sans",system-ui,-apple-system,"Segoe UI",sans-serif;
+  --f-mono:"IBM Plex Mono",ui-monospace,"Cascadia Mono",Consolas,monospace;
+}
+@media (prefers-color-scheme: dark){:root:not([data-theme="light"]){
+  --bg:#0d1514; --surface:#14201e; --fg:#e2ebe8; --muted:#9aa9a5; --rule:#2a3936;
+  --accent:#3cc7b8; --accent-soft:#173a36; --flint:#f0a14a; --orig:#6f7d79; --galois:#a58ae0; --sympy:#ec7aa8;
+  --ok:#6fd394; --ok-bg:#16301f; --neu:#a6b2af; --neu-bg:#222e2c; --no:#f08a75; --no-bg:#3a1e18; color-scheme:dark}}
+:root[data-theme="dark"]{
+  --bg:#0d1514; --surface:#14201e; --fg:#e2ebe8; --muted:#9aa9a5; --rule:#2a3936;
+  --accent:#3cc7b8; --accent-soft:#173a36; --flint:#f0a14a; --orig:#6f7d79; --galois:#a58ae0; --sympy:#ec7aa8;
+  --ok:#6fd394; --ok-bg:#16301f; --neu:#a6b2af; --neu-bg:#222e2c; --no:#f08a75; --no-bg:#3a1e18; color-scheme:dark}
+
+*{box-sizing:border-box}
+body{background:var(--bg);color:var(--fg);font:16px/1.6 var(--f-body);
+  padding-left:max(16px,env(safe-area-inset-left,0px));padding-right:max(16px,env(safe-area-inset-right,0px));padding-block:0 64px}
+.wrap{max-width:1040px;margin:0 auto;display:flex;flex-direction:column;gap:72px}
+.read{max-width:70ch}
+h1,h2,h3{font-family:var(--f-display);font-weight:700;line-height:1.15;text-wrap:balance;margin:0}
+h1{font-size:clamp(2.2rem,5.2vw,3.6rem);letter-spacing:-.01em}
+h2{font-size:clamp(1.6rem,3.2vw,2.1rem)}
+h3{font-size:1.2rem}
+p{margin:0}
+.flow{display:flex;flex-direction:column;gap:16px}
+.eyebrow{font:500 .78rem/1 var(--f-mono);letter-spacing:.08em;text-transform:uppercase;color:var(--accent)}
+.muted{color:var(--muted)}
+code,.mono{font-family:var(--f-mono);font-size:.9em}
+.num{font-variant-numeric:tabular-nums}
+
+/* Cabecera */
+header{padding-top:56px;display:grid;gap:28px}
+.thesis{font-family:var(--f-display);font-style:italic;font-weight:500;font-size:clamp(1.15rem,2.2vw,1.4rem);color:var(--muted);max-width:60ch}
+.formula{font-family:var(--f-mono);font-size:.95rem;color:var(--fg);background:var(--surface);border:1px solid var(--rule);
+  border-radius:6px;padding:12px 16px;width:fit-content;max-width:100%;overflow-x:auto}
+.formula b{color:var(--accent);font-weight:500}
+.kpis{display:grid;grid-template-columns:repeat(4,minmax(0,1fr));gap:1px;background:var(--rule);border:1px solid var(--rule);border-radius:8px;overflow:hidden}
+.kpi{background:var(--surface);padding:18px 18px 16px;display:flex;flex-direction:column;gap:4px;min-width:0}
+.kpi .v{font:700 2rem/1.1 var(--f-display);font-variant-numeric:tabular-nums}
+.kpi .v.a{color:var(--accent)}
+.kpi .l{font-size:.86rem;color:var(--muted)}
+@media (max-width:760px){.kpis{grid-template-columns:repeat(2,minmax(0,1fr))}}
+
+/* Gráficos */
+figure{margin:0;display:flex;flex-direction:column;gap:12px}
+figcaption{font-size:.88rem;color:var(--muted);max-width:75ch}
+.chart{background:var(--surface);border:1px solid var(--rule);border-radius:8px;padding:16px;overflow-x:auto}
+.chart svg{display:block;width:100%;height:auto;min-width:620px}
+.chart svg text{fill:var(--fg);font-family:var(--f-body)}
+.chart svg .ax{fill:var(--muted);font-family:var(--f-mono);font-size:12px}
+.chart svg .grid{stroke:var(--rule);stroke-width:1}
+.legend{display:flex;flex-wrap:wrap;gap:8px 20px;font-size:.86rem;color:var(--muted)}
+.legend span{display:inline-flex;align-items:center;gap:8px}
+.sw{width:12px;height:12px;border-radius:2px;display:inline-block}
+
+/* Tablas */
+.tbl{overflow-x:auto;border:1px solid var(--rule);border-radius:8px;background:var(--surface)}
+table{border-collapse:collapse;width:100%;font-size:.92rem}
+th,td{padding:9px 14px;text-align:left;vertical-align:top;border-bottom:1px solid var(--rule)}
+tr:last-child td{border-bottom:0}
+th{font:500 .74rem/1.3 var(--f-mono);letter-spacing:.06em;text-transform:uppercase;color:var(--muted);background:var(--bg)}
+td.r,th.r{text-align:right;font-variant-numeric:tabular-nums;white-space:nowrap}
+td.best{color:var(--flint);font-weight:600}
+td.alcp{color:var(--accent);font-weight:600}
+tbody tr.grp td{background:var(--bg);font:500 .78rem/1.3 var(--f-mono);letter-spacing:.06em;text-transform:uppercase;color:var(--muted)}
+.chip{display:inline-block;font:500 .74rem/1 var(--f-mono);padding:4px 7px;border-radius:4px;white-space:nowrap}
+.chip.ok{color:var(--ok);background:var(--ok-bg)} .chip.neu{color:var(--neu);background:var(--neu-bg)} .chip.no{color:var(--no);background:var(--no-bg)}
+
+/* Bloques de texto con dos columnas */
+.two{display:grid;grid-template-columns:repeat(2,minmax(0,1fr));gap:32px}
+@media (max-width:760px){.two{grid-template-columns:1fr}}
+.note{border-left:3px solid var(--accent);padding:4px 0 4px 16px;color:var(--fg)}
+ul.clean{margin:0;padding-left:1.1em;display:flex;flex-direction:column;gap:8px}
+.algo{display:grid;grid-template-columns:repeat(2,minmax(0,1fr));gap:1px;background:var(--rule);border:1px solid var(--rule);border-radius:8px;overflow:hidden}
+.algo>div{background:var(--surface);padding:16px;display:flex;flex-direction:column;gap:6px;min-width:0}
+.algo .op{font:600 .95rem var(--f-body)}
+.algo .gap{font:500 .82rem var(--f-mono);color:var(--flint)}
+.algo .why{font-size:.9rem;color:var(--muted)}
+@media (max-width:640px){.algo{grid-template-columns:1fr}}
+footer{font-size:.84rem;color:var(--muted);border-top:1px solid var(--rule);padding-top:20px;display:flex;flex-direction:column;gap:8px}
+a{color:var(--accent)}
+:focus-visible{outline:2px solid var(--accent);outline-offset:2px}
+</style>
+
+<div class="wrap">
+
+<header>
+  <div class="eyebrow">alcp · álgebra computacional sobre cuerpos finitos · fase 3</div>
+  <h1>Los mismos algoritmos, 24 veces más rápidos</h1>
+  <p class="thesis">Optimización del port C++23 y del binding pybind11 sin cambiar la lógica de ningún algoritmo, y comparación con python-flint, galois y SymPy.</p>
+  <div class="formula" aria-label="Ejemplo de la reducción perezosa">c<sub>k</sub> = Σ a<sub>i</sub>·b<sub>k−i</sub> <b>mod p</b> &nbsp;→&nbsp; se acumula sin reducir y se reduce <b>una vez</b> por coeficiente</div>
+  <div class="kpis">
+    <div class="kpi"><span class="v a num">24,4x</span><span class="l">suite C++, 128 escenarios (media geométrica)</span></div>
+    <div class="kpi"><span class="v num">9,7x</span><span class="l">módulo Python, 19 escenarios</span></div>
+    <div class="kpi"><span class="v num">128/128</span><span class="l">resultados idénticos al código original</span></div>
+    <div class="kpi"><span class="v num">248x → 6,0x</span><span class="l">tiempo frente a FLINT, antes y después (1 hilo)</span></div>
+  </div>
+</header>
+
+<section class="flow">
+  <div class="eyebrow">1 · Resultado por cuerpo</div>
+  <h2>Dónde se gana más</h2>
+  <p class="read">Los cuerpos con p &lt; 2<sup>62</sup> pasan a un backend de 64 bits y ganan entre 40 y 60 veces. Los de p grande (127 y 255 bits) siguen en GMP y ganan 3-4 veces, gracias a las operaciones en sitio, la reducción perezosa, la NTT multi-limb y el paralelismo. La barra fina muestra lo que se obtiene con GMP en todos los cuerpos, es decir, sin el backend de 64 bits.</p>
+  <figure>
+    <div class="chart"><svg id="g-cuerpos" role="img" aria-label="Speedup por cuerpo frente al código original"></svg></div>
+    <div class="legend"><span><i class="sw" style="background:var(--accent)"></i>versión final</span><span><i class="sw" style="background:var(--orig)"></i>solo GMP (sin backend de 64 bits)</span></div>
+    <figcaption>Speedup frente a <code>baseline-original</code> compilado con <code>-O3</code>, como media geométrica de los escenarios de cada grupo. 4 rondas intercaladas, enchufado y en reposo.</figcaption>
+  </figure>
+</section>
+
+<section class="flow">
+  <div class="eyebrow">2 · Casos históricos</div>
+  <h2>Antes y después, en milisegundos</h2>
+  <figure>
+    <div class="chart"><svg id="g-historico" role="img" aria-label="Tiempos antes y después en escala logarítmica"></svg></div>
+    <div class="legend"><span><i class="sw" style="background:var(--orig)"></i>código original (medido hoy)</span><span><i class="sw" style="background:var(--accent)"></i>versión final, 64 bits</span></div>
+    <figcaption>Escala logarítmica. Mediana de 5 repeticiones en 2 rondas alternadas (<code>bench_historico.cpp</code>, misma semilla). Las cifras históricas del encargo (823 ms; 3752, 606 y 62 ms) no se han vuelto a medir y no constan sus condiciones.</figcaption>
+  </figure>
+</section>
+
+<section class="flow">
+  <div class="eyebrow">3 · Técnicas</div>
+  <h2>Qué funcionó y qué no</h2>
+  <p class="read">Cada técnica se midió por separado, en serie y frente a la anterior de su rama. Las cifras no se suman entre técnicas: la cifra global válida es la de la sección 1.</p>
+  <div class="tbl"><table>
+    <thead><tr><th>Técnica</th><th>Qué cambia</th><th class="r">Medida</th><th>Veredicto</th></tr></thead>
+    <tbody id="t-tecnicas"></tbody>
+  </table></div>
+</section>
+
+<section class="flow">
+  <div class="eyebrow">4 · Comparativa</div>
+  <h2>Frente a otras librerías de cuerpos finitos</h2>
+  <p class="read">Hay 14 operaciones con las mismas entradas en todas las librerías, y en todas el resultado se verifica en forma canónica: <strong>todas dieron el mismo resultado</strong>. Solo se cronometra la operación, no la creación del cuerpo (galois compila con numba al crearlo). Cada punto indica cuántas veces más tarda que python-flint, la referencia en C. A la izquierda de la línea, más rápido que FLINT.</p>
+  <figure>
+    <div class="chart"><svg id="g-comp" role="img" aria-label="Cociente de tiempo frente a python-flint por operación y librería"></svg></div>
+    <div class="legend">
+      <span><i class="sw" style="background:var(--orig)"></i>alcp original</span>
+      <span><i class="sw" style="background:var(--accent)"></i>alcp final, 1 hilo</span>
+      <span><i class="sw" style="background:var(--galois)"></i>galois 0.4.11</span>
+      <span><i class="sw" style="background:var(--sympy)"></i>SymPy 1.14 (Python puro)</span>
+      <span><i class="sw" style="background:var(--flint)"></i>python-flint 0.9 = 1</span>
+    </div>
+    <figcaption>Escala logarítmica. Tiempo mínimo por operación, en un proceso nuevo por medida y con el portátil enchufado. SymPy no tiene polinomios sobre F<sub>p<sup>n</sup></sub>, por eso no aparece en las extensiones. SymPy sobre FLINT iguala a FLINT (0,99x de media) y no se dibuja.</figcaption>
+  </figure>
+
+  <div class="tbl"><table>
+    <thead><tr><th>Librería</th><th class="r">Veces el tiempo de FLINT</th><th class="r">Rango</th><th class="r">Operaciones</th></tr></thead>
+    <tbody id="t-resumen"></tbody>
+  </table></div>
+
+  <details>
+    <summary class="mono" style="cursor:pointer;color:var(--accent)">Ver los tiempos de las 14 operaciones</summary>
+    <div class="tbl" style="margin-top:12px"><table>
+      <thead><tr><th>Operación</th><th class="r">alcp original</th><th class="r">alcp final, 1 hilo</th><th class="r">python-flint</th><th class="r">galois</th><th class="r">SymPy puro</th></tr></thead>
+      <tbody id="t-comp"></tbody>
+    </table></div>
+  </details>
+</section>
+
+<section class="flow">
+  <div class="eyebrow">5 · La distancia que queda</div>
+  <h2>Por qué FLINT sigue delante</h2>
+  <p class="read">La mayor parte de la diferencia restante se debe al algoritmo, no a la implementación. FLINT usa algoritmos asintóticamente mejores, y el encargo prohibía cambiar los de alcp.</p>
+  <div class="algo">
+    <div><span class="op">MCD</span><span class="gap">7x</span><span class="why">FLINT usa half-GCD, O(M(n) log n). alcp usa el algoritmo de Euclides clásico, O(n²).</span></div>
+    <div><span class="op">División con resto</span><span class="gap">4,4x</span><span class="why">FLINT usa la inversión de Newton, O(M(n)). alcp usa la división escolar, O(n²).</span></div>
+    <div><span class="op">Irreducibilidad y factorización</span><span class="gap">1,6x – 27x</span><span class="why">FLINT usa potencias de Frobenius con composición modular (Kaltofen–Shoup). alcp usa Ben-Or y Cantor–Zassenhaus con <code>pow_mod</code> por cuadrados repetidos.</span></div>
+    <div><span class="op">Producto</span><span class="gap">1,7x – 20x</span><span class="why">Es la misma familia de algoritmos. En F<sub>q</sub>, FLINT empaqueta el polinomio en un entero (sustitución de Kronecker) y hace una sola FFT. Es donde alcp queda más cerca: 1,7-2,4x en F<sub>998244353</sub>.</span></div>
+  </div>
+</section>
+
+<section class="two">
+  <div class="flow">
+    <div class="eyebrow">6 · Cómo se midió</div>
+    <h3>Metodología</h3>
+    <ul class="clean">
+      <li>Referencia: etiqueta <code>baseline-original</code> con <code>-O3</code>, compilada con el mismo arnés que la versión final.</li>
+      <li>Ejecuciones intercaladas (A B C, 4 rondas) con mediana de todas las muestras. El rango intercuartílico mediano es del 4,7 %.</li>
+      <li>Un checksum por escenario: los 128 coinciden con <code>-O3</code>, <code>-march=native</code>, solo GMP y 1 hilo.</li>
+      <li>AMD Ryzen 7 7730U (8 núcleos/16 hilos), Windows 11, g++ 15.2, GMP 6.3, Python 3.15, enchufado.</li>
+      <li><code>build.py all</code> correcto: 6 tests C++, oráculo de paridad con las prácticas originales y 709 tests de pytest con un 100 % de cobertura.</li>
+    </ul>
+  </div>
+  <div class="flow">
+    <div class="eyebrow">Límites</div>
+    <h3>Lo que estas cifras no dicen</h3>
+    <ul class="clean">
+      <li>Se midió en una sola máquina. Los umbrales de despacho y de paralelismo se calibraron en ella.</li>
+      <li>El paralelismo mejora el tiempo de pared, pero aumenta el tiempo de CPU total. Con 1 hilo, la suite da 21,5x.</li>
+      <li>Probable pérdida del ~5 % en <code>fp.m127.elem_muladd</code> (un solo elemento, GMP).</li>
+      <li>La cobertura de líneas C++ bajó del 98,3 % al 94,4 % por caminos paralelos y multi-limb que los tests no recorren.</li>
+      <li>Nemo.jl no se pudo medir: Smart App Control bloquea sus DLL y no se cambió esa configuración de seguridad.</li>
+    </ul>
+  </div>
+</section>
+
+<section class="flow">
+  <div class="eyebrow">7 · Conclusiones</div>
+  <h2>Conclusiones y siguientes pasos</h2>
+  <div class="two">
+    <div class="flow">
+      <p class="note">Sin tocar los algoritmos, alcp pasa de ser más lento incluso que SymPy en Python puro en 4 de 10 operaciones a ser la librería más rápida de las que no usan FLINT: supera a galois en 13 de 14 operaciones y a SymPy puro en todas.</p>
+      <p>Frente a FLINT queda a unas 6 veces de media con un hilo. Cerrar esa distancia exige cambiar algoritmos (half-GCD, división de Newton, Kronecker, composición modular), algo que quedaba fuera del encargo.</p>
+    </div>
+    <ul class="clean">
+      <li><strong>Terminar el asignador rápido</strong> (<code>exp/toolchain-wip</code>), que da un 23-25 % preliminar y está sin tests.</li>
+      <li><strong>Volver a calibrar los umbrales</strong> en otra máquina, en reposo y con el plan de alto rendimiento.</li>
+      <li><strong>Recuperar cobertura C++</strong> con tests de la NTT paralela y multi-limb.</li>
+      <li><strong>Para uso en producción</strong> en Python, la opción más rápida es python-flint. alcp encaja como librería didáctica y legible, con resultados verificados contra las prácticas.</li>
+    </ul>
+  </div>
+</section>
+
+<footer>
+  <span>Fuentes: <code>bench/results/fase3/final-*.json</code> y <code>bench/results/comparativa/comparativa.json</code>, rama <code>mejoras-cpp-pybind</code> (QuantGuy3/finite-fields-algorithms). Informes técnicos completos en <code>docs/optimizacion/</code>.</span>
+  <span>Medido en noviembre de 2026 en un único equipo. Las cifras deben revisarse antes de reutilizarlas y repetirse si cambia el entorno. El informe se ha preparado con ayuda de IA.</span>
+</footer>
+</div>
+
+<script>
+// Datos medidos (copiados de los JSON del repositorio; ver el pie de página).
+const CUERPOS = [
+  ["F₇", 61.6, 3.9], ["F₁₀₁", 60.4, 4.1], ["F₃³⁰", 58.6, 7.0], ["F₉₉₈₂₄₄₃₅₃", 52.3, 7.2],
+  ["F₂⁸", 48.6, 6.3], ["F₂⁶¹₋₁", 43.4, 3.7], ["F₇⁴", 39.1, 6.2], ["F₍₂⁶¹₋₁₎²", 17.7, 4.7],
+  ["F_r, r de 255 bits", 3.8, 3.8], ["F₂¹²⁷₋₁", 3.4, 3.5]
+];
+const HISTORICO = [
+  ["Factorizar grado 5 en F₃³⁰", 439.5, 11.6],
+  ["Producto grado 4000, escolar", 1750.4, 12.8],
+  ["Producto grado 4000, Karatsuba", 331.8, 1.54],
+  ["Producto grado 4000, FFT", 33.8, 0.72]
+];
+const TECNICAS = [
+  ["Aritmética de cuerpos"],
+  ["GMP en sitio", "API C de GMP sin temporales en Fp y Fq", "2,0x en F_q", "ok"],
+  ["Reducción perezosa", "Se suman productos sin reducir y se reduce una vez por coeficiente", "4,7x (hasta 13x)", "ok"],
+  ["Backend de 64 bits", "Elementos en uint64_t con reducción de Barrett si p < 2⁶²", "8,7x (34x afectados)", "ok"],
+  ["Potencia en forma de Montgomery", "Misma cadena de cuadrados con REDC", "1,6x en elem_pow", "ok"],
+  ["Suma y resta sin copias", "El resultado se construye una sola vez", "1,17x en Karatsuba", "ok"],
+  ["Motor de multiplicación"],
+  ["NTT en palabras de máquina", "Transformada en uint64_t con el truco de Shoup", "4,5x (hasta 44x)", "ok"],
+  ["NTT multi-limb", "p ≥ 2⁶²: limbs contiguos, mpn y Montgomery", "2,5x", "ok"],
+  ["dft / idft en palabras", "Las transformadas explícitas de fast.hpp", "11,6x", "ok"],
+  ["Tablas FFT directas", "Vector por tamaño, twiddles contiguos por etapa", "1,21x", "ok"],
+  ["Karatsuba sobre vistas", "Puntero y longitud en lugar de copias", "1,18x", "ok"],
+  ["Paralelismo", "Karatsuba y NTT repartidas en hilos", "1,8x; más CPU total", "ok"],
+  ["Cuadrado con una transformada", "Se evita una FFT idéntica", "−31 % aislada, neutra en la suite", "neu"],
+  ["Capa Python"],
+  ["Analizador: xᵏ como monomio", "No se potencia x para leer x^k", "5,1x en cadenas largas", "ok"],
+  ["Cachés de textos y cadenas", "Se reutilizan análisis e impresiones", "5,2x / 94x repetidas", "ok"],
+  ["Tres atajos de operandos", "Despacho por tipo en // %, f(v) y resultados en línea", "0,98-1,04x", "no"],
+  ["Compilación"],
+  ["-march=native / x86-64-v3", "Instrucciones de la CPU local", "+0,9 %, ruido", "neu"],
+  ["LTO", "Optimización en el enlace", "0,99-1,02x", "no"],
+  ["Asignador rápido", "Reserva de memoria propia (sin terminar)", "1,23x preliminar", "pend"]
+];
+const COMP = [{"id":"fp30.mul.d100","g":"F_998244353","d":"producto de dos polinomios de grado 100","t":{"alcp_original":0.0005615,"alcp_native_1h":6.3e-06,"alcp_native":6.3e-06,"alcp":6.5e-06,"flint":3.6e-06,"galois":5.69e-05,"sympy":0.005315,"sympy_flint":6.6e-06}},{"id":"fp30.mul.d1000","g":"F_998244353","d":"producto de dos polinomios de grado 1000","t":{"alcp_original":0.0064688,"alcp_native_1h":0.0001209,"alcp_native":0.0001205,"alcp":0.0001213,"flint":6.88e-05,"galois":0.0024722,"sympy":0.2328865,"sympy_flint":7.22e-05}},{"id":"fp30.mul.d10000","g":"F_998244353","d":"producto de dos polinomios de grado 10000","t":{"alcp_original":0.1720818,"alcp_native_1h":0.0041283,"alcp_native":0.0029723,"alcp":0.0029649,"flint":0.0016928,"galois":0.2519648,"sympy":10.0396654,"sympy_flint":0.0015589}},{"id":"fp30.divmod.d4000","g":"F_998244353","d":"división con resto de grado 4000 entre grado 2000","t":{"alcp_original":0.4312699,"alcp_native_1h":0.0030271,"alcp_native":0.0030291,"alcp":0.0030918,"flint":0.000688,"galois":0.0064167,"sympy":3.5556391,"sympy_flint":0.0006868}},{"id":"fp30.gcd.d1000","g":"F_998244353","d":"mcd de dos polinomios de grado 1000","t":{"alcp_original":0.1236816,"alcp_native_1h":0.00427,"alcp_native":0.0042953,"alcp":0.0042925,"flint":0.0005825,"galois":0.0872469,"sympy":2.7946308,"sympy_flint":0.0005865}},{"id":"fp101.factor.d40","g":"F_101","d":"factor() de un producto conocido de grado 40 con multiplicidades","t":{"alcp_original":0.008352,"alcp_native_1h":0.0001811,"alcp_native":0.0001837,"alcp":0.0001869,"flint":7.05e-05,"galois":0.0533313,"sympy":0.0080818,"sympy_flint":0.0001065}},{"id":"fp101.factor.d100","g":"F_101","d":"factor() de un polinomio mónico aleatorio de grado 100","t":{"alcp_original":0.4799502,"alcp_native_1h":0.0066582,"alcp_native":0.0068353,"alcp":0.0066385,"flint":0.0004499,"galois":0.4202903,"sympy":0.2425462,"sympy_flint":0.0004841}},{"id":"fp101.irred.d200","g":"F_101","d":"test de irreducibilidad de un polinomio IRREDUCIBLE de grado 200","t":{"alcp_original":20.1268386,"alcp_native_1h":0.2072312,"alcp_native":0.21363,"alcp":0.2044946,"flint":0.0076667,"galois":0.2866323,"sympy":0.9206069,"sympy_flint":0.0025043}},{"id":"fp127.mul.d500","g":"F_(2^127-1)","d":"producto de dos polinomios de grado 500","t":{"alcp_original":0.0134748,"alcp_native_1h":0.0030594,"alcp_native":0.0014133,"alcp":0.0013848,"flint":0.0003262,"galois":0.0167624,"sympy":0.097649,"sympy_flint":0.0003289}},{"id":"fp127.factor.d20","g":"F_(2^127-1)","d":"factor() de un polinomio mónico aleatorio de grado 20","t":{"alcp_original":0.1082984,"alcp_native_1h":0.0302659,"alcp_native":0.0297861,"alcp":0.0298478,"flint":0.0025626,"galois":2.2819296,"sympy":0.0791524,"sympy_flint":null}},{"id":"f2e8.mul.d1000","g":"F_(2^8)","d":"producto de grado 1000 en F_256 (módulo de AES)","t":{"alcp_original":1.01846,"alcp_native_1h":0.0152306,"alcp_native":0.0043897,"alcp":0.0043295,"flint":0.0007654,"galois":0.0021024,"sympy":null,"sympy_flint":null}},{"id":"f2e8.factor.d30","g":"F_(2^8)","d":"factor() de un polinomio mónico aleatorio de grado 30 en F_256","t":{"alcp_original":0.8920034,"alcp_native_1h":0.0137388,"alcp_native":0.0137776,"alcp":0.0137813,"flint":0.0084383,"galois":0.0509855,"sympy":null,"sympy_flint":null}},{"id":"f3e30.mul.d200","g":"F_(3^30)","d":"producto de grado 200 en F_(3^30)","t":{"alcp_original":0.8548068,"alcp_native_1h":0.0119339,"alcp_native":0.0032956,"alcp":0.0032541,"flint":0.0006487,"galois":6.8545861,"sympy":null,"sympy_flint":null}},{"id":"f3e30.factor.d5","g":"F_(3^30)","d":"factor() de un polinomio mónico aleatorio de grado 5 en F_(3^30)","t":{"alcp_original":0.3357298,"alcp_native_1h":0.0092893,"alcp_native":0.0090698,"alcp":0.0092468,"flint":0.0021413,"galois":3.1911549,"sympy":null,"sympy_flint":null}}];
+const SERIES = [["alcp_original","--orig","alcp original"],["alcp_native_1h","--accent","alcp final, 1 hilo"],["galois","--galois","galois"],["sympy","--sympy","SymPy puro"]];
+const ETIQ = {"fp30.mul.d100":"Producto grado 100 · F₉₉₈₂₄₄₃₅₃","fp30.mul.d1000":"Producto grado 1000 · F₉₉₈₂₄₄₃₅₃","fp30.mul.d10000":"Producto grado 10 000 · F₉₉₈₂₄₄₃₅₃",
+  "fp30.divmod.d4000":"División 4000/2000 · F₉₉₈₂₄₄₃₅₃","fp30.gcd.d1000":"MCD grado 1000 · F₉₉₈₂₄₄₃₅₃","fp101.factor.d40":"Factorizar grado 40 · F₁₀₁",
+  "fp101.factor.d100":"Factorizar grado 100 · F₁₀₁","fp101.irred.d200":"Irreducibilidad grado 200 · F₁₀₁","fp127.mul.d500":"Producto grado 500 · F₂¹²⁷₋₁",
+  "fp127.factor.d20":"Factorizar grado 20 · F₂¹²⁷₋₁","f2e8.mul.d1000":"Producto grado 1000 · F₂⁸","f2e8.factor.d30":"Factorizar grado 30 · F₂⁸",
+  "f3e30.mul.d200":"Producto grado 200 · F₃³⁰","f3e30.factor.d5":"Factorizar grado 5 · F₃³⁰"};
+
+const NS = "http://www.w3.org/2000/svg";
+const coma = (x, d=1) => x.toLocaleString("es-ES", {minimumFractionDigits:d, maximumFractionDigits:d});
+function el(tag, attrs, parent, text){ const e=document.createElementNS(NS,tag); for(const k in attrs) e.setAttribute(k,attrs[k]); if(text!=null) e.textContent=text; if(parent) parent.appendChild(e); return e; }
+function tiempo(s){ if(s==null) return "—"; if(s<1e-3) return coma(s*1e6,1)+" µs"; if(s<1) return coma(s*1e3, s<0.01?2:1)+" ms"; return coma(s,2)+" s"; }
+
+// 1. Barras por cuerpo (escala lineal)
+(function(){
+  const svg=document.getElementById("g-cuerpos"), W=760, rowH=34, top=10, left=160, right=56, H=top+CUERPOS.length*rowH+34;
+  svg.setAttribute("viewBox",`0 0 ${W} ${H}`);
+  const max=70, x=v=>left+(W-left-right)*v/max;
+  for(let t=0;t<=70;t+=10){ el("line",{x1:x(t),x2:x(t),y1:top,y2:H-26,class:"grid"},svg); el("text",{x:x(t),y:H-8,"text-anchor":"middle",class:"ax"},svg,t+"x"); }
+  CUERPOS.forEach(([n,f,g],i)=>{
+    const y=top+i*rowH;
+    el("text",{x:left-12,y:y+rowH/2+4,"text-anchor":"end","font-size":13},svg,n);
+    el("rect",{x:left,y:y+6,width:x(f)-left,height:14,rx:2,fill:"var(--accent)"},svg);
+    el("rect",{x:left,y:y+23,width:Math.max(1,x(g)-left),height:5,rx:1,fill:"var(--orig)"},svg);
+    el("text",{x:x(f)+8,y:y+18,"font-size":13,"font-weight":600,class:"num"},svg,coma(f)+"x");
+  });
+})();
+
+// 2. Mancuernas logarítmicas (ms)
+(function(){
+  const svg=document.getElementById("g-historico"), W=780, rowH=46, top=10, left=232, right=36, H=top+HISTORICO.length*rowH+34;
+  svg.setAttribute("viewBox",`0 0 ${W} ${H}`);
+  const lo=Math.log10(0.5), hi=Math.log10(3000), x=v=>left+(W-left-right)*(Math.log10(v)-lo)/(hi-lo);
+  [0.5,1,10,100,1000].forEach(t=>{ el("line",{x1:x(t),x2:x(t),y1:top,y2:H-26,class:"grid"},svg); el("text",{x:x(t),y:H-8,"text-anchor":"middle",class:"ax"},svg,coma(t,t<1?1:0)+" ms"); });
+  HISTORICO.forEach(([n,a,b],i)=>{
+    const y=top+i*rowH+rowH/2;
+    el("text",{x:left-12,y:y+4,"text-anchor":"end","font-size":13},svg,n);
+    el("line",{x1:x(b),x2:x(a),y1:y,y2:y,stroke:"var(--rule)","stroke-width":4},svg);
+    el("circle",{cx:x(a),cy:y,r:6,fill:"var(--orig)"},svg);
+    el("circle",{cx:x(b),cy:y,r:6,fill:"var(--accent)"},svg);
+    el("text",{x:x(a)+10,y:y+4,"font-size":12,class:"ax"},svg,coma(a,1)+" ms");
+    el("text",{x:x(b)-10,y:y+4,"font-size":12,"text-anchor":"end",class:"ax"},svg,coma(b,b<10?2:1)+" ms");
+    el("text",{x:(x(a)+x(b))/2,y:y-10,"text-anchor":"middle","font-size":12,"font-weight":600,fill:"var(--accent)"},svg,Math.round(a/b)+"x");
+  });
+})();
+
+// 3. Tabla de técnicas
+(function(){
+  const tb=document.getElementById("t-tecnicas"), V={ok:["funciona","ok"],neu:["neutra","neu"],no:["descartada","no"],pend:["pendiente","neu"]};
+  TECNICAS.forEach(r=>{
+    const tr=document.createElement("tr");
+    if(r.length===1){ tr.className="grp"; tr.innerHTML=`<td colspan="4">${r[0]}</td>`; }
+    else { tr.innerHTML=`<td><strong>${r[0]}</strong></td><td class="muted">${r[1]}</td><td class="r">${r[2]}</td><td><span class="chip ${V[r[3]][1]}">${V[r[3]][0]}</span></td>`; }
+    tb.appendChild(tr);
+  });
+})();
+
+// 4. Puntos frente a FLINT (escala logarítmica)
+(function(){
+  const svg=document.getElementById("g-comp"), W=780, rowH=30, top=26, left=236, right=34, H=top+COMP.length*rowH+30;
+  svg.setAttribute("viewBox",`0 0 ${W} ${H}`);
+  const lo=Math.log10(0.5), hi=Math.log10(20000), x=v=>left+(W-left-right)*(Math.log10(v)-lo)/(hi-lo);
+  [1,10,100,1000,10000].forEach(t=>{ el("line",{x1:x(t),x2:x(t),y1:top-6,y2:H-24,class:"grid"},svg); el("text",{x:x(t),y:H-6,"text-anchor":"middle",class:"ax"},svg,t.toLocaleString("es-ES")+"x"); });
+  el("line",{x1:x(1),x2:x(1),y1:top-14,y2:H-24,stroke:"var(--flint)","stroke-width":2},svg);
+  el("text",{x:x(1)+6,y:top-12,"font-size":11,fill:"var(--flint)"},svg,"python-flint");
+  el("text",{x:x(1)-6,y:top-12,"font-size":11,"text-anchor":"end",class:"ax"},svg,"← más rápido");
+  COMP.forEach((e,i)=>{
+    const y=top+i*rowH+rowH/2, f=e.t.flint;
+    el("text",{x:left-12,y:y+4,"text-anchor":"end","font-size":13},svg,ETIQ[e.id]||e.id);
+    if(i%2===0) el("rect",{x:left,y:y-rowH/2,width:W-left-right,height:rowH,fill:"var(--bg)",opacity:.6},svg).parentNode.insertBefore(svg.lastChild, svg.firstChild);
+    const pts=SERIES.map(([k])=>e.t[k]).filter(v=>v!=null).map(v=>v/f);
+    el("line",{x1:x(Math.min(...pts)),x2:x(Math.max(...pts)),y1:y,y2:y,stroke:"var(--rule)","stroke-width":2},svg);
+    SERIES.forEach(([k,c,n])=>{ const v=e.t[k]; if(v==null) return;
+      const r=v/f, cx=x(r);
+      const m = k==="alcp_native_1h" ? el("circle",{cx,cy:y,r:6.5,fill:`var(${c})`},svg)
+              : k==="alcp_original" ? el("circle",{cx,cy:y,r:5,fill:"var(--surface)",stroke:`var(${c})`,"stroke-width":2},svg)
+              : el("rect",{x:cx-4.5,y:y-4.5,width:9,height:9,fill:`var(${c})`,transform:`rotate(45 ${cx} ${y})`},svg);
+      el("title",{},m,`${n}: ${coma(r, r<10?1:0)}x el tiempo de FLINT (${tiempo(v)})`);
+    });
+  });
+})();
+
+// Tablas de la comparativa
+(function(){
+  const geo=a=>Math.exp(a.reduce((s,v)=>s+Math.log(v),0)/a.length);
+  const filas=[["alcp original","alcp_original"],["alcp final, 1 hilo","alcp_native_1h"],["alcp final, con hilos","alcp_native"],["galois","galois"],["SymPy puro","sympy"],["SymPy sobre FLINT","sympy_flint"]];
+  const tb=document.getElementById("t-resumen");
+  filas.forEach(([n,k])=>{
+    const q=COMP.filter(e=>e.t[k]!=null).map(e=>e.t[k]/e.t.flint), g=geo(q);
+    const tr=document.createElement("tr");
+    tr.innerHTML=`<td class="${k.startsWith("alcp_native")?"alcp":""}">${n}</td><td class="r">${coma(g,g<10?2:0)}x</td><td class="r">${coma(Math.min(...q),2)}x – ${coma(Math.max(...q),Math.max(...q)<100?1:0)}x</td><td class="r">${q.length} de 14</td>`;
+    tb.appendChild(tr);
+  });
+  const tc=document.getElementById("t-comp"), cols=["alcp_original","alcp_native_1h","flint","galois","sympy"];
+  COMP.forEach(e=>{
+    const vals=cols.map(k=>e.t[k]), best=Math.min(...vals.filter(v=>v!=null));
+    const tr=document.createElement("tr");
+    tr.innerHTML=`<td>${ETIQ[e.id]}</td>`+cols.map((k,i)=>`<td class="r ${vals[i]===best?"best":""} ${k==="alcp_native_1h"?"alcp":""}">${vals[i]==null?"n/s":tiempo(vals[i])}</td>`).join("");
+    tc.appendChild(tr);
+  });
+})();
+</script>

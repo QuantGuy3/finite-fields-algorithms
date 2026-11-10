@@ -1,0 +1,115 @@
+
+== fp30.mul.d100: producto de dos polinomios de grado 100
+   alcp fase 4 nivel A, 1 hilo     14.5 µs  ok             b114213b41a4315b 
+   alcp fase 4 nivel B, 1 hilo     14.4 µs  ok             b114213b41a4315b 
+   alcp (binding C++, 1 hilo)      15.9 µs  ok             b114213b41a4315b 
+   alcp (binding C++)              15.7 µs  ok             b114213b41a4315b 
+   python-flint                     8.8 µs  ok             b114213b41a4315b 
+
+== fp30.mul.d1000: producto de dos polinomios de grado 1000
+   alcp fase 4 nivel A, 1 hilo    289.4 µs  ok             9ac84640941f412d 
+   alcp fase 4 nivel B, 1 hilo    256.1 µs  ok             9ac84640941f412d 
+   alcp (binding C++, 1 hilo)     144.1 µs  ok             9ac84640941f412d 
+   alcp (binding C++)             144.0 µs  ok             9ac84640941f412d 
+   python-flint                   166.7 µs  ok             9ac84640941f412d 
+
+== fp30.mul.d10000: producto de dos polinomios de grado 10000
+   alcp fase 4 nivel A, 1 hilo    10.02 ms  ok             c15ad70226e92353 
+   alcp fase 4 nivel B, 1 hilo     9.98 ms  ok             c15ad70226e92353 
+   alcp (binding C++, 1 hilo)      3.67 ms  ok             c15ad70226e92353 
+   alcp (binding C++)              3.06 ms  ok             c15ad70226e92353 
+   python-flint                    4.09 ms  ok             c15ad70226e92353 
+
+== fp30.divmod.d4000: división con resto de grado 4000 entre grado 2000
+   alcp fase 4 nivel A, 1 hilo     7.33 ms  ok             56f1631511a58669 
+   alcp fase 4 nivel B, 1 hilo     7.82 ms  ok             56f1631511a58669 
+   alcp (binding C++, 1 hilo)      3.13 ms  ok             56f1631511a58669 
+   alcp (binding C++)              3.13 ms  ok             56f1631511a58669 
+   python-flint                    1.62 ms  ok             56f1631511a58669 
+
+== fp30.gcd.d1000: mcd de dos polinomios de grado 1000
+   alcp fase 4 nivel A, 1 hilo    10.55 ms  ok             080a9ed428559ef6 
+   alcp fase 4 nivel B, 1 hilo    10.57 ms  ok             080a9ed428559ef6 
+   alcp (binding C++, 1 hilo)      2.95 ms  ok             080a9ed428559ef6 
+   alcp (binding C++)              2.94 ms  ok             080a9ed428559ef6 
+   python-flint                    1.45 ms  ok             080a9ed428559ef6 
+
+== fp30.irred.d400: test de irreducibilidad de un polinomio IRREDUCIBLE de grado 400
+   alcp fase 4 nivel A, 1 hilo      3.89 s  ok             3cbc87c7681f34db 
+   alcp fase 4 nivel B, 1 hilo   691.39 ms  ok             3cbc87c7681f34db 
+   alcp (binding C++, 1 hilo)    360.50 ms  ok             3cbc87c7681f34db 
+   alcp (binding C++)            352.77 ms  ok             3cbc87c7681f34db 
+   python-flint                  574.92 ms  ok             3cbc87c7681f34db 
+
+== fp30.factor.d300: factor() de un polinomio mónico aleatorio de grado 300
+   alcp fase 4 nivel A, 1 hilo   905.64 ms  ok             2a631a3edb0cf14d 
+   alcp fase 4 nivel B, 1 hilo   347.79 ms  ok             2a631a3edb0cf14d 
+   alcp (binding C++, 1 hilo)    108.64 ms  ok             2a631a3edb0cf14d 
+   alcp (binding C++)            108.71 ms  ok             2a631a3edb0cf14d 
+   python-flint                   59.71 ms  ok             2a631a3edb0cf14d 
+
+== fp101.factor.d40: factor() de un producto conocido de grado 40 con multiplicidades
+   alcp fase 4 nivel A, 1 hilo    445.1 µs  ok             beac702719576ae9 
+   alcp fase 4 nivel B, 1 hilo    500.9 µs  ok             beac702719576ae9 
+   alcp (binding C++, 1 hilo)     426.2 µs  ok             beac702719576ae9 
+   alcp (binding C++)             424.2 µs  ok             beac702719576ae9 
+   python-flint                   168.3 µs  ok             beac702719576ae9 
+
+== fp101.factor.d100: factor() de un polinomio mónico aleatorio de grado 100
+   alcp fase 4 nivel A, 1 hilo    17.90 ms  ok             424a0ca9965fddc2 
+   alcp fase 4 nivel B, 1 hilo    10.95 ms  ok             424a0ca9965fddc2 
+   alcp (binding C++, 1 hilo)      3.26 ms  ok             424a0ca9965fddc2 
+   alcp (binding C++)              3.27 ms  ok             424a0ca9965fddc2 
+   python-flint                    1.08 ms  ok             424a0ca9965fddc2 
+
+== fp101.irred.d200: test de irreducibilidad de un polinomio IRREDUCIBLE de grado 200
+   alcp fase 4 nivel A, 1 hilo   201.14 ms  ok             3cbc87c7681f34db 
+   alcp fase 4 nivel B, 1 hilo    78.70 ms  ok             3cbc87c7681f34db 
+   alcp (binding C++, 1 hilo)     33.63 ms  ok             3cbc87c7681f34db 
+   alcp (binding C++)             36.02 ms  ok             3cbc87c7681f34db 
+   python-flint                   19.37 ms  ok             3cbc87c7681f34db 
+
+== fp127.mul.d500: producto de dos polinomios de grado 500
+   alcp fase 4 nivel A, 1 hilo     7.59 ms  ok             6dea94a57c709dd7 
+   alcp fase 4 nivel B, 1 hilo    728.3 µs  ok             6dea94a57c709dd7 
+   alcp (binding C++, 1 hilo)     730.3 µs  ok             6dea94a57c709dd7 
+   alcp (binding C++)             732.4 µs  ok             6dea94a57c709dd7 
+   python-flint                   789.5 µs  ok             6dea94a57c709dd7 
+
+== fp127.factor.d20: factor() de un polinomio mónico aleatorio de grado 20
+   alcp fase 4 nivel A, 1 hilo    75.37 ms  ok             73c30342b7641448 
+   alcp fase 4 nivel B, 1 hilo    44.58 ms  ok             73c30342b7641448 
+   alcp (binding C++, 1 hilo)     46.41 ms  ok             73c30342b7641448 
+   alcp (binding C++)             46.80 ms  ok             73c30342b7641448 
+   python-flint                    6.27 ms  ok             73c30342b7641448 
+
+== f2e8.mul.d1000: producto de grado 1000 en F_256 (módulo de AES)
+   alcp fase 4 nivel A, 1 hilo    39.38 ms  ok             c5bea53df6403519 
+   alcp fase 4 nivel B, 1 hilo     2.49 ms  ok             c5bea53df6403519 
+   alcp (binding C++, 1 hilo)      2.51 ms  ok             c5bea53df6403519 
+   alcp (binding C++)              2.52 ms  ok             c5bea53df6403519 
+   python-flint                    1.87 ms  ok             c5bea53df6403519 
+
+== f2e8.factor.d30: factor() de un polinomio mónico aleatorio de grado 30 en F_256
+   alcp fase 4 nivel A, 1 hilo    32.51 ms  ok             031d51f4b83860a1 
+   alcp fase 4 nivel B, 1 hilo    20.37 ms  ok             031d51f4b83860a1 
+   alcp (binding C++, 1 hilo)     20.37 ms  ok             031d51f4b83860a1 
+   alcp (binding C++)             19.80 ms  ok             031d51f4b83860a1 
+   python-flint                   22.12 ms  ok             031d51f4b83860a1 
+
+== f3e30.mul.d200: producto de grado 200 en F_(3^30)
+   alcp fase 4 nivel A, 1 hilo    31.67 ms  ok             065a5139db7ab635 
+   alcp fase 4 nivel B, 1 hilo     2.30 ms  ok             065a5139db7ab635 
+   alcp (binding C++, 1 hilo)      2.30 ms  ok             065a5139db7ab635 
+   alcp (binding C++)              2.30 ms  ok             065a5139db7ab635 
+   python-flint                    1.26 ms  ok             065a5139db7ab635 
+
+== f3e30.factor.d5: factor() de un polinomio mónico aleatorio de grado 5 en F_(3^30)
+   alcp fase 4 nivel A, 1 hilo    13.57 ms  ok             e46efbed64da114c 
+   alcp fase 4 nivel B, 1 hilo    14.38 ms  ok             e46efbed64da114c 
+   alcp (binding C++, 1 hilo)     14.32 ms  ok             e46efbed64da114c 
+   alcp (binding C++)             14.43 ms  ok             e46efbed64da114c 
+   python-flint                    5.08 ms  ok             e46efbed64da114c 
+
+JSON escrito en build\comparativa_fase5.json
+exit 0

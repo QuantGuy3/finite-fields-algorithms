@@ -1,0 +1,242 @@
+{
+ "format": "alcp-bench-result",
+ "format_version": 1,
+ "label": "smoke-baseline-O3",
+ "kind": "cpp",
+ "mode": "single",
+ "created": "2026-10-17T20:36:20+02:00",
+ "metadata": {
+  "cpu": "AMD Ryzen 7 7730U with Radeon Graphics",
+  "logical_cpus": 16,
+  "physical_cores": 8,
+  "os": "Windows-11-10.0.26300-SP0",
+  "machine": "AMD64",
+  "python": "3.12.10",
+  "python_executable": "~\\Documents\\Archivos\\Proyectos\\finite-fields-algorithms\\.venv\\Scripts\\python.exe",
+  "power_plan": "Power Scheme GUID: 381b4222-f694-41f0-9685-ff5bb260df2e  (Balanced)",
+  "power": {
+   "ac_online": true,
+   "battery_percent": 40,
+   "battery_saver": false,
+   "no_battery": false
+  },
+  "date": "2026-10-17T20:36:22+02:00",
+  "build": {
+   "label": "smoke-baseline-O3",
+   "kind": "cpp",
+   "include": "~\\AppData\\Local\\Temp\\claude\\C--Users-<usuario>-Documents-Archivos-Proyectos\\2e18e96a-361a-47be-ad99-f0341eb0cc55\\scratchpad\\baseline\\include",
+   "include_git": {
+    "commit": "67331a26000eec55952218f404b01608b84a1c66",
+    "describe": "baseline-original",
+    "branch": "HEAD",
+    "dirty": false
+   },
+   "include_sha256": "9b306a5d8af58a6b257b0c8dc8c6a198a42e6eaf197525e2a853b22877f4813d",
+   "suite_source_sha256": "c34ecf9ed3b49078f45eff2d959d82afd51f39185bae99eace50a4f6dae8ecbe",
+   "compiler": {
+    "cxx": "g++",
+    "cxx_path": "C:\\msys64\\ucrt64\\bin\\g++.EXE",
+    "version": "g++ (Rev8, Built by MSYS2 project) 15.2.0",
+    "dumpfullversion": "15.2.0"
+   },
+   "cxxflags": "-O3",
+   "ldflags": "-static -lgmpxx -lgmp",
+   "command": [
+    "g++",
+    "-std=c++23",
+    "-Wall",
+    "-Wextra",
+    "-O3",
+    "-I~\\AppData\\Local\\Temp\\claude\\C--Users-<usuario>-Documents-Archivos-Proyectos\\2e18e96a-361a-47be-ad99-f0341eb0cc55\\scratchpad\\baseline\\include",
+    "~\\Documents\\Archivos\\Proyectos\\finite-fields-algorithms\\.claude\\worktrees\\wf_4fb1cd98-6d0-3\\bench\\bench_suite.cpp",
+    "-static",
+    "-lgmpxx",
+    "-lgmp",
+    "-o",
+    "~\\Documents\\Archivos\\Proyectos\\finite-fields-algorithms\\.claude\\worktrees\\wf_4fb1cd98-6d0-3\\build\\bench\\smoke-baseline-O3\\bench_suite.exe"
+   ],
+   "build_seconds": 19.91,
+   "built": "2026-10-17T20:36:01+02:00"
+  },
+  "suite": {
+   "suite": "alcp-bench-suite",
+   "suite_version": 1,
+   "compiler": "g++ 15.2.0",
+   "cplusplus": 202302,
+   "gmp_version": "6.3.0",
+   "ndebug": false
+  }
+ },
+ "runs": [
+  {
+   "label": "smoke-baseline-O3",
+   "round": 0,
+   "finished": "2026-10-17T20:36:22+02:00",
+   "total_s": 2.7552334,
+   "reps": 3,
+   "min_time_s": 0,
+   "warmup": 1,
+   "filter": "fp\\.p7\\.(mul_school|factor)|fp\\.ntt\\.mul_fft\\.d4096|fq\\.q3e30\\.factor|fast\\.ntt\\.dft\\.k10",
+   "returncode": 0
+  }
+ ],
+ "scenarios": [
+  {
+   "name": "fp.p7.mul_school.d64",
+   "group": "fp.p7",
+   "op": "mul_school",
+   "desc": "producto (school) de dos polinomios de grado 64 en F_7 x20",
+   "inner": 20,
+   "samples_s": [
+    0.0100914,
+    0.0101097,
+    0.0104555
+   ],
+   "round_medians_s": [
+    0.0101097
+   ],
+   "setup_s": [
+    4.56e-05
+   ],
+   "checksums": [
+    "559357b5bc3c57c2"
+   ],
+   "errors": [],
+   "checksum": "559357b5bc3c57c2",
+   "error": "",
+   "median_s": 0.0101097,
+   "min_s": 0.0100914
+  },
+  {
+   "name": "fp.p7.mul_school.d512",
+   "group": "fp.p7",
+   "op": "mul_school",
+   "desc": "producto (school) de dos polinomios de grado 512 en F_7",
+   "inner": 1,
+   "samples_s": [
+    0.0323946,
+    0.0360134,
+    0.0377257
+   ],
+   "round_medians_s": [
+    0.0360134
+   ],
+   "setup_s": [
+    0.0002649
+   ],
+   "checksums": [
+    "5936b7480b151eb3"
+   ],
+   "errors": [],
+   "checksum": "5936b7480b151eb3",
+   "error": "",
+   "median_s": 0.0360134,
+   "min_s": 0.0323946
+  },
+  {
+   "name": "fp.p7.factor.d62",
+   "group": "fp.p7",
+   "op": "factor",
+   "desc": "factorización completa de un polinomio de grado 62 en F_7",
+   "inner": 1,
+   "samples_s": [
+    0.0170104,
+    0.0168707,
+    0.0166091
+   ],
+   "round_medians_s": [
+    0.0168707
+   ],
+   "setup_s": [
+    0.0002554
+   ],
+   "checksums": [
+    "3425aecb393956ba"
+   ],
+   "errors": [],
+   "checksum": "3425aecb393956ba",
+   "error": "",
+   "median_s": 0.0168707,
+   "min_s": 0.0166091
+  },
+  {
+   "name": "fp.ntt.mul_fft.d4096",
+   "group": "fp.ntt",
+   "op": "mul_fft",
+   "desc": "producto (fft) de dos polinomios de grado 4096 en F_998244353",
+   "inner": 1,
+   "samples_s": [
+    0.1119862,
+    0.1693283,
+    0.1069547
+   ],
+   "round_medians_s": [
+    0.1119862
+   ],
+   "setup_s": [
+    0.0027272
+   ],
+   "checksums": [
+    "f4c81b85220fb683"
+   ],
+   "errors": [],
+   "checksum": "f4c81b85220fb683",
+   "error": "",
+   "median_s": 0.1119862,
+   "min_s": 0.1069547
+  },
+  {
+   "name": "fq.q3e30.factor.d5",
+   "group": "fq.q3e30",
+   "op": "factor",
+   "desc": "factorización completa de un polinomio de grado 5 en F_(3^30) (histórico: aleatorio de grado 5)",
+   "inner": 1,
+   "samples_s": [
+    0.4585663,
+    0.4636967,
+    0.5107077
+   ],
+   "round_medians_s": [
+    0.4636967
+   ],
+   "setup_s": [
+    0.0123813
+   ],
+   "checksums": [
+    "417a5b753c7a2a07"
+   ],
+   "errors": [],
+   "checksum": "417a5b753c7a2a07",
+   "error": "",
+   "median_s": 0.4636967,
+   "min_s": 0.4585663
+  },
+  {
+   "name": "fast.ntt.dft.k10",
+   "group": "fast",
+   "op": "dft",
+   "desc": "dft recursiva de tamaño 2^10 en F_998244353 x8",
+   "inner": 8,
+   "samples_s": [
+    0.022148,
+    0.0217821,
+    0.0220014
+   ],
+   "round_medians_s": [
+    0.0220014
+   ],
+   "setup_s": [
+    0.0002868
+   ],
+   "checksums": [
+    "b61f454e63ae6d8d"
+   ],
+   "errors": [],
+   "checksum": "b61f454e63ae6d8d",
+   "error": "",
+   "median_s": 0.0220014,
+   "min_s": 0.0217821
+  }
+ ],
+ "note": "SMOKE: validación funcional del harness con el equipo ocupado (otros procesos compilando); NO es una medición de rendimiento"
+}

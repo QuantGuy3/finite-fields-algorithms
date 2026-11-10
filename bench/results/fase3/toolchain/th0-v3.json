@@ -1,0 +1,856 @@
+{
+ "format": "alcp-bench-result",
+ "format_version": 1,
+ "label": "th0-v3",
+ "kind": "cpp",
+ "mode": "interleave",
+ "created": "2026-11-04T17:09:30+01:00",
+ "metadata": {
+  "cpu": "AMD Ryzen 7 7730U with Radeon Graphics",
+  "logical_cpus": 16,
+  "physical_cores": 8,
+  "os": "Windows-11-10.0.26300-SP0",
+  "machine": "AMD64",
+  "python": "3.15.1",
+  "python_executable": "~\\Documents\\Archivos\\Proyectos\\finite-fields-algorithms\\.venv\\Scripts\\python.exe",
+  "power_plan": "Power Scheme GUID: 381b4222-f694-41f0-9685-ff5bb260df2e  (Balanced)",
+  "power": {
+   "ac_online": true,
+   "battery_percent": 22,
+   "battery_saver": false,
+   "no_battery": false
+  },
+  "date": "2026-11-04T17:09:30+01:00",
+  "build": {
+   "label": "th0-v3",
+   "kind": "cpp",
+   "include": "~\\AppData\\Local\\Temp\\claude\\C--Users-<usuario>-Documents-Archivos-Proyectos\\2e18e96a-361a-47be-ad99-f0341eb0cc55\\scratchpad\\med-h0\\include",
+   "include_git": {
+    "commit": "5f492176e0d3965807272586da1619007dffe45d",
+    "describe": "baseline-original-20-g5f49217",
+    "branch": "HEAD",
+    "dirty": false
+   },
+   "include_sha256": "a811975aeaa344f9c860aa75937edc89164624ff732788ef74a4534790df35f5",
+   "suite_source_sha256": "c34ecf9ed3b49078f45eff2d959d82afd51f39185bae99eace50a4f6dae8ecbe",
+   "compiler": {
+    "cxx": "g++",
+    "cxx_path": "C:\\msys64\\ucrt64\\bin\\g++.EXE",
+    "version": "g++ (Rev8, Built by MSYS2 project) 15.2.0",
+    "dumpfullversion": "15.2.0"
+   },
+   "cxxflags": "-O3 -march=x86-64-v3",
+   "ldflags": "-static -lgmpxx -lgmp",
+   "fast_alloc": false,
+   "pgo": null,
+   "command": [
+    "g++",
+    "-std=c++23",
+    "-Wall",
+    "-Wextra",
+    "-O3",
+    "-march=x86-64-v3",
+    "-I~\\AppData\\Local\\Temp\\claude\\C--Users-<usuario>-Documents-Archivos-Proyectos\\2e18e96a-361a-47be-ad99-f0341eb0cc55\\scratchpad\\med-h0\\include",
+    "~\\AppData\\Local\\Temp\\claude\\C--Users-<usuario>-Documents-Archivos-Proyectos\\2e18e96a-361a-47be-ad99-f0341eb0cc55\\scratchpad\\med-t0\\bench\\bench_suite.cpp",
+    "-static",
+    "-lgmpxx",
+    "-lgmp",
+    "-o",
+    "~\\AppData\\Local\\Temp\\claude\\C--Users-<usuario>-Documents-Archivos-Proyectos\\2e18e96a-361a-47be-ad99-f0341eb0cc55\\scratchpad\\med-t0\\build\\bench\\th0-v3\\bench_suite.exe"
+   ],
+   "build_seconds": 52.72,
+   "built": "2026-11-03T21:18:53+01:00",
+   "variante": {
+    "build": "th0-v3",
+    "backend": null,
+    "threads": null
+   }
+  },
+  "suite": {
+   "suite": "alcp-bench-suite",
+   "suite_version": 1,
+   "compiler": "g++ 15.2.0",
+   "cplusplus": 202302,
+   "gmp_version": "6.3.0",
+   "ndebug": false
+  }
+ },
+ "runs": [
+  {
+   "label": "th0-v3",
+   "round": 0,
+   "finished": "2026-11-04T17:09:30+01:00",
+   "total_s": 6.9648736,
+   "reps": 3,
+   "min_time_s": 0,
+   "warmup": 1,
+   "filter": "^(fp\\.p101\\.(elem_muladd|mul_school\\.d512|mul_karatsuba\\.d512|divmod|gcd\\.|factor)|fp\\.ntt\\.(mul_fft\\.d4096|pow_mod)|fp\\.m61\\.(elem_muladd|mul_school\\.d512)|fp\\.p256\\.(elem_muladd|mul_fft\\.d4096)|fq\\.q2e8\\.(elem_muladd|mul_school|factor)|fq\\.m61e2\\.(mul_school|mul_fft\\.d1024)|fast\\.ntt\\.(dft\\.k12|toeplitz_lower_inverse\\.n1024))",
+   "returncode": 0
+  },
+  {
+   "label": "th0-v3",
+   "round": 1,
+   "finished": "2026-11-04T17:10:46+01:00",
+   "total_s": 6.0804519,
+   "reps": 3,
+   "min_time_s": 0,
+   "warmup": 1,
+   "filter": "^(fp\\.p101\\.(elem_muladd|mul_school\\.d512|mul_karatsuba\\.d512|divmod|gcd\\.|factor)|fp\\.ntt\\.(mul_fft\\.d4096|pow_mod)|fp\\.m61\\.(elem_muladd|mul_school\\.d512)|fp\\.p256\\.(elem_muladd|mul_fft\\.d4096)|fq\\.q2e8\\.(elem_muladd|mul_school|factor)|fq\\.m61e2\\.(mul_school|mul_fft\\.d1024)|fast\\.ntt\\.(dft\\.k12|toeplitz_lower_inverse\\.n1024))",
+   "returncode": 0
+  },
+  {
+   "label": "th0-v3",
+   "round": 2,
+   "finished": "2026-11-04T17:12:00+01:00",
+   "total_s": 6.0983335,
+   "reps": 3,
+   "min_time_s": 0,
+   "warmup": 1,
+   "filter": "^(fp\\.p101\\.(elem_muladd|mul_school\\.d512|mul_karatsuba\\.d512|divmod|gcd\\.|factor)|fp\\.ntt\\.(mul_fft\\.d4096|pow_mod)|fp\\.m61\\.(elem_muladd|mul_school\\.d512)|fp\\.p256\\.(elem_muladd|mul_fft\\.d4096)|fq\\.q2e8\\.(elem_muladd|mul_school|factor)|fq\\.m61e2\\.(mul_school|mul_fft\\.d1024)|fast\\.ntt\\.(dft\\.k12|toeplitz_lower_inverse\\.n1024))",
+   "returncode": 0
+  }
+ ],
+ "scenarios": [
+  {
+   "name": "fp.p101.elem_muladd.n400000",
+   "group": "fp.p101",
+   "op": "elem_muladd",
+   "desc": "400000 iteraciones encadenadas x <- x*a + b en F_101",
+   "inner": 400000,
+   "samples_s": [
+    0.0390615,
+    0.0388744,
+    0.0392146,
+    0.0395418,
+    0.0428101,
+    0.0414161,
+    0.03645,
+    0.0367319,
+    0.0370587
+   ],
+   "round_medians_s": [
+    0.0390615,
+    0.0414161,
+    0.0367319
+   ],
+   "setup_s": [
+    0.0006934,
+    1.11e-05,
+    3.03e-05
+   ],
+   "checksums": [
+    "e51aa870ce6269eb",
+    "e51aa870ce6269eb",
+    "e51aa870ce6269eb"
+   ],
+   "errors": [],
+   "checksum": "e51aa870ce6269eb",
+   "error": "",
+   "median_s": 0.0390615,
+   "min_s": 0.03645
+  },
+  {
+   "name": "fp.p101.mul_school.d512",
+   "group": "fp.p101",
+   "op": "mul_school",
+   "desc": "producto (school) de dos polinomios de grado 512 en F_101",
+   "inner": 1,
+   "samples_s": [
+    0.0299327,
+    0.0288219,
+    0.0287289,
+    0.0307818,
+    0.0302095,
+    0.0293676,
+    0.0274886,
+    0.0280985,
+    0.0279214
+   ],
+   "round_medians_s": [
+    0.0288219,
+    0.0302095,
+    0.0279214
+   ],
+   "setup_s": [
+    0.0004614,
+    0.0002347,
+    0.0002166
+   ],
+   "checksums": [
+    "8289633c899317a1",
+    "8289633c899317a1",
+    "8289633c899317a1"
+   ],
+   "errors": [],
+   "checksum": "8289633c899317a1",
+   "error": "",
+   "median_s": 0.0288219,
+   "min_s": 0.0274886
+  },
+  {
+   "name": "fp.p101.mul_karatsuba.d512",
+   "group": "fp.p101",
+   "op": "mul_karatsuba",
+   "desc": "producto (karatsuba) de dos polinomios de grado 512 en F_101",
+   "inner": 1,
+   "samples_s": [
+    0.0126789,
+    0.0124454,
+    0.012441,
+    0.0124874,
+    0.012533,
+    0.0116194,
+    0.0125605,
+    0.0118051,
+    0.0117594
+   ],
+   "round_medians_s": [
+    0.0124454,
+    0.0124874,
+    0.0118051
+   ],
+   "setup_s": [
+    0.0002232,
+    0.0001964,
+    0.0001932
+   ],
+   "checksums": [
+    "fea453dad54c0188",
+    "fea453dad54c0188",
+    "fea453dad54c0188"
+   ],
+   "errors": [],
+   "checksum": "fea453dad54c0188",
+   "error": "",
+   "median_s": 0.0124454,
+   "min_s": 0.0116194
+  },
+  {
+   "name": "fp.p101.divmod.d2000_1000",
+   "group": "fp.p101",
+   "op": "divmod",
+   "desc": "divmod grado 2000 / grado 1000 en F_101",
+   "inner": 1,
+   "samples_s": [
+    0.1143744,
+    0.1102921,
+    0.1089671,
+    0.1038507,
+    0.1011763,
+    0.1064878,
+    0.1012003,
+    0.1011654,
+    0.1048889
+   ],
+   "round_medians_s": [
+    0.1102921,
+    0.1038507,
+    0.1012003
+   ],
+   "setup_s": [
+    0.0005924,
+    0.00056,
+    0.0005425
+   ],
+   "checksums": [
+    "ce32beed1dda91cd",
+    "ce32beed1dda91cd",
+    "ce32beed1dda91cd"
+   ],
+   "errors": [],
+   "checksum": "ce32beed1dda91cd",
+   "error": "",
+   "median_s": 0.1048889,
+   "min_s": 0.1011654
+  },
+  {
+   "name": "fp.p101.gcd.d500",
+   "group": "fp.p101",
+   "op": "gcd",
+   "desc": "mcd de dos polinomios de grado ~500 con factor común en F_101",
+   "inner": 1,
+   "samples_s": [
+    0.0309368,
+    0.0311575,
+    0.0308781,
+    0.029669,
+    0.0305433,
+    0.0304926,
+    0.0296579,
+    0.0296025,
+    0.0294354
+   ],
+   "round_medians_s": [
+    0.0309368,
+    0.0304926,
+    0.0296025
+   ],
+   "setup_s": [
+    0.0065196,
+    0.0064768,
+    0.006459
+   ],
+   "checksums": [
+    "5cad0c7c5f168edb",
+    "5cad0c7c5f168edb",
+    "5cad0c7c5f168edb"
+   ],
+   "errors": [],
+   "checksum": "5cad0c7c5f168edb",
+   "error": "",
+   "median_s": 0.0304926,
+   "min_s": 0.0294354
+  },
+  {
+   "name": "fp.p101.factor.d100",
+   "group": "fp.p101",
+   "op": "factor",
+   "desc": "factorización completa de un polinomio de grado 100 en F_101",
+   "inner": 1,
+   "samples_s": [
+    0.083732,
+    0.0832411,
+    0.0844701,
+    0.0798078,
+    0.0825724,
+    0.0820916,
+    0.0808701,
+    0.0882657,
+    0.0820021
+   ],
+   "round_medians_s": [
+    0.083732,
+    0.0820916,
+    0.0820021
+   ],
+   "setup_s": [
+    0.0004804,
+    0.0004867,
+    0.0004952
+   ],
+   "checksums": [
+    "48a7604aa4ae63ee",
+    "48a7604aa4ae63ee",
+    "48a7604aa4ae63ee"
+   ],
+   "errors": [],
+   "checksum": "48a7604aa4ae63ee",
+   "error": "",
+   "median_s": 0.0825724,
+   "min_s": 0.0798078
+  },
+  {
+   "name": "fp.ntt.mul_fft.d4096",
+   "group": "fp.ntt",
+   "op": "mul_fft",
+   "desc": "producto (fft) de dos polinomios de grado 4096 en F_998244353",
+   "inner": 1,
+   "samples_s": [
+    0.0822113,
+    0.0792967,
+    0.0777066,
+    0.0734388,
+    0.0731602,
+    0.0879018,
+    0.0722483,
+    0.0728439,
+    0.0761261
+   ],
+   "round_medians_s": [
+    0.0792967,
+    0.0734388,
+    0.0728439
+   ],
+   "setup_s": [
+    0.0018282,
+    0.0017374,
+    0.0016094
+   ],
+   "checksums": [
+    "f4c81b85220fb683",
+    "f4c81b85220fb683",
+    "f4c81b85220fb683"
+   ],
+   "errors": [],
+   "checksum": "f4c81b85220fb683",
+   "error": "",
+   "median_s": 0.0761261,
+   "min_s": 0.0722483
+  },
+  {
+   "name": "fp.ntt.pow_mod.d128_k5",
+   "group": "fp.ntt",
+   "op": "pow_mod",
+   "desc": "x^(q^5) mod f, f de grado 128 en F_998244353",
+   "inner": 1,
+   "samples_s": [
+    0.4547717,
+    0.4589616,
+    0.5136496,
+    0.4447403,
+    0.4346804,
+    0.436642,
+    0.4362559,
+    0.4520358,
+    0.4365836
+   ],
+   "round_medians_s": [
+    0.4589616,
+    0.436642,
+    0.4365836
+   ],
+   "setup_s": [
+    3.48e-05,
+    3.48e-05,
+    3.25e-05
+   ],
+   "checksums": [
+    "0eb2514aceb37261",
+    "0eb2514aceb37261",
+    "0eb2514aceb37261"
+   ],
+   "errors": [],
+   "checksum": "0eb2514aceb37261",
+   "error": "",
+   "median_s": 0.4447403,
+   "min_s": 0.4346804
+  },
+  {
+   "name": "fp.m61.elem_muladd.n400000",
+   "group": "fp.m61",
+   "op": "elem_muladd",
+   "desc": "400000 iteraciones encadenadas x <- x*a + b en F_(2^61-1)",
+   "inner": 400000,
+   "samples_s": [
+    0.0423517,
+    0.0402047,
+    0.040829,
+    0.0403495,
+    0.0390496,
+    0.039022,
+    0.0394964,
+    0.0383864,
+    0.0374029
+   ],
+   "round_medians_s": [
+    0.040829,
+    0.0390496,
+    0.0383864
+   ],
+   "setup_s": [
+    1.79e-05,
+    1.61e-05,
+    1.61e-05
+   ],
+   "checksums": [
+    "b8e325f73ad90582",
+    "b8e325f73ad90582",
+    "b8e325f73ad90582"
+   ],
+   "errors": [],
+   "checksum": "b8e325f73ad90582",
+   "error": "",
+   "median_s": 0.0394964,
+   "min_s": 0.0374029
+  },
+  {
+   "name": "fp.m61.mul_school.d512",
+   "group": "fp.m61",
+   "op": "mul_school",
+   "desc": "producto (school) de dos polinomios de grado 512 en F_(2^61-1)",
+   "inner": 1,
+   "samples_s": [
+    0.0361134,
+    0.0291301,
+    0.0396677,
+    0.0271828,
+    0.0289145,
+    0.0319268,
+    0.027316,
+    0.0278698,
+    0.0275211
+   ],
+   "round_medians_s": [
+    0.0361134,
+    0.0289145,
+    0.0275211
+   ],
+   "setup_s": [
+    0.0002452,
+    0.0002329,
+    0.0002187
+   ],
+   "checksums": [
+    "43c3884710f7d468",
+    "43c3884710f7d468",
+    "43c3884710f7d468"
+   ],
+   "errors": [],
+   "checksum": "43c3884710f7d468",
+   "error": "",
+   "median_s": 0.0289145,
+   "min_s": 0.0271828
+  },
+  {
+   "name": "fp.p256.elem_muladd.n200000",
+   "group": "fp.p256",
+   "op": "elem_muladd",
+   "desc": "200000 iteraciones encadenadas x <- x*a + b en F_r (r de 255 bits, BLS12-381)",
+   "inner": 200000,
+   "samples_s": [
+    0.0454502,
+    0.032411,
+    0.0328324,
+    0.0326265,
+    0.0313771,
+    0.0309253,
+    0.0313169,
+    0.0309893,
+    0.0307627
+   ],
+   "round_medians_s": [
+    0.0328324,
+    0.0313771,
+    0.0309893
+   ],
+   "setup_s": [
+    0.0004141,
+    0.000283,
+    0.0002445
+   ],
+   "checksums": [
+    "cc3cab838e9b19f1",
+    "cc3cab838e9b19f1",
+    "cc3cab838e9b19f1"
+   ],
+   "errors": [],
+   "checksum": "cc3cab838e9b19f1",
+   "error": "",
+   "median_s": 0.0313771,
+   "min_s": 0.0307627
+  },
+  {
+   "name": "fp.p256.mul_fft.d4096",
+   "group": "fp.p256",
+   "op": "mul_fft",
+   "desc": "producto (fft) de dos polinomios de grado 4096 en F_r (r de 255 bits, BLS12-381)",
+   "inner": 1,
+   "samples_s": [
+    0.1156228,
+    0.1083749,
+    0.1214081,
+    0.0891912,
+    0.0935431,
+    0.0922865,
+    0.0963896,
+    0.0956818,
+    0.0913233
+   ],
+   "round_medians_s": [
+    0.1156228,
+    0.0922865,
+    0.0956818
+   ],
+   "setup_s": [
+    0.0027713,
+    0.002297,
+    0.0023839
+   ],
+   "checksums": [
+    "60ed510564513dfb",
+    "60ed510564513dfb",
+    "60ed510564513dfb"
+   ],
+   "errors": [],
+   "checksum": "60ed510564513dfb",
+   "error": "",
+   "median_s": 0.0956818,
+   "min_s": 0.0891912
+  },
+  {
+   "name": "fq.q2e8.elem_muladd.n50000",
+   "group": "fq.q2e8",
+   "op": "elem_muladd",
+   "desc": "50000 iteraciones encadenadas x <- x*a + b en F_(2^8) (x^8+x^4+x^3+x+1)",
+   "inner": 50000,
+   "samples_s": [
+    0.2224404,
+    0.2215964,
+    0.2366761,
+    0.2041894,
+    0.2050378,
+    0.2037026,
+    0.2057211,
+    0.2045278,
+    0.208137
+   ],
+   "round_medians_s": [
+    0.2224404,
+    0.2041894,
+    0.2057211
+   ],
+   "setup_s": [
+    9.63e-05,
+    9.19e-05,
+    9.4e-05
+   ],
+   "checksums": [
+    "c0ffe16ee54f128c",
+    "c0ffe16ee54f128c",
+    "c0ffe16ee54f128c"
+   ],
+   "errors": [],
+   "checksum": "c0ffe16ee54f128c",
+   "error": "",
+   "median_s": 0.2057211,
+   "min_s": 0.2037026
+  },
+  {
+   "name": "fq.q2e8.mul_school.d128",
+   "group": "fq.q2e8",
+   "op": "mul_school",
+   "desc": "producto (school) de dos polinomios de grado 128 en F_(2^8) (x^8+x^4+x^3+x+1)",
+   "inner": 1,
+   "samples_s": [
+    0.0819533,
+    0.0880108,
+    0.0679901,
+    0.0637865,
+    0.0627208,
+    0.0627237,
+    0.067571,
+    0.0744023,
+    0.064058
+   ],
+   "round_medians_s": [
+    0.0819533,
+    0.0627237,
+    0.067571
+   ],
+   "setup_s": [
+    0.0004183,
+    0.0003819,
+    0.0004242
+   ],
+   "checksums": [
+    "c056d9d992271db9",
+    "c056d9d992271db9",
+    "c056d9d992271db9"
+   ],
+   "errors": [],
+   "checksum": "c056d9d992271db9",
+   "error": "",
+   "median_s": 0.067571,
+   "min_s": 0.0627208
+  },
+  {
+   "name": "fq.q2e8.factor.d28",
+   "group": "fq.q2e8",
+   "op": "factor",
+   "desc": "factorización completa de un polinomio de grado 28 en F_(2^8) (x^8+x^4+x^3+x+1)",
+   "inner": 1,
+   "samples_s": [
+    0.1345087,
+    0.1271824,
+    0.1369864,
+    0.0911622,
+    0.0915923,
+    0.0948095,
+    0.1000664,
+    0.105539,
+    0.0993141
+   ],
+   "round_medians_s": [
+    0.1345087,
+    0.0915923,
+    0.1000664
+   ],
+   "setup_s": [
+    0.0017592,
+    0.0015981,
+    0.0016795
+   ],
+   "checksums": [
+    "d2fc95c10ececedd",
+    "d2fc95c10ececedd",
+    "d2fc95c10ececedd"
+   ],
+   "errors": [],
+   "checksum": "d2fc95c10ececedd",
+   "error": "",
+   "median_s": 0.1000664,
+   "min_s": 0.0911622
+  },
+  {
+   "name": "fq.m61e2.mul_school.d128",
+   "group": "fq.m61e2",
+   "op": "mul_school",
+   "desc": "producto (school) de dos polinomios de grado 128 en F_((2^61-1)^2) (x^2+1)",
+   "inner": 1,
+   "samples_s": [
+    0.0242865,
+    0.0238898,
+    0.01415,
+    0.014138,
+    0.014022,
+    0.0140907,
+    0.0136536,
+    0.0150434,
+    0.0141985
+   ],
+   "round_medians_s": [
+    0.0238898,
+    0.0140907,
+    0.0141985
+   ],
+   "setup_s": [
+    0.0004361,
+    0.0002348,
+    0.0002331
+   ],
+   "checksums": [
+    "2cb38bd639886e3c",
+    "2cb38bd639886e3c",
+    "2cb38bd639886e3c"
+   ],
+   "errors": [],
+   "checksum": "2cb38bd639886e3c",
+   "error": "",
+   "median_s": 0.01415,
+   "min_s": 0.0136536
+  },
+  {
+   "name": "fq.m61e2.mul_fft.d1024",
+   "group": "fq.m61e2",
+   "op": "mul_fft",
+   "desc": "producto (fft) de dos polinomios de grado 1024 en F_((2^61-1)^2) (x^2+1)",
+   "inner": 1,
+   "samples_s": [
+    0.1263651,
+    0.1488297,
+    0.1514532,
+    0.0831793,
+    0.0810207,
+    0.0794285,
+    0.0824587,
+    0.084621,
+    0.0844756
+   ],
+   "round_medians_s": [
+    0.1488297,
+    0.0810207,
+    0.0844756
+   ],
+   "setup_s": [
+    0.0011642,
+    0.0011926,
+    0.0011134
+   ],
+   "checksums": [
+    "a45642d67f5a9912",
+    "a45642d67f5a9912",
+    "a45642d67f5a9912"
+   ],
+   "errors": [],
+   "checksum": "a45642d67f5a9912",
+   "error": "",
+   "median_s": 0.0844756,
+   "min_s": 0.0794285
+  },
+  {
+   "name": "fast.ntt.dft.k12",
+   "group": "fast",
+   "op": "dft",
+   "desc": "dft recursiva de tamaño 2^12 en F_998244353 x2",
+   "inner": 2,
+   "samples_s": [
+    0.02178,
+    0.0232555,
+    0.021756,
+    0.0172655,
+    0.0180615,
+    0.0181463,
+    0.0177414,
+    0.0175136,
+    0.0172416
+   ],
+   "round_medians_s": [
+    0.02178,
+    0.0180615,
+    0.0175136
+   ],
+   "setup_s": [
+    0.0013685,
+    0.00077,
+    0.0009254
+   ],
+   "checksums": [
+    "70691e178cfc0c9d",
+    "70691e178cfc0c9d",
+    "70691e178cfc0c9d"
+   ],
+   "errors": [],
+   "checksum": "70691e178cfc0c9d",
+   "error": "",
+   "median_s": 0.0180615,
+   "min_s": 0.0172416
+  },
+  {
+   "name": "fast.ntt.toeplitz_lower_inverse.n1024",
+   "group": "fast",
+   "op": "toeplitz_lower_inverse",
+   "desc": "inversa de Toeplitz triangular inferior n=1024 en F_998244353",
+   "inner": 1,
+   "samples_s": [
+    0.0263796,
+    0.0252175,
+    0.0297952,
+    0.0248788,
+    0.0243684,
+    0.0242233,
+    0.0246624,
+    0.0251221,
+    0.0243258
+   ],
+   "round_medians_s": [
+    0.0263796,
+    0.0243684,
+    0.0246624
+   ],
+   "setup_s": [
+    0.0003423,
+    0.0002058,
+    0.0001951
+   ],
+   "checksums": [
+    "7749eb8ff8cac3d0",
+    "7749eb8ff8cac3d0",
+    "7749eb8ff8cac3d0"
+   ],
+   "errors": [],
+   "checksum": "7749eb8ff8cac3d0",
+   "error": "",
+   "median_s": 0.0248788,
+   "min_s": 0.0242233
+  }
+ ],
+ "note": "fase3 toolchain",
+ "interleave": {
+  "labels": [
+   "tb0-O3",
+   "tb0-v3",
+   "tb0-nat",
+   "tb0-lto",
+   "tb0-alloc",
+   "th0-O3",
+   "th0-v3",
+   "th0-nat",
+   "th0-lto",
+   "th0-alloc"
+  ],
+  "rounds": 3,
+  "per_scenario": false,
+  "reps_per_round": 3,
+  "min_time_per_round": 0.0
+ }
+}

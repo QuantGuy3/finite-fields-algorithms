@@ -1,0 +1,597 @@
+{
+ "format": "alcp-bench-result",
+ "format_version": 1,
+ "label": "py-modb0",
+ "kind": "python",
+ "mode": "single",
+ "created": "2026-11-04T17:08:08+0100",
+ "metadata": {
+  "cpu": "AMD Ryzen 7 7730U with Radeon Graphics",
+  "logical_cpus": 16,
+  "physical_cores": 8,
+  "os": "Windows-11-10.0.26300-SP0",
+  "machine": "AMD64",
+  "python": "3.15.1",
+  "python_executable": "~\\Documents\\Archivos\\Proyectos\\finite-fields-algorithms\\.venv\\Scripts\\python.exe",
+  "power_plan": "Power Scheme GUID: 381b4222-f694-41f0-9685-ff5bb260df2e  (Balanced)",
+  "power": {
+   "ac_online": true,
+   "battery_percent": 21,
+   "battery_saver": false,
+   "no_battery": false
+  },
+  "date": "2026-11-04T17:08:10+01:00",
+  "build": {
+   "label": "modb0",
+   "kind": "module",
+   "source": "~\\AppData\\Local\\Temp\\claude\\C--Users-<usuario>-Documents-Archivos-Proyectos\\2e18e96a-361a-47be-ad99-f0341eb0cc55\\scratchpad\\med-b0\\python-bindings\\bindings.cpp",
+   "source_sha256": "7773231615b9b8c62da954dfb0b64e3e8754065786615e6633593f80044a3f38",
+   "source_git": {
+    "commit": "67331a26000eec55952218f404b01608b84a1c66",
+    "describe": "baseline-original",
+    "branch": "HEAD",
+    "dirty": false
+   },
+   "include": "~\\AppData\\Local\\Temp\\claude\\C--Users-<usuario>-Documents-Archivos-Proyectos\\2e18e96a-361a-47be-ad99-f0341eb0cc55\\scratchpad\\med-b0\\include",
+   "include_git": {
+    "commit": "67331a26000eec55952218f404b01608b84a1c66",
+    "describe": "baseline-original",
+    "branch": "HEAD",
+    "dirty": false
+   },
+   "include_sha256": "9b306a5d8af58a6b257b0c8dc8c6a198a42e6eaf197525e2a853b22877f4813d",
+   "compiler": {
+    "cxx": "g++",
+    "cxx_path": "C:\\msys64\\ucrt64\\bin\\g++.EXE",
+    "version": "g++ (Rev8, Built by MSYS2 project) 15.2.0",
+    "dumpfullversion": "15.2.0"
+   },
+   "cxxflags": "-O3",
+   "command": [
+    "g++",
+    "-shared",
+    "-std=c++23",
+    "-O3",
+    "-I~\\AppData\\Local\\Temp\\claude\\C--Users-<usuario>-Documents-Archivos-Proyectos\\2e18e96a-361a-47be-ad99-f0341eb0cc55\\scratchpad\\med-b0\\include",
+    "-I~\\Documents\\Archivos\\Proyectos\\finite-fields-algorithms\\.venv\\Lib\\site-packages\\pybind11\\include",
+    "-I~\\AppData\\Local\\Programs\\Python\\Python315\\Include",
+    "~\\AppData\\Local\\Temp\\claude\\C--Users-<usuario>-Documents-Archivos-Proyectos\\2e18e96a-361a-47be-ad99-f0341eb0cc55\\scratchpad\\med-b0\\python-bindings\\bindings.cpp",
+    "-L~\\AppData\\Local\\Programs\\Python\\Python315\\libs",
+    "-lpython315",
+    "-static",
+    "-lgmpxx",
+    "-lgmp",
+    "-o",
+    "~\\AppData\\Local\\Temp\\claude\\C--Users-<usuario>-Documents-Archivos-Proyectos\\2e18e96a-361a-47be-ad99-f0341eb0cc55\\scratchpad\\med-a6\\build\\bench\\modb0\\module\\alcp_native.cp315-win_amd64.pyd"
+   ],
+   "python": "3.15.1 (tags/v3.15.1:c37e74c, Oct 21 2026, 06:24:08) [MSC v.1951 64 bit (AMD64)]",
+   "ext_suffix": ".cp315-win_amd64.pyd",
+   "build_seconds": 46.86,
+   "built": "2026-11-03T21:22:01+01:00"
+  },
+  "module": {
+   "file": "~\\AppData\\Local\\Temp\\claude\\C--Users-<usuario>-Documents-Archivos-Proyectos\\2e18e96a-361a-47be-ad99-f0341eb0cc55\\scratchpad\\med-a6\\build\\bench\\modb0\\module\\alcp_native.cp315-win_amd64.pyd",
+   "sha256": "eb78c7058e64614442354e3ffed8b19ac1632e785d318c896ea7a3eac22088fc"
+  },
+  "suite": {
+   "suite": "alcp-bench-python",
+   "suite_version": 1
+  }
+ },
+ "note": "fase3 ronda 3",
+ "runs": [
+  {
+   "label": "py-modb0",
+   "round": 0,
+   "total_s": 5.566202700021677,
+   "reps": 5,
+   "min_time_s": 0.1,
+   "warmup": 1,
+   "filter": ""
+  }
+ ],
+ "scenarios": [
+  {
+   "name": "py.ntt.poly_from_list.d1000",
+   "group": "py.ntt",
+   "op": "poly_from_list",
+   "desc": "Fp(998244353).poly(lista) con grado 1000 (x20)",
+   "inner": 20,
+   "samples_s": [
+    0.005900900000000001,
+    0.0054297,
+    0.006122600000000001,
+    0.0060176000000000006,
+    0.006023700000000001,
+    0.0060940000000000005,
+    0.0058436,
+    0.0060701,
+    0.005560000000000001,
+    0.0058003,
+    0.0057924000000000005,
+    0.005832400000000001,
+    0.005593900000000001,
+    0.0058742,
+    0.0058547,
+    0.0053623,
+    0.0061821,
+    0.0055475
+   ],
+   "warmup_s": [
+    0.005475000000000001
+   ],
+   "checksum": "8627fe77db0d9194",
+   "error": "",
+   "setup_s": 0.00033660000190138817,
+   "median_s": 0.00584915,
+   "min_s": 0.0053623
+  },
+  {
+   "name": "py.ntt.coeffs.d1000",
+   "group": "py.ntt",
+   "op": "coeffs",
+   "desc": "PolyFp.coeffs() con grado 1000 (x40)",
+   "inner": 40,
+   "samples_s": [
+    0.0062386,
+    0.0063387,
+    0.006254600000000001,
+    0.006482000000000001,
+    0.006281500000000001,
+    0.006405200000000001,
+    0.006206000000000001,
+    0.0063603,
+    0.006342700000000001,
+    0.0063715,
+    0.006401700000000001,
+    0.0062998,
+    0.0067245000000000004,
+    0.0062703,
+    0.0064066,
+    0.0063052
+   ],
+   "warmup_s": [
+    0.0065963
+   ],
+   "checksum": "0fc88e478ee1e3c7",
+   "error": "",
+   "setup_s": 0.0005560999270528555,
+   "median_s": 0.0063407,
+   "min_s": 0.006206000000000001
+  },
+  {
+   "name": "py.ntt.roundtrip.d1000",
+   "group": "py.ntt",
+   "op": "roundtrip",
+   "desc": "ida y vuelta F.poly(P.coeffs()) con grado 1000 (x20)",
+   "inner": 20,
+   "samples_s": [
+    0.0089779,
+    0.0087674,
+    0.009004,
+    0.0088056,
+    0.0093348,
+    0.0084721,
+    0.0085393,
+    0.0092222,
+    0.0085615,
+    0.0089295,
+    0.009063400000000001,
+    0.0088293
+   ],
+   "warmup_s": [
+    0.0090711
+   ],
+   "checksum": "aa3b36944fe8dc0a",
+   "error": "",
+   "setup_s": 0.00046449992805719376,
+   "median_s": 0.008879399999999999,
+   "min_s": 0.0084721
+  },
+  {
+   "name": "py.ntt.mul_auto.d1000",
+   "group": "py.ntt",
+   "op": "mul_auto",
+   "desc": "producto de grado 1000 en F_998244353 con a * b (x5)",
+   "inner": 5,
+   "samples_s": [
+    0.0362117,
+    0.035067600000000004,
+    0.0410741,
+    0.0358667,
+    0.035248600000000005
+   ],
+   "warmup_s": [
+    0.0368051
+   ],
+   "checksum": "0d4a33cb5f0e28e9",
+   "error": "",
+   "setup_s": 0.0009827000321820378,
+   "median_s": 0.0358667,
+   "min_s": 0.035067600000000004
+  },
+  {
+   "name": "py.ntt.mul_fft.d1000",
+   "group": "py.ntt",
+   "op": "mul_fft",
+   "desc": "producto de grado 1000 en F_998244353 con .mul(b, 'fft') (x5)",
+   "inner": 5,
+   "samples_s": [
+    0.0341493,
+    0.0358387,
+    0.036117300000000005,
+    0.037014700000000005,
+    0.035887600000000006
+   ],
+   "warmup_s": [
+    0.035318300000000004
+   ],
+   "checksum": "368464de3541086c",
+   "error": "",
+   "setup_s": 0.0010397000005468726,
+   "median_s": 0.035887600000000006,
+   "min_s": 0.0341493
+  },
+  {
+   "name": "py.ntt.mul_karatsuba.d1000",
+   "group": "py.ntt",
+   "op": "mul_karatsuba",
+   "desc": "producto de grado 1000 en F_998244353 con .mul(b, 'karatsuba') (x2)",
+   "inner": 2,
+   "samples_s": [
+    0.07238470000000001,
+    0.07386140000000001,
+    0.07291990000000001,
+    0.0739156,
+    0.0745403
+   ],
+   "warmup_s": [
+    0.07580150000000001
+   ],
+   "checksum": "6776e3c212b85eaa",
+   "error": "",
+   "setup_s": 0.0013662000419571996,
+   "median_s": 0.07386140000000001,
+   "min_s": 0.07238470000000001
+  },
+  {
+   "name": "py.ntt.mul_school.d1000",
+   "group": "py.ntt",
+   "op": "mul_school",
+   "desc": "producto de grado 1000 en F_998244353 con .mul(b, 'school')",
+   "inner": 1,
+   "samples_s": [
+    0.1126389,
+    0.1127761,
+    0.1128031,
+    0.11404170000000001,
+    0.11220930000000001
+   ],
+   "warmup_s": [
+    0.1135411
+   ],
+   "checksum": "eebc7f1a8dc65835",
+   "error": "",
+   "setup_s": 0.001183000043965876,
+   "median_s": 0.1127761,
+   "min_s": 0.11220930000000001
+  },
+  {
+   "name": "py.p101.factor.d40",
+   "group": "py.p101",
+   "op": "factor",
+   "desc": "factor() de un polinomio de grado 40 en F_101",
+   "inner": 1,
+   "samples_s": [
+    0.0090807,
+    0.0106885,
+    0.009732000000000001,
+    0.014943600000000001,
+    0.0114306,
+    0.009864600000000001,
+    0.0130982,
+    0.009285900000000001,
+    0.011025400000000001,
+    0.010888700000000001
+   ],
+   "warmup_s": [
+    0.0200076
+   ],
+   "checksum": "19d2f8b8f63708d8",
+   "error": "",
+   "setup_s": 0.0001537000061944127,
+   "median_s": 0.0107886,
+   "min_s": 0.0090807
+  },
+  {
+   "name": "py.ntt.fp_mul_loop.n20000",
+   "group": "py.ntt",
+   "op": "fp_mul_loop",
+   "desc": "20000 llamadas Fp.mul(x, a) en un bucle Python (p = 998244353)",
+   "inner": 20000,
+   "samples_s": [
+    0.0201356,
+    0.019496100000000002,
+    0.0199954,
+    0.0212485,
+    0.020661500000000003
+   ],
+   "warmup_s": [
+    0.0204265
+   ],
+   "checksum": "9bb1099e4af5fb76",
+   "error": "",
+   "setup_s": 3.4800032153725624e-05,
+   "median_s": 0.0201356,
+   "min_s": 0.019496100000000002
+  },
+  {
+   "name": "py.m521.fp_mul_loop.n5000",
+   "group": "py.m521",
+   "op": "fp_mul_loop",
+   "desc": "5000 llamadas Fp.mul(x, a) en un bucle Python (p = 2^521 - 1)",
+   "inner": 5000,
+   "samples_s": [
+    0.029235300000000002,
+    0.0289266,
+    0.028703000000000003,
+    0.0287418,
+    0.029402400000000002
+   ],
+   "warmup_s": [
+    0.029144200000000002
+   ],
+   "checksum": "a33d46746e9ee96f",
+   "error": "",
+   "setup_s": 0.0013095000758767128,
+   "median_s": 0.0289266,
+   "min_s": 0.028703000000000003
+  },
+  {
+   "name": "py.m521.poly_from_list.d200",
+   "group": "py.m521",
+   "op": "poly_from_list",
+   "desc": "Fp(2^521-1).poly(lista) con grado 200 (x20)",
+   "inner": 20,
+   "samples_s": [
+    0.009261100000000001,
+    0.0093761,
+    0.0094588,
+    0.0095828,
+    0.0088912,
+    0.0094403,
+    0.0086832,
+    0.0088714,
+    0.0095431,
+    0.0088287,
+    0.0093472
+   ],
+   "warmup_s": [
+    0.0099892
+   ],
+   "checksum": "387f4c5743d4f4dd",
+   "error": "",
+   "setup_s": 0.0014003999531269073,
+   "median_s": 0.0093472,
+   "min_s": 0.0086832
+  },
+  {
+   "name": "py.m521.coeffs.d200",
+   "group": "py.m521",
+   "op": "coeffs",
+   "desc": "PolyFp.coeffs() con grado 200 y p = 2^521-1 (x40)",
+   "inner": 40,
+   "samples_s": [
+    0.006076300000000001,
+    0.005973600000000001,
+    0.006073800000000001,
+    0.0062537,
+    0.0061469,
+    0.0059455,
+    0.0062506,
+    0.0059619,
+    0.006270100000000001,
+    0.0060355,
+    0.0058769,
+    0.0060438,
+    0.0059917,
+    0.0065352000000000006,
+    0.0059871,
+    0.0063499,
+    0.0059375
+   ],
+   "warmup_s": [
+    0.0062906
+   ],
+   "checksum": "d070fe4d50d6532f",
+   "error": "",
+   "setup_s": 0.0016447999514639378,
+   "median_s": 0.0060438,
+   "min_s": 0.0058769
+  },
+  {
+   "name": "py.m521.mul_auto.d200",
+   "group": "py.m521",
+   "op": "mul_auto",
+   "desc": "producto a * b de grado 200 con p = 2^521-1",
+   "inner": 1,
+   "samples_s": [
+    0.0061779,
+    0.006117,
+    0.0059261,
+    0.0058902,
+    0.0060124,
+    0.0058227,
+    0.0059414,
+    0.0060118,
+    0.006039,
+    0.0059256000000000005,
+    0.0064391000000000006,
+    0.0060802,
+    0.0064095,
+    0.0056630000000000005,
+    0.005554900000000001,
+    0.005743600000000001,
+    0.0055729
+   ],
+   "warmup_s": [
+    0.006545700000000001
+   ],
+   "checksum": "fac612a2571258f9",
+   "error": "",
+   "setup_s": 0.00231859995983541,
+   "median_s": 0.0059414,
+   "min_s": 0.005554900000000001
+  },
+  {
+   "name": "py.is_prime.n2000",
+   "group": "py.misc",
+   "op": "is_prime",
+   "desc": "is_prime sobre 2000 impares aleatorios de 256 bits",
+   "inner": 2000,
+   "samples_s": [
+    0.0115809,
+    0.011679,
+    0.011555500000000002,
+    0.0114415,
+    0.0114935,
+    0.0115394,
+    0.011599,
+    0.0114593,
+    0.0114783
+   ],
+   "warmup_s": [
+    0.0118823
+   ],
+   "checksum": "fac62a4469352205",
+   "error": "",
+   "setup_s": 0.0004929000278934836,
+   "median_s": 0.0115394,
+   "min_s": 0.0114415
+  },
+  {
+   "name": "py.fq9.poly_from_list.d500",
+   "group": "py.fq",
+   "op": "poly_from_list",
+   "desc": "Fq(3, [1,0,1]).poly(índices) con grado 500 (x40)",
+   "inner": 40,
+   "samples_s": [
+    0.0066071,
+    0.0068335,
+    0.0065789,
+    0.0067771,
+    0.006601900000000001,
+    0.0067396,
+    0.006696700000000001,
+    0.006641500000000001,
+    0.0071600000000000006,
+    0.0066356,
+    0.0070009,
+    0.006668500000000001,
+    0.0070736,
+    0.0066571,
+    0.007045600000000001
+   ],
+   "warmup_s": [
+    0.007483200000000001
+   ],
+   "checksum": "439133366a0b2497",
+   "error": "",
+   "setup_s": 0.00013990001752972603,
+   "median_s": 0.006696700000000001,
+   "min_s": 0.0065789
+  },
+  {
+   "name": "py.fq9.mul_auto.d500",
+   "group": "py.fq",
+   "op": "mul_auto",
+   "desc": "producto a * b de grado 500 en F_9 = F_3[x]/(x^2+1)",
+   "inner": 1,
+   "samples_s": [
+    0.0559455,
+    0.0552718,
+    0.055797900000000004,
+    0.05506320000000001,
+    0.0562932
+   ],
+   "warmup_s": [
+    0.055574700000000005
+   ],
+   "checksum": "c8af7f9ed94034c4",
+   "error": "",
+   "setup_s": 0.0005795999895781279,
+   "median_s": 0.055797900000000004,
+   "min_s": 0.05506320000000001
+  },
+  {
+   "name": "py.fq.q3e30.factor.d5",
+   "group": "py.fq",
+   "op": "factor",
+   "desc": "factor() de un polinomio aleatorio de grado 5 en F_(3^30) (escenario histórico)",
+   "inner": 1,
+   "samples_s": [
+    0.3368042,
+    0.2697571,
+    0.2637525,
+    0.263888,
+    0.27268420000000004
+   ],
+   "warmup_s": [
+    0.33916290000000004
+   ],
+   "checksum": "92e0b4a372f8a109",
+   "error": "",
+   "setup_s": 0.01092250004876405,
+   "median_s": 0.2697571,
+   "min_s": 0.2637525
+  },
+  {
+   "name": "py.ntt.dft.k10",
+   "group": "py.ntt",
+   "op": "dft",
+   "desc": "alcp_native.dft de tamaño 2^10 en F_998244353 (x5)",
+   "inner": 5,
+   "samples_s": [
+    0.0117487,
+    0.0118723,
+    0.012476000000000001,
+    0.011622400000000001,
+    0.0118451,
+    0.0118922,
+    0.0117043,
+    0.011851200000000001,
+    0.0117414
+   ],
+   "warmup_s": [
+    0.0121533
+   ],
+   "checksum": "4534ca8416019033",
+   "error": "",
+   "setup_s": 0.0003125999355688691,
+   "median_s": 0.0118451,
+   "min_s": 0.011622400000000001
+  },
+  {
+   "name": "py.ntt.toeplitz_lower_inverse.n1024",
+   "group": "py.ntt",
+   "op": "toeplitz_lower_inverse",
+   "desc": "alcp_native.toeplitz_lower_inverse con n = 1024 en F_998244353",
+   "inner": 1,
+   "samples_s": [
+    0.0253143,
+    0.026013400000000002,
+    0.0246197,
+    0.026194400000000003,
+    0.0249626
+   ],
+   "warmup_s": [
+    0.025931700000000002
+   ],
+   "checksum": "2eafed6cdc613c27",
+   "error": "",
+   "setup_s": 0.00020570005290210247,
+   "median_s": 0.0253143,
+   "min_s": 0.0246197
+  }
+ ]
+}

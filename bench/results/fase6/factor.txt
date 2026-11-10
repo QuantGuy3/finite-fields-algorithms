@@ -1,0 +1,253 @@
+Fecha: 2026-11-07 22:20
+CPU: AMD Ryzen 7 7730U with Radeon Graphics         
+Alimentación: enchufado (BatteryStatus=2, corriente alterna)
+ALCP_THREADS=1
+
+===== $ ALCP_THREADS=1 .venv/Scripts/python.exe bench/experimentos/fase6/factor/flint_ref.py =====
+  (f3e30: tipo FLINT ?)
+  (f2e8: tipo FLINT ?)
+python-flint 0.9.0: mejor de 3 tandas de >= 30 ms, rotando 16 entradas
+  fp101_d40 factor               77.9 us
+  fp101_d100 factor             474.9 us
+  f3e30_d5 factor              3353.0 us
+  f3e30_mul_d200 mul            542.8 us
+  f2e8_d30 factor              5332.2 us
+  f2e8_mul_d1000 mul            665.3 us
+Entradas guardadas en bench\results\fase6\factor_entradas.txt
+[código de salida: 0]
+
+===== $ ALCP_THREADS=1 build/fase6/factor/perfil.exe =====
+Perfil de factor() — fase 6, tema factor (un hilo, mejor de 3 tandas de >= 30 ms)
+
+== F_(3^30) [Fq64]: elemento (ns): mul 1306 | inv 5047 | add 78 | acc_clear+fma+reduce 1297
+== F_256 [Fq64]: elemento (ns): mul 166 | inv 423 | add 63 | acc_clear+fma+reduce 161
+
+factor() completo (us): F_101 d38 213.2 | F_101 d100 1408.1 | F_(3^30) d5 6308.8 | F_256 d30 10923.1
+
+== F_101, producto de grado 38 con multiplicidades: factor desglosado (media de 48 llamadas, ms)
+  total 0.213 | radical 0.009 (4%) | DDF 0.101 (48%; Frobenius 0.082, MCD 0.012, 6 MCD/llamada)
+  EDF 0.085 (40%; pow_mod/traza 0.075, MCD 0.004, división 0.002, 12.3 intentos/llamada) | multiplicidad 0.018 (8%)
+
+== F_101, grado 100 aleatorio: factor desglosado (media de 48 llamadas, ms)
+  total 1.436 | radical 0.025 (2%) | DDF 1.348 (94%; Frobenius 0.000, MCD 0.000, 0 MCD/llamada)
+  EDF 0.042 (3%; pow_mod/traza 0.038, MCD 0.001, división 0.000, 2.3 intentos/llamada) | multiplicidad 0.022 (1%)
+
+== F_(3^30), grado 5 aleatorio: factor desglosado (media de 48 llamadas, ms)
+  total 6.753 | radical 0.106 (2%) | DDF 4.444 (66%; Frobenius 4.290, MCD 0.121, 1 MCD/llamada)
+  EDF 2.166 (32%; pow_mod/traza 2.130, MCD 0.021, división 0.003, 1.0 intentos/llamada) | multiplicidad 0.037 (1%)
+  recuento por factor() en F_(3^30) d5: mul 694, inv 236, add/sub 5, neg 643, acc_fma 5891, acc_reduce 2861  [contador == Fq64: sí]
+
+== F_256, grado 30 aleatorio: factor desglosado (media de 48 llamadas, ms)
+  total 7.946 | radical 0.134 (2%) | DDF 7.071 (89%; Frobenius 5.659, MCD 1.293, 10 MCD/llamada)
+  EDF 0.622 (8%; pow_mod/traza 0.595, MCD 0.011, división 0.002, 1.3 intentos/llamada) | multiplicidad 0.119 (1%)
+  recuento por factor() en F_256 d30: mul 3234, inv 416, add/sub 226, neg 2980, acc_fma 119754, acc_reduce 13714  [contador == Fq64: sí]
+
+(sumidero 2367806)
+[código de salida: 0]
+
+===== $ ALCP_THREADS=1 build/fase6/factor/proto.exe =====
+Prototipos fase 6, tema factor (un hilo, mejor de 3 tandas de >= 30 ms, 16 entradas rotando)
+
+== Elementos (16 pares rotando)
+  F_(3^30) librería       mul   1330 ns | inv   5162 ns | acc (clear + 8 fma + reduce)   5333 ns
+  F_(3^30) FqPeq           mul    750 ns | inv   1731 ns | acc (clear + 8 fma + reduce)   2527 ns
+  F_256 librería          mul    171 ns | inv    567 ns | acc (clear + 8 fma + reduce)    403 ns
+  F_256 FqPeq              mul    145 ns | inv    254 ns | acc (clear + 8 fma + reduce)    323 ns
+  FqPeq mul/inv == librería en 2000 pares por cuerpo: sí
+
+== factor F_(3^30) grado 5 (16 entradas)
+  librería                  5432.3 us
+  FqPeq                    3154.5 us  (1.72x)  idéntico a la librería (factores y RNG): sí
+  FqPeq + KS rápida       2989.5 us  (1.82x)  idéntico a la librería (factores y RNG): sí
+
+== factor F_256 grado 30 (16 entradas)
+  librería                  6818.5 us
+  FqPeq                    5237.2 us  (1.30x)  idéntico a la librería (factores y RNG): sí
+  FqPeq + KS rápida       5307.1 us  (1.28x)  idéntico a la librería (factores y RNG): sí
+
+== factor F_101 grado 40 (producto) (16 entradas)
+  librería                   215.1 us
+  mul_primo rápida         216.9 us  (0.99x)  idéntico a la librería (factores y RNG): sí
+
+== factor F_101 grado 100 (16 entradas)
+  librería                  1392.4 us
+  mul_primo rápida         874.8 us  (1.59x)  idéntico a la librería (factores y RNG): sí
+
+== producto F_(3^30) grado 200 (16 pares)
+  librería                   992.2 us
+  Fq64 + KS rápida         738.3 us  (1.34x)  idéntico: sí
+  FqPeq                     825.7 us  (1.20x)  idéntico: sí
+  FqPeq + KS rápida        584.1 us  (1.70x)  idéntico: sí
+  desglose ks::mul_extension F_(3^30) d200: total 1001.0 us; mpn_mul 3336 x 3336 limbs (huecos de 18 bits) 402.3 us (40%); resto (empaquetar + desempaquetar + reducir) 598.7 us
+  núcleo KS2 (2 mpn_mul de 1669 limbs): 338.4 us  -> ahorro máximo de KS2 en el producto entero 63.9 us
+
+== producto F_256 grado 1000 (16 pares)
+  librería                  1111.6 us
+  Fq64 + KS rápida         819.9 us  (1.36x)  idéntico: sí
+  FqPeq                     999.6 us  (1.11x)  idéntico: sí
+  FqPeq + KS rápida        677.8 us  (1.64x)  idéntico: sí
+  desglose ks::mul_extension F_256 d1000: total 1113.5 us; mpn_mul 3754 x 3754 limbs (huecos de 16 bits) 454.2 us (41%); resto (empaquetar + desempaquetar + reducir) 659.3 us
+  núcleo KS2 (2 mpn_mul de 1878 limbs): 396.9 us  -> ahorro máximo de KS2 en el producto entero 57.3 us
+
+== pow_mod (ventana deslizante, k = 4)
+  pow_mod F_(3^30) mod grado 5, exponente q (bits 48, popcount 25): binario 1633.4 us | ventana 4 1401.7 us (1.17x) | idéntico: sí
+  pow_mod F_(3^30) mod grado 5, exponente (q-1)/2 (bits 47, popcount 24): binario 1606.5 us | ventana 4 1396.3 us (1.15x) | idéntico: sí
+  pow_mod F_101 mod grado 100, exponente 101 (bits 7, popcount 4): binario 72.5 us | ventana 4 113.0 us (0.64x) | idéntico: sí
+  pow_mod F_101 mod grado 20, exponente (101^3-1)/2 (bits 19, popcount 12): binario 35.8 us | ventana 4 33.8 us (1.06x) | idéntico: sí
+
+(sumidero 2273934458901743459)
+[código de salida: 0]
+
+===== $ ALCP_THREADS=1 build/fase6/factor/proto2b.exe =====
+Prototipos fase 6 (2), tema factor (un hilo, mejor de 3 tandas de >= 30 ms, 16 entradas rotando)
+
+== Elementos (16 pares rotando)
+  F_(3^30) librería       mul   1278 ns | inv   4927 ns | acc (clear + 8 fma + reduce)   5187 ns
+  F_(3^30) FqPeq           mul    722 ns | inv   1719 ns | acc (clear + 8 fma + reduce)   2440 ns
+  F_(3^30) FqSwar          mul    471 ns | inv   1441 ns | acc (clear + 8 fma + reduce)   1544 ns
+  FqSwar mul/inv/acc == librería en 3000 casos: sí
+  F_256 FqTab              mul   33.8 ns | inv   33.9 ns
+  FqTab == librería en las 65 536 parejas (mul, add, inv, orden): sí
+
+== factor F_(3^30) grado 5 (16 entradas)
+  librería                  5233.1 us
+  FqPeq                    2986.1 us  (1.75x)  idéntico a la librería (factores y RNG): sí
+  FqSwar                   2061.8 us  (2.54x)  idéntico a la librería (factores y RNG): sí
+
+== factor F_256 grado 30 (16 entradas)
+  librería                  6632.0 us
+  FqTab                     176.3 us  (37.61x)  idéntico a la librería (factores, orden y RNG): sí
+
+== producto F_(3^30) grado 200 (16 pares)
+  librería                   979.0 us
+  FqSwar (+ KS rápida)      596.4 us  (1.64x)  idéntico: sí
+
+== producto F_256 grado 1000 (16 pares)
+  librería                  1080.3 us
+  FqTab (Karatsuba)         296.5 us  (3.64x)  idéntico: sí
+
+(sumidero 612892100)
+[código de salida: 0]
+
+===== $ ALCP_THREADS=1 build/fase6/factor/proto3.exe =====
+Prototipos fase 6 (3), tema factor: F_101 (un hilo, mejor de 3 tandas de >= 30 ms, 16 entradas rotando)
+
+== factor F_101 grado 40 (producto) (16 entradas)
+  librería                   211.0 us
+  mul_primo rápida         199.6 us  (1.06x)  idéntico a la librería (factores y RNG): sí
+  Acc de 64 bits            136.7 us  (1.54x)  idéntico a la librería (factores y RNG): sí
+  las dos                   135.5 us  (1.56x)  idéntico a la librería (factores y RNG): sí
+
+== factor F_101 grado 100 (16 entradas)
+  librería                  1383.4 us
+  mul_primo rápida         863.0 us  (1.60x)  idéntico a la librería (factores y RNG): sí
+  Acc de 64 bits           1337.3 us  (1.03x)  idéntico a la librería (factores y RNG): sí
+  las dos                   802.1 us  (1.72x)  idéntico a la librería (factores y RNG): sí
+
+== producto en F_101 (16 pares aleatorios por tamaño)
+  grado    16: librería     0.44 us | prototipo     0.25 us (1.76x) | idéntico: sí
+  grado    40: librería     1.05 us | prototipo     0.53 us (1.99x) | idéntico: sí
+  grado   100: librería     2.47 us | prototipo     1.24 us (1.99x) | idéntico: sí
+  grado   300: librería     8.67 us | prototipo     5.04 us (1.72x) | idéntico: sí
+  grado  1000: librería    39.94 us | prototipo    27.57 us (1.45x) | idéntico: sí
+
+(sumidero 87935458)
+[código de salida: 0]
+
+===== $ ALCP_THREADS=1 build/fase6/factor/proto2_native.exe =====
+Prototipos fase 6 (2), tema factor (un hilo, mejor de 3 tandas de >= 30 ms, 16 entradas rotando)
+
+== Elementos (16 pares rotando)
+  F_(3^30) librería       mul   1213 ns | inv   4519 ns | acc (clear + 8 fma + reduce)   4791 ns
+  F_(3^30) FqPeq           mul    463 ns | inv   1503 ns | acc (clear + 8 fma + reduce)   1721 ns
+  F_(3^30) FqSwar          mul    447 ns | inv   1225 ns | acc (clear + 8 fma + reduce)   1319 ns
+  FqSwar mul/inv/acc == librería en 3000 casos: sí
+  F_256 FqTab              mul   33.5 ns | inv   33.8 ns
+  FqTab == librería en las 65 536 parejas (mul, add, inv, orden): sí
+
+== factor F_(3^30) grado 5 (16 entradas)
+  librería                  5077.3 us
+  FqPeq                    2203.1 us  (2.30x)  idéntico a la librería (factores y RNG): sí
+  FqSwar                   1946.6 us  (2.61x)  idéntico a la librería (factores y RNG): sí
+
+== factor F_256 grado 30 (16 entradas)
+  librería                  6495.4 us
+  FqTab                     206.8 us  (31.40x)  idéntico a la librería (factores, orden y RNG): sí
+
+== producto F_(3^30) grado 200 (16 pares)
+  librería                   979.9 us
+  FqSwar (+ KS rápida)      526.4 us  (1.86x)  idéntico: sí
+
+== producto F_256 grado 1000 (16 pares)
+  librería                  1083.3 us
+  FqTab (Karatsuba)         297.9 us  (3.64x)  idéntico: sí
+
+(sumidero 615130057)
+[código de salida: 0]
+
+===== $ ALCP_THREADS=1 .venv/Scripts/python.exe bench/compare_libs.py --libs alcp_native_1h,flint --filter f =====
+
+== fp30.mul.d100: producto de dos polinomios de grado 100
+   alcp (binding C++, 1 hilo)       6.6 µs  ok             b114213b41a4315b 
+   python-flint                     3.7 µs  ok             b114213b41a4315b 
+
+== fp30.mul.d1000: producto de dos polinomios de grado 1000
+   alcp (binding C++, 1 hilo)      59.3 µs  ok             9ac84640941f412d 
+   python-flint                    69.1 µs  ok             9ac84640941f412d 
+
+== fp30.mul.d10000: producto de dos polinomios de grado 10000
+   alcp (binding C++, 1 hilo)      1.61 ms  ok             c15ad70226e92353 
+   python-flint                    1.66 ms  ok             c15ad70226e92353 
+
+== fp30.divmod.d4000: división con resto de grado 4000 entre grado 2000
+   alcp (binding C++, 1 hilo)      1.28 ms  ok             56f1631511a58669 
+   python-flint                   678.1 µs  ok             56f1631511a58669 
+
+== fp30.gcd.d1000: mcd de dos polinomios de grado 1000
+   alcp (binding C++, 1 hilo)      1.21 ms  ok             080a9ed428559ef6 
+   python-flint                   579.3 µs  ok             080a9ed428559ef6 
+
+== fp30.irred.d400: test de irreducibilidad de un polinomio IRREDUCIBLE de grado 400
+   alcp (binding C++, 1 hilo)    134.43 ms  ok             3cbc87c7681f34db 
+   python-flint                  212.70 ms  ok             3cbc87c7681f34db 
+
+== fp30.factor.d300: factor() de un polinomio mónico aleatorio de grado 300
+   alcp (binding C++, 1 hilo)     41.66 ms  ok             2a631a3edb0cf14d 
+   python-flint                   23.20 ms  ok             2a631a3edb0cf14d 
+
+== fp101.factor.d40: factor() de un producto conocido de grado 40 con multiplicidades
+   alcp (binding C++, 1 hilo)     177.2 µs  ok             beac702719576ae9 
+   python-flint                    69.7 µs  ok             beac702719576ae9 
+
+== fp101.factor.d100: factor() de un polinomio mónico aleatorio de grado 100
+   alcp (binding C++, 1 hilo)      1.37 ms  ok             424a0ca9965fddc2 
+   python-flint                   445.5 µs  ok             424a0ca9965fddc2 
+
+== fp101.irred.d200: test de irreducibilidad de un polinomio IRREDUCIBLE de grado 200
+   alcp (binding C++, 1 hilo)     13.47 ms  ok             3cbc87c7681f34db 
+   python-flint                    7.65 ms  ok             3cbc87c7681f34db 
+
+== fp127.mul.d500: producto de dos polinomios de grado 500
+   alcp (binding C++, 1 hilo)     302.7 µs  ok             6dea94a57c709dd7 
+   python-flint                   324.7 µs  ok             6dea94a57c709dd7 
+
+== fp127.factor.d20: factor() de un polinomio mónico aleatorio de grado 20
+   alcp (binding C++, 1 hilo)     17.35 ms  ok             73c30342b7641448 
+   python-flint                    2.55 ms  ok             73c30342b7641448 
+
+== f2e8.mul.d1000: producto de grado 1000 en F_256 (módulo de AES)
+   alcp (binding C++, 1 hilo)      1.03 ms  ok             c5bea53df6403519 
+   python-flint                   773.1 µs  ok             c5bea53df6403519 
+
+== f2e8.factor.d30: factor() de un polinomio mónico aleatorio de grado 30 en F_256
+   alcp (binding C++, 1 hilo)      7.82 ms  ok             031d51f4b83860a1 
+   python-flint                    8.30 ms  ok             031d51f4b83860a1 
+
+== f3e30.mul.d200: producto de grado 200 en F_(3^30)
+   alcp (binding C++, 1 hilo)     943.6 µs  ok             065a5139db7ab635 
+   python-flint                   516.6 µs  ok             065a5139db7ab635 
+
+== f3e30.factor.d5: factor() de un polinomio mónico aleatorio de grado 5 en F_(3^30)
+   alcp (binding C++, 1 hilo)      5.73 ms  ok             e46efbed64da114c 
+   python-flint                    2.07 ms  ok             e46efbed64da114c 
+[código de salida: 0]

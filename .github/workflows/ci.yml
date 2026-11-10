@@ -1,0 +1,92 @@
+# Integración continua: compila y prueba el núcleo C++, el oráculo frente a
+# las prácticas Python originales y el módulo pybind11.
+#
+# - Linux: cadena completa («python build.py ci») y cobertura C++ informativa.
+# - Windows: tests C++ y oráculo con la toolchain de MSYS2 (UCRT64), la misma
+#   del entorno de desarrollo.  Se usa el Python de MSYS2 porque así g++, gcov,
+#   GMP y el intérprete viven en un único entorno coherente (mismo PATH, sin
+#   mezclar runtimes) y build.py solo necesita la biblioteca estándar para
+#   «tests» y «oracle».  El módulo (g++ MinGW + CPython MSVC) no se compila
+#   aquí: requeriría combinar setup-python con MSYS2 en la misma shell.
+name: CI
+
+on:
+  push:
+  pull_request:
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+concurrency:
+  group: ci-${{ github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  linux:
+    name: Linux (tests, oráculo, módulo, pytest)
+    runs-on: ubuntu-latest
+    timeout-minutes: 30
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Dependencias del sistema (GMP)
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y --no-install-recommends libgmp-dev
+          g++ --version
+
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+
+      - name: Dependencias de Python
+        run: |
+          python -m pip install --upgrade pip
+          python -m pip install pybind11 pytest pytest-cov hypothesis gcovr
+
+      - name: Compilación y verificación completa
+        run: python build.py ci
+
+      # La cobertura C++ es informativa (docs/diseno.md): no hace fallar el job.
+      - name: Cobertura C++ (gcov + gcovr)
+        continue-on-error: true
+        run: python build.py --no-color cov-cpp
+
+      - name: Publicar el informe de cobertura C++
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: coverage-cpp
+          path: build/coverage-cpp/
+          if-no-files-found: ignore
+
+  windows:
+    name: Windows MSYS2 UCRT64 (tests C++ y oráculo)
+    runs-on: windows-latest
+    timeout-minutes: 30
+    defaults:
+      run:
+        shell: msys2 {0}
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: msys2/setup-msys2@v2
+        with:
+          msystem: UCRT64
+          update: true
+          install: >-
+            mingw-w64-ucrt-x86_64-gcc
+            mingw-w64-ucrt-x86_64-gmp
+            mingw-w64-ucrt-x86_64-python
+
+      - name: Versiones
+        run: |
+          g++ --version
+          python --version
+
+      - name: Tests C++
+        run: python build.py --no-color tests
+
+      - name: Oráculo (prácticas originales) y xcheck
+        run: python build.py --no-color oracle

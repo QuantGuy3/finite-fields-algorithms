@@ -2,22 +2,29 @@
 //
 // Port of the Python `cuerpo_fp` kernel.  An element is just a BigInt kept
 // normalized in [0, p).  Fp models the generic Field interface consumed by
-// Poly<Field>, PolyRing<Field> and the FFT engine, so every polynomial
-// algorithm is written once and works over F_p, F_q, ... unchanged.
+// Poly<Field> and the FFT engine, so every polynomial algorithm is written
+// once and works over F_p, F_q, ... unchanged.
 //
-// Field interface (the contract every field type fulfils):
+// Field interface (the contract every field type fulfils; formalizado como el
+// concepto C++20 alcp::FiniteField en field.hpp):
 //   using Elem;
 //   Elem  zero() / one() / from_int(BigInt) / random();
 //   Elem  add/sub/neg/mul/inv/div(...) ;  Elem pow(Elem, BigInt);
 //   bool  eq/is_zero/is_one(...);
 //   BigInt cardinality() / characteristic();
-//   std::string to_string(Elem);
+//   std::string to_string(Elem);   Elem pth_root(Elem);
 //   unsigned long fft_capacity();  Elem fft_base_root();
 //   FFTCache<Elem> fft_cache_;     // mutable, owned by the field
+//
+// Elementos: se asume (precondición, no se comprueba por rendimiento) que los
+// Elem que se pasan a las operaciones están normalizados en [0, p), es decir,
+// que proceden de este mismo cuerpo (from_int, random, zero, one, ...).
 #pragma once
 
 #include "bigint.hpp"
+#include "errors.hpp"
 #include "fft_tables.hpp"
+#include "field.hpp"
 
 #include <stdexcept>
 #include <string>
@@ -37,6 +44,10 @@ public:
     const BigInt& characteristic() const { return p_; }
     BigInt cardinality() const { return p_; }
 
+    // Igualdad de cuerpos: dos F_p son el mismo cuerpo si tienen el mismo p.
+    // (Las cachés FFT y la raíz base no forman parte de la identidad.)
+    bool operator==(const Fp& o) const { return p_ == o.p_; }
+
     // --- constants & coercion ----------------------------------------------
     Elem zero() const { return Elem(0); }
     Elem one() const { return Elem(1); }
@@ -50,29 +61,64 @@ public:
     Elem random() const { return rand_below(p_); }
 
     // --- arithmetic ---------------------------------------------------------
+    // Implementación con la API C de GMP directamente sobre el resultado: cada
+    // operación escribe en un único mpz (el que se devuelve, sin copias por la
+    // NRVO) y no crea temporales de gmpxx (antes, mul calculaba a*b en un
+    // temporal y después su resto en otro mpz).  Las entradas están en [0, p),
+    // así que basta una corrección condicional y mpz_tdiv_r da ya el resto
+    // no negativo.
     Elem add(const Elem& a, const Elem& b) const {
-        Elem r = a + b;
-        if (r >= p_) r -= p_;
+        Elem r;
+        mpz_add(r.get_mpz_t(), a.get_mpz_t(), b.get_mpz_t());
+        if (mpz_cmp(r.get_mpz_t(), p_.get_mpz_t()) >= 0) mpz_sub(r.get_mpz_t(), r.get_mpz_t(), p_.get_mpz_t());
         return r;
     }
     Elem sub(const Elem& a, const Elem& b) const {
-        Elem r = a - b;
-        if (sgn(r) < 0) r += p_;
+        Elem r;
+        mpz_sub(r.get_mpz_t(), a.get_mpz_t(), b.get_mpz_t());
+        if (mpz_sgn(r.get_mpz_t()) < 0) mpz_add(r.get_mpz_t(), r.get_mpz_t(), p_.get_mpz_t());
         return r;
     }
-    Elem neg(const Elem& a) const { return (a == 0) ? Elem(0) : Elem(p_ - a); }
-    Elem mul(const Elem& a, const Elem& b) const { return (a * b) % p_; }
+    Elem neg(const Elem& a) const {
+        Elem r;
+        if (mpz_sgn(a.get_mpz_t()) != 0) mpz_sub(r.get_mpz_t(), p_.get_mpz_t(), a.get_mpz_t());
+        return r;
+    }
+    Elem mul(const Elem& a, const Elem& b) const {
+        Elem r;
+        mpz_mul(r.get_mpz_t(), a.get_mpz_t(), b.get_mpz_t());
+        mpz_tdiv_r(r.get_mpz_t(), r.get_mpz_t(), p_.get_mpz_t());
+        return r;
+    }
 
+    // --- acumulación perezosa (ganchos opcionales, ver field.hpp) -----------
+    // El acumulador es un mpz que suma productos a·b de elementos en [0, p) con
+    // mpz_addmul (en sitio, sin temporales); nunca es negativo, así que
+    // mpz_tdiv_r da directamente el representante en [0, p).
+    using Acc = BigInt;
+    void acc_clear(Acc& s) const { mpz_set_ui(s.get_mpz_t(), 0); }
+    void acc_set(Acc& s, const Elem& a) const { mpz_set(s.get_mpz_t(), a.get_mpz_t()); }
+    void acc_fma(Acc& s, const Elem& a, const Elem& b) const {
+        mpz_addmul(s.get_mpz_t(), a.get_mpz_t(), b.get_mpz_t());
+    }
+    Elem acc_reduce(Acc& s) const {
+        Elem r;
+        mpz_tdiv_r(r.get_mpz_t(), s.get_mpz_t(), p_.get_mpz_t());
+        return r;
+    }
+
+    // Invertir 0 lanza alcp::division_by_zero (deriva de std::domain_error).
     Elem inv(const Elem& a) const {
-        if (a == 0) throw std::domain_error("0 is not invertible in F_p");
+        if (a == 0) throw division_by_zero("0 is not invertible in F_p");
         return invmod(a, p_);
     }
     Elem div(const Elem& a, const Elem& b) const { return mul(a, inv(b)); }
 
-    // a^k for any integer k (negative -> inverse first).
+    // a^k for any integer k (negative -> inverse first; 0^k con k < 0 lanza
+    // alcp::division_by_zero).
     Elem pow(const Elem& a, const BigInt& k) const {
         if (k < 0) {
-            if (a == 0) throw std::domain_error("0 is not invertible in F_p");
+            if (a == 0) throw division_by_zero("0 is not invertible in F_p");
             return powmod(inv(a), -k, p_);
         }
         return powmod(a, k, p_);
@@ -127,5 +173,13 @@ private:
     mutable bool base_root_ready_ = false;
     mutable Elem base_root_{};
 };
+
+// ¿Son a y b el mismo cuerpo F_p?  Camino rápido: el mismo objeto; si no,
+// mismos parámetros (mismo p).
+inline bool same_field(const Fp& a, const Fp& b) { return &a == &b || a == b; }
+
+// Fp cumple la interfaz de cuerpo finito (concepto de field.hpp).
+static_assert(FiniteField<Fp>);
+static_assert(LazyAccumulation<Fp>);
 
 }  // namespace alcp
