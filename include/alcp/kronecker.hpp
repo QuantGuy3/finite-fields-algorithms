@@ -23,6 +23,7 @@
 
 #include "bigint.hpp"
 #include "field.hpp"
+#include "fft.hpp"
 #include "fp64.hpp"
 #include "fpn.hpp"
 
@@ -30,6 +31,8 @@
 #include <bit>
 #include <cstddef>
 #include <cstdint>
+#include <memory>
+#include <mutex>
 #include <type_traits>
 #include <vector>
 
@@ -235,6 +238,165 @@ std::vector<typename Field::Elem> mul_primo(const Field& K, const typename Field
     }
 }
 
+// Fase 8 (FqSwar, F_(3^30) en grado 200): Kronecker con huecos de 16 bits y
+// cada bloque de 2e-1 huecos redondeado a un número entero de palabras
+// (W = ceil((2e-1)/4)).  Requiere K.kronecker16(m): todo hueco del producto
+// (<= m·(p-1)^2) más lo que le suma la reducción módulo g ((e-1)·(p-1)^2)
+// cabe en 16 bits.  Así el bloque k del producto de enteros, las palabras
+// C[kW, kW + W), YA ES el acumulador de huecos de 16 bits de FqSwar
+// (fq_swar.hpp) y se reduce con reducir_bloque16: no hay que leer cada hueco
+// con una máscara ni reducirlo antes módulo p, y la reducción módulo g suma
+// cuatro huecos por producto de palabra.  Empaquetar también es más barato
+// (cada coeficiente va a un hueco alineado).  A cambio, el entero es algo más
+// largo que con el ancho justo (16 frente a 15 bits en F_(3^30), grado 200),
+// pero desempaquetar pasa de ~1/3 del tiempo a ~1/10.  Mismos elementos.
+template <class Field>
+std::vector<typename Field::Elem> mul_extension16(const Field& K, const typename Field::Elem* a, std::size_t na,
+                                                  const typename Field::Elem* b, std::size_t nb) {
+    using Elem = typename Field::Elem;
+    const std::size_t e = K.extension_degree();
+    const std::size_t W = K.palabras_bloque16();  // ceil((2e-1)/4)
+    const std::size_t L = na + nb - 1;
+    auto empaquetar = [&](const Elem* x, std::size_t nx, std::vector<limb>& X) {
+        X.assign(nx * W + 1, 0);
+        for (std::size_t i = 0; i < nx; ++i) {
+            limb* D = X.data() + i * W;
+            for (std::size_t j = 0; j < e; ++j) D[j >> 2] |= static_cast<limb>(x[i][j]) << (16 * (j & 3));
+        }
+    };
+    std::vector<limb> A, B;
+    const bool cuadrado = (a == b && na == nb);
+    empaquetar(a, na, A);
+    if (!cuadrado) empaquetar(b, nb, B);
+    std::size_t na_l = A.size();
+    while (na_l > 1 && A[na_l - 1] == 0) --na_l;
+    const std::vector<limb>& Bv = cuadrado ? A : B;
+    std::size_t nb_l = Bv.size();
+    while (nb_l > 1 && Bv[nb_l - 1] == 0) --nb_l;
+    std::vector<limb> C(std::max(na_l + nb_l, L * W) + 1, 0);
+    if (cuadrado)
+        mpn_sqr(C.data(), A.data(), static_cast<mp_size_t>(na_l));
+    else if (na_l >= nb_l)
+        mpn_mul(C.data(), A.data(), static_cast<mp_size_t>(na_l), Bv.data(), static_cast<mp_size_t>(nb_l));
+    else
+        mpn_mul(C.data(), Bv.data(), static_cast<mp_size_t>(nb_l), A.data(), static_cast<mp_size_t>(na_l));
+    std::vector<Elem> r;
+    r.reserve(L);
+    // reducir_bloque16 solo lee los huecos 0..2e-2 del bloque (sin escribir):
+    // se le pasa el bloque dentro de C, sin copiarlo.
+    for (std::size_t k = 0; k < L; ++k) r.push_back(K.reducir_bloque16(C.data() + k * W));
+    return r;
+}
+
+// Fase 8: cuerpo primo auxiliar para la convolución por NTT de
+// mul_extension_ntt (998244353 = 119·2^23 + 1, capacidad 2^23).  No es un
+// cuerpo del usuario: sus tablas se piden SOLO con fft::tablas_sin_rng (raíz
+// determinista; su fft_cache_ nunca se llena) y nada usa el generador global.
+// La construcción comprueba la primalidad con mpz_probab_prime_p, que no usa
+// el generador de bigint.hpp.  Las tablas se piden con un cerrojo (la caché
+// determinista es mutable); una vez construidas son inmutables (shared_ptr a
+// const) y se pueden usar sin él.
+struct CampoNTT {
+    static constexpr std::uint64_t kP = 998244353;
+    static constexpr unsigned long kCapacidad = 23;
+    // Cuándo gana la NTT a mpn_mul (mul_extension16): desde 3072 huecos en el
+    // producto (L·(2e-1)) y m = min(na, nb)·e >= 768.  La NTT cuesta lo mismo
+    // con operandos desequilibrados y mpn_mul no: con un operando pequeño gana
+    // mpn_mul.  Medido con carga (Zen 3, µs, mpn16 / NTT): F_(3^30) 32x32
+    // 99 / 84, 101x101 434 / 331, 201x201 1046 / 705, 501x501 2992 / 1518,
+    // 21x21 58 / 68, 16x200 400 / 328 (m = 480), 8x200 306 / 457;
+    // F_(5^10) 101x101 109 / 89, 51x51 57 / 54, 64x1000 756 / 797 (m = 640),
+    // 32x200 123 / 162; F_(2^17) 64x1000 1678 / 1230, 32x1000 1265 / 1297.
+    static constexpr std::size_t kMinHuecos = 3072;
+    static constexpr std::size_t kMinM = 768;
+    static const Fp64& campo() {
+        static const Fp64 F{BigInt(static_cast<unsigned long>(kP))};
+        return F;
+    }
+    static std::shared_ptr<const FFTTables<std::uint64_t>> tablas(unsigned long k) {
+        static std::mutex m;
+        std::lock_guard<std::mutex> lk(m);
+        return fft::tablas_sin_rng(campo(), k);
+    }
+};
+
+// Fase 8 (FqSwar): la misma sustitución en dos niveles (bloques de S = 2e-1
+// huecos), pero el producto de los dos vectores de huecos se hace con la NTT
+// en palabras de Fp64 (AVX2 de 32 bits si se puede) módulo 998244353 en lugar
+// de con mpn_mul: cada hueco del producto es <= m·(p-1)^2 < 998244353, así que
+// la convolución módulo P es la exacta.  Con la GMP de MinGW (mpn_mul de ~3000
+// limbs: ~1 ms) la NTT es bastante más rápida.  Cada bloque se reduce después
+// con reducir_carriles (módulo p, empaquetado en huecos de 16 bits y
+// reducción módulo g).  El llamador (mul_extension) elige este camino y
+// comprueba que m·(p-1)^2 < 2^29 y L·S <= 2^23.  Mismos
+// elementos que cualquier otro producto.
+template <class Field>
+std::vector<typename Field::Elem> mul_extension_ntt(const Field& K, const typename Field::Elem* a, std::size_t na,
+                                                    const typename Field::Elem* b, std::size_t nb) {
+    using Elem = typename Field::Elem;
+    const std::size_t e = K.extension_degree();
+    const std::size_t S = 2 * e - 1;
+    const std::size_t L = na + nb - 1;
+    const std::size_t Lout = L * S;  // = ((na-1)·S + e) + ((nb-1)·S + e) - 1
+    const unsigned long k = fft::ceil_log2(Lout);
+    const auto tp = CampoNTT::tablas(k);
+    const bool cuadrado = (a == b && na == nb);
+    const std::size_t n = std::size_t(1) << k;
+    std::vector<Elem> r;
+    r.reserve(L);
+#if ALCP_NTT_AVX2
+    if (tp->word.w32.p != 0) {
+        // La convolución de fft::detail::convolve_word (camino AVX2 de 32
+        // bits), pero siempre en este hilo: con estos tamaños (2^12..2^16)
+        // lanzar el hilo de std::async para la segunda transformada costaba
+        // más que la transformada (medido con carga: F_(3^30), grado 50, 155
+        // frente a 478 µs).  Mismas transformadas, mismo resultado.
+        using u32 = std::uint32_t;
+        const auto& T = tp->word.w32;
+        const std::uint64_t P = tp->word.p;
+        auto empaquetar32 = [&](const Elem* x, std::size_t nx, std::vector<u32>& X) {
+            X.assign(n, 0);
+            for (std::size_t i = 0; i < nx; ++i)
+                for (std::size_t j = 0; j < e; ++j) X[i * S + j] = static_cast<u32>(x[i][j]);
+        };
+        std::vector<u32> wa, wb;
+        empaquetar32(a, na, wa);
+        fft::word::avx2::dif(T, wa.data(), n);
+        if (cuadrado) {
+            fft::word::avx2::punto(T, wa.data(), wa.data(), n);
+        } else {
+            empaquetar32(b, nb, wb);
+            fft::word::avx2::dif(T, wb.data(), n);
+            fft::word::avx2::punto(T, wa.data(), wb.data(), n);
+        }
+        fft::word::avx2::dit(T, wa.data(), n);
+        // [0, 4P) -> [0, P), como convolve_word: el coeficiente exacto.
+        std::vector<std::uint64_t> s(S);
+        for (std::size_t i = 0; i < L; ++i) {
+            for (std::size_t j = 0; j < S; ++j)
+                s[j] = fft::word::red(fft::word::red(wa[i * S + j], 2 * P), P);
+            r.push_back(K.reducir_carriles(s.data()));
+        }
+        return r;
+    }
+#endif
+    // Sin AVX2 (o sin optimización): la convolución de la librería.
+    auto empaquetar = [&](const Elem* x, std::size_t nx) {
+        std::vector<std::uint64_t> X((nx - 1) * S + e);
+        for (std::size_t i = 0; i < nx; ++i)
+            for (std::size_t j = 0; j < e; ++j) X[i * S + j] = x[i][j];
+        return X;
+    };
+    const std::vector<std::uint64_t> A = empaquetar(a, na);
+    std::vector<std::uint64_t> C;
+    if (cuadrado)
+        C = fft::detail::convolve_word(*tp, A, A, n, Lout);
+    else
+        C = fft::detail::convolve_word(*tp, A, empaquetar(b, nb), n, Lout);
+    for (std::size_t i = 0; i < L; ++i) r.push_back(K.reducir_carriles(C.data() + i * S));
+    return r;
+}
+
 // Producto de a[0..na) y b[0..nb) en la EXTENSIÓN K = F_p[t]/(g) de grado e
 // (FqT): Kronecker en dos niveles, bloques de 2e-1 huecos por coeficiente.
 template <class Field>
@@ -248,16 +410,30 @@ std::vector<typename Field::Elem> mul_extension(const Field& K, const typename F
     const std::size_t bloque = 2 * e - 1;
     const BigInt& p = K.characteristic();
     const std::size_t m = std::min(na, nb) * e;
-    const std::size_t bits = detail::bits_hueco(base, m);
-    // Fase 7: un cuerpo con el gancho reducir_huecos (FqSwar, fq_swar.hpp)
-    // reduce cada bloque de 2e-1 huecos de 64 bits con su reducción escalar.
-    // Con huecos de más de 62 bits (imposible en la práctica con p < 2^16) se
-    // usa el camino de Fq64, que da los mismos elementos.
-    constexpr bool kGanchoHuecos = requires(std::uint64_t* s) {
-        K.reducir_huecos(s);
+    std::size_t bits = detail::bits_hueco(base, m);
+    // Fase 7: un cuerpo con el gancho de reducción de bloques (FqSwar,
+    // fq_swar.hpp) reduce cada bloque de 2e-1 huecos de 64 bits él mismo
+    // (fase 8: reducir_carriles; antes reducir_huecos, en cascada).  Con
+    // huecos de más de 62 bits (imposible en la práctica con p < 2^16) se usa
+    // el camino de Fq64, que da los mismos elementos.
+    constexpr bool kGanchoHuecos = requires(const std::uint64_t* s) {
+        K.reducir_carriles(s);
         K.como_fq64();
     };
+    // Fase 8, con FqSwar y por orden: la NTT (mul_extension_ntt) si el
+    // producto es grande y no muy desequilibrado (CampoNTT::kMinHuecos y
+    // kMinM); huecos de 16 bits alineados (mul_extension16) si todos caben en
+    // 16 bits también tras la reducción módulo g; si no, mpn_mul con huecos
+    // del ancho justo m·(p-1)^2 < 2^bits en lugar de la cota
+    // 2·bitlen(p-1) + bitlen(m) + 1.  Cada hueco sigue siendo el coeficiente
+    // exacto, sin acarreos.
     if constexpr (kGanchoHuecos) {
+        const std::size_t huecos = (na + nb - 1) * bloque;
+        if (huecos >= CampoNTT::kMinHuecos && m >= CampoNTT::kMinM && K.bits_justos(m) <= 29 &&
+            fft::ceil_log2(huecos) <= CampoNTT::kCapacidad)
+            return mul_extension_ntt(K, a, na, b, nb);
+        if (K.kronecker16(m)) return mul_extension16(K, a, na, b, nb);
+        bits = K.bits_justos(m);
         if (bits > 62) return mul_extension(K.como_fq64(), a, na, b, nb);
     }
     const std::size_t L = na + nb - 1;
@@ -291,13 +467,13 @@ std::vector<typename Field::Elem> mul_extension(const Field& K, const typename F
     r.reserve(L);
     if constexpr (kGanchoHuecos) {
         // Cada hueco (<= 62 bits) se lee con una máscara, sin reducirlo: la
-        // reducción escalar del cuerpo reduce módulo p y módulo g a la vez.
+        // reducción del cuerpo reduce módulo p y módulo g.
         const limb mask = detail::mascara(bits);
         std::vector<std::uint64_t> s(bloque);
         for (std::size_t k = 0; k < L; ++k) {
             const std::size_t b0 = k * bloque * bits;
             for (std::size_t j = 0; j < bloque; ++j) s[j] = detail::tomar(C.data(), b0 + j * bits, mask);
-            r.push_back(K.reducir_huecos(s.data()));
+            r.push_back(K.reducir_carriles(s.data()));
         }
         return r;
     } else {

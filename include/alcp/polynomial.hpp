@@ -393,6 +393,27 @@ public:
     static constexpr std::size_t kParKaratsubaMin =
         std::is_same_v<Elem, BigInt> ? 256
                                      : ((std::is_arithmetic_v<Elem> || std::is_same_v<Field, FpN2>) ? 1024 : 64);
+    // Fase 8 (revisión de la fase 7): FqTab (elemento de una palabra con tablas
+    // de logaritmos) heredaba el 1024 de Fp64.  Con p impar la suma es un
+    // logaritmo de Zech (varias lecturas de tabla) y cada producto de Karatsuba
+    // cuesta ~6 veces más que con p = 2 (suma XOR), así que los hilos compensan
+    // antes: 512.  Con p = 2 se queda en 1024.  Medido con carga (Zen 3, 4
+    // tandas intercaladas, mejor tanda, ms; umbral actual / 512):
+    //   F_(3^7): d = 512 0,78 / 0,45 (1,74x); 1024 0,97 / 0,90 (1,08x);
+    //            1500 1,63 / 1,21 (1,35x); 2048 y 4096 iguales (±5 %).
+    //   F_(7^4): 512 0,81 / 0,50 (1,61x); 1024 1,10x; 1500 1,38x; 2048 y 4096
+    //            iguales.
+    //   F_256 y F_(2^12), en cambio: 512 0,135 / 0,24 (0,56x); 1024 0,55x.
+    // (128 y 256 son peores que 512 en todos; 2048 empeora F_(3^7) y F_(7^4)
+    // a 0,45x en 1024-1500 y solo mejora F_256 en 2048, 1,23x, pero lo
+    // empeora en 1024, 0,86x.)  Ver bench/calibra_fqtab.cpp.
+    static std::size_t par_karatsuba_min(const Field& K) {
+        if constexpr (kRepresentaFq64) return K.characteristic() == 2 ? kParKaratsubaMin : 512;
+        else {
+            (void)K;
+            return kParKaratsubaMin;
+        }
+    }
 
     // Número máximo de intentos aleatorios de equal_degree_split antes de
     // concluir que la entrada no cumple la precondición (ver equal_degree).
@@ -2095,6 +2116,11 @@ private:
     // La composición ganó en todos los cuerpos medidos con entradas irreducibles
     // (de 1,2x con q = 2 a 19x con q = 2^61 - 1), así que el mínimo es 2.
     static constexpr std::size_t kFrobMinProductos = 2;
+    // Fase 8: FqTab (Elem = uint32_t) usa el de Fp64, 2^22, comprobado con
+    // bench/calibra_fqtab.cpp (is_irreducible de un irreducible, 2 tandas
+    // intercaladas, con carga): 2^18 da lo mismo (F_256 grado 800: 0,92x;
+    // F_(2^12): 1,04x; F_(3^7) y F_(7^4) grado 600: 1,00x) y 2^16 es peor
+    // (0,62-0,80x).  Sin diferencia clara: no se cambia.
     static constexpr std::size_t kFrobPresupuesto = std::is_arithmetic_v<Elem> ? (std::size_t{1} << 22)
                                                                              : (std::size_t{1} << 18);
 
@@ -2514,7 +2540,19 @@ private:
     //   * FpN2 (fase 7): desde 128 coeficientes, con o sin NTT (huecos de
     //     ~2·128 bits; F_(2^127-1), con carga: 128: 63 frente a 79 µs de
     //     Karatsuba; 512: 387 frente a 719; 1024: 880 frente a 2230).
+    //   * FqSwar (fase 8): desde 8 coeficientes.  Con los huecos de 16 bits
+    //     alineados (kronecker.hpp, mul_extension16) Kronecker ya gana a la
+    //     escolar con acumulador SWAR desde 3-8 coeficientes (con carga,
+    //     escolar / Kronecker: F_(3^30) 8x8 1,6x, 8x200 1,2x, 16x16 2,4x,
+    //     4x200 0,84x; F_(5^10) 8x8 1,8x, 4x200 1,2x; F_(2^17) 8x8 1,2x, 4x200
+    //     0,90x).  Por debajo de 32 la regla Auto de estos cuerpos no elige la
+    //     FFT (prefer_fft, backend genérico), así que el consumo del generador
+    //     no cambia.
     static bool prefer_kronecker(const Field& K, std::size_t small, bool can_fft) {
+        if constexpr (requires(std::size_t m) { K.kronecker16(m); }) {
+            (void)K; (void)can_fft;
+            return small >= 8;
+        }
         if (small < 32) return false;
         if constexpr (std::is_same_v<Field, FpN2>) {
             (void)K; (void)can_fft;
@@ -2698,7 +2736,7 @@ private:
         const std::size_t nbL = same ? naL : trimmed_len(K, b, std::min(m, nb));
         const std::size_t nbH = (m < nb) ? nb - m : 0;
 
-        const bool par = par_depth > 0 && std::min(na, nb) >= kParKaratsubaMin;
+        const bool par = par_depth > 0 && std::min(na, nb) >= par_karatsuba_min(K);
         const int child = par ? par_depth - 1 : 0;
         auto calc_z0 = [&]() -> std::vector<Elem> {
             if (naL > 0 && nbL > 0) return karatsuba_rec(K, a, naL, b, nbL, child);
