@@ -1242,6 +1242,8 @@ inline void fijar_semilla(const BigInt& s) {
 PYBIND11_MODULE(alcp_native, m) {
     using namespace alcp_py;
     m.doc() = docs::modulo;
+    // Versión de la librería (alcp/version.hpp, versionado semántico).
+    m.attr("__version__") = ALCP_VERSION_STRING;
     py::register_exception_translator(&traducir_excepcion);
 
     m.def("is_prime", &es_primo, py::arg("n"), docs::is_prime);
