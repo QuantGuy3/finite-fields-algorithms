@@ -178,7 +178,7 @@ public:
     // Producto de Kronecker con m = min(na, nb)·n términos por hueco: ¿cabe
     // cada hueco en 16 bits, incluidos los (n-1)·(p-1)^2 que le suma la
     // reducción módulo g (reducir16)?  Entonces vale mul_extension16.
-    // F_(3^30): hasta m = 16354 (544 coeficientes); F_(5^10): hasta 4086.
+    // F_(3^30): hasta m = 16354 (545 coeficientes: 545·30 = 16350); F_(5^10): hasta 4086.
     bool kronecker16(std::size_t m) const { return m <= m16_; }
     // Palabras de un bloque de 2n-1 huecos de 16 bits.
     std::size_t palabras_bloque16() const { return ns_ - 1; }
